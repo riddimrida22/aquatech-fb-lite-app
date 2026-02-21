@@ -1,0 +1,187 @@
+{
+  "timestamp": "2026-02-20T22:54:07.942028Z",
+  "override_effective_date": "2026-01-01",
+  "range_start": "2026-01-01",
+  "range_end": "2026-12-31",
+  "entries_2026_count": 142,
+  "entries_updated_2026": 142,
+  "entries_skipped_no_override": 0,
+  "pre_2026_entries_changed": 0,
+  "before_total": {
+    "hours": 671.7489,
+    "bill": 123185.116284,
+    "cost": 65726.1785,
+    "profit": 57458.93778400001
+  },
+  "after_total": {
+    "hours": 671.7489,
+    "bill": 120056.9258,
+    "cost": 56531.1675,
+    "profit": 63525.758299999994
+  },
+  "delta_total": {
+    "hours": 0.0,
+    "bill": -3128.190484000006,
+    "cost": -9195.010999999991,
+    "profit": 6066.820515999985
+  },
+  "rate_rows_upserted": [
+    {
+      "user_id": 1,
+      "email": "bertrand.byrne@aquatechpc.com",
+      "effective_date": "2026-01-01",
+      "bill_rate": 208.65,
+      "cost_rate": 90.0,
+      "action": "updated"
+    },
+    {
+      "user_id": 3,
+      "email": "ailsa.welch@aquatechpc.com",
+      "effective_date": "2026-01-01",
+      "bill_rate": 176.55,
+      "cost_rate": 75.0,
+      "action": "updated"
+    },
+    {
+      "user_id": 4,
+      "email": "zachary.gilliam@aquatechpc.com",
+      "effective_date": "2026-01-01",
+      "bill_rate": 123.02,
+      "cost_rate": 75.0,
+      "action": "updated"
+    },
+    {
+      "user_id": 5,
+      "email": "stacey.hodge@aquatechpc.com",
+      "effective_date": "2026-01-01",
+      "bill_rate": 122.0,
+      "cost_rate": 75.0,
+      "action": "updated"
+    },
+    {
+      "user_id": 6,
+      "email": "robert.svadlenka@aquatechpc.com",
+      "effective_date": "2026-01-01",
+      "bill_rate": 145.0,
+      "cost_rate": 75.0,
+      "action": "updated"
+    }
+  ],
+  "unresolved_users": [],
+  "by_employee_delta": [
+    {
+      "employee": "ailsa.welch@aquatechpc.com",
+      "hours_before": 30.0,
+      "hours_after": 30.0,
+      "bill_before": 5296.500000000001,
+      "bill_after": 5296.500000000001,
+      "bill_delta": 0.0,
+      "cost_before": 3375.0,
+      "cost_after": 2250.0,
+      "cost_delta": -1125.0,
+      "profit_before": 1921.500000000001,
+      "profit_after": 3046.500000000001,
+      "profit_delta": 1125.0
+    },
+    {
+      "employee": "bertrand.byrne@aquatechpc.com",
+      "hours_before": 410.0,
+      "hours_after": 410.0,
+      "bill_before": 88587.59999999999,
+      "bill_after": 85546.49999999997,
+      "bill_delta": -3041.1000000000204,
+      "cost_before": 46327.0,
+      "cost_after": 36900.0,
+      "cost_delta": -9427.0,
+      "profit_before": 42260.59999999999,
+      "profit_after": 48646.49999999997,
+      "profit_delta": 6385.89999999998
+    },
+    {
+      "employee": "robert.svadlenka@aquatechpc.com",
+      "hours_before": 33.0,
+      "hours_after": 33.0,
+      "bill_before": 4814.02,
+      "bill_after": 4785.0,
+      "bill_delta": -29.020000000000437,
+      "cost_before": 2973.0,
+      "cost_after": 2475.0,
+      "cost_delta": -498.0,
+      "profit_before": 1841.0200000000004,
+      "profit_after": 2310.0,
+      "profit_delta": 468.97999999999956
+    },
+    {
+      "employee": "stacey.hodge@aquatechpc.com",
+      "hours_before": 20.7489,
+      "hours_after": 20.7489,
+      "bill_before": 2589.4362840000003,
+      "bill_after": 2531.3658,
+      "bill_delta": -58.070484000000306,
+      "cost_before": 1351.1785,
+      "cost_after": 1556.1675,
+      "cost_delta": 204.98900000000003,
+      "profit_before": 1238.2577840000004,
+      "profit_after": 975.1983,
+      "profit_delta": -263.05948400000034
+    },
+    {
+      "employee": "zachary.gilliam@aquatechpc.com",
+      "hours_before": 178.0,
+      "hours_after": 178.0,
+      "bill_before": 21897.559999999998,
+      "bill_after": 21897.559999999998,
+      "bill_delta": 0.0,
+      "cost_before": 11700.0,
+      "cost_after": 13350.0,
+      "cost_delta": 1650.0,
+      "profit_before": 10197.559999999998,
+      "profit_after": 8547.559999999998,
+      "profit_delta": -1650.0
+    }
+  ],
+  "by_project_delta": [
+    {
+      "project": "BWT Design Assistance",
+      "hours_before": 168.0,
+      "hours_after": 168.0,
+      "bill_before": 32940.360000000015,
+      "bill_after": 32944.50000000001,
+      "bill_delta": 4.139999999992142,
+      "cost_before": 18435.0,
+      "cost_after": 14400.0,
+      "cost_delta": -4035.0,
+      "profit_before": 14505.360000000015,
+      "profit_after": 18544.500000000007,
+      "profit_delta": 4039.139999999992
+    },
+    {
+      "project": "LTCP4",
+      "hours_before": 305.7489,
+      "hours_after": 305.7489,
+      "bill_before": 46669.75628400001,
+      "bill_after": 46678.52580000001,
+      "bill_delta": 8.769516000000294,
+      "cost_before": 25218.1785,
+      "cost_after": 24491.1675,
+      "cost_delta": -727.0110000000022,
+      "profit_before": 21451.57778400001,
+      "profit_after": 22187.35830000001,
+      "profit_delta": 735.7805160000025
+    },
+    {
+      "project": "Mount Vernon Flood Study",
+      "hours_before": 198.0,
+      "hours_after": 198.0,
+      "bill_before": 43575.0,
+      "bill_after": 40433.9,
+      "bill_delta": -3141.0999999999985,
+      "cost_before": 22073.0,
+      "cost_after": 17640.0,
+      "cost_delta": -4433.0,
+      "profit_before": 21502.0,
+      "profit_after": 22793.9,
+      "profit_delta": 1291.9000000000015
+    }
+  ]
+}

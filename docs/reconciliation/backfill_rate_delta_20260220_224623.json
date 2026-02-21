@@ -1,0 +1,49 @@
+{
+  "timestamp": "2026-02-20T22:46:23.514217Z",
+  "before_missing_effective_rate_entries": 1534,
+  "after_missing_effective_rate_entries": 0,
+  "delta_resolved": 1534,
+  "inserted_rate_rows": [
+    {
+      "user_id": 1,
+      "email": "bertrand.byrne@aquatechpc.com",
+      "effective_date": "2024-02-08",
+      "bill_rate": 208.65,
+      "cost_rate": 90.0,
+      "missing_entries_covered": 526
+    },
+    {
+      "user_id": 4,
+      "email": "zachary.gilliam@aquatechpc.com",
+      "effective_date": "2024-02-12",
+      "bill_rate": 123.02,
+      "cost_rate": 75.0,
+      "missing_entries_covered": 345
+    },
+    {
+      "user_id": 6,
+      "email": "robert.svadlenka@aquatechpc.com",
+      "effective_date": "2024-08-01",
+      "bill_rate": 145.0,
+      "cost_rate": 75.0,
+      "missing_entries_covered": 507
+    },
+    {
+      "user_id": 5,
+      "email": "stacey.hodge@aquatechpc.com",
+      "effective_date": "2025-04-16",
+      "bill_rate": 122.0,
+      "cost_rate": 75.0,
+      "missing_entries_covered": 131
+    },
+    {
+      "user_id": 3,
+      "email": "ailsa.welch@aquatechpc.com",
+      "effective_date": "2025-10-03",
+      "bill_rate": 176.55,
+      "cost_rate": 75.0,
+      "missing_entries_covered": 25
+    }
+  ],
+  "unresolved_users": []
+}

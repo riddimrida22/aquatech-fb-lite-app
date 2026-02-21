@@ -1,0 +1,78 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap");
+
+:root {
+  --aq-bg-a: #f4f7f5;
+  --aq-bg-b: #e7f0ea;
+  --aq-card: #ffffff;
+  --aq-border: #d8e5dc;
+  --aq-text: #112018;
+  --aq-muted: #4a5f54;
+  --aq-green: #0f8e48;
+  --aq-red: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: radial-gradient(1200px 700px at 20% -10%, var(--aq-bg-b), var(--aq-bg-a));
+  color: var(--aq-text);
+  font-family: "Poppins", "Trebuchet MS", "Gill Sans", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  border: 1px solid #c5d7ca;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #fff;
+}
+
+button {
+  border: 1px solid var(--aq-green);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: linear-gradient(180deg, #1ea85d, #0f8e48);
+  color: #ffffff;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 150ms ease, filter 150ms ease, border-color 150ms ease;
+  box-shadow: 0 1px 2px rgba(17, 32, 24, 0.14);
+}
+
+button:hover {
+  filter: brightness(1.03);
+  box-shadow: 0 4px 10px rgba(15, 142, 72, 0.26);
+}
+
+button:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 3px rgba(17, 32, 24, 0.18);
+}
+
+button:focus-visible {
+  outline: 2px solid #77d4a1;
+  outline-offset: 2px;
+}
+
+button:disabled {
+  background: linear-gradient(180deg, #d8e5dc, #c5d7ca);
+  border-color: #b7cabd;
+  color: #4a5f54;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+  filter: none;
+}
+
+table th {
+  background: #f3f8f5;
+}

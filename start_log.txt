@@ -1,0 +1,2 @@
+[Mon 02/16/2026  8:11:31.03] Starting launcher 
+[Mon 02/16/2026  8:11:32.14] Docker not ready, attempting Desktop launch 

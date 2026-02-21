@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "date_span_start": "2024-02-08",
+    "date_span_end": "2026-02-13",
+    "time_entries_total": 1676,
+    "orphan_user_refs": 0,
+    "orphan_project_refs": 0,
+    "orphan_task_refs": 0,
+    "orphan_subtask_refs": 0,
+    "wbs_task_project_mismatch": 0,
+    "wbs_subtask_task_mismatch": 0,
+    "non_positive_rate_entries": 0,
+    "missing_effective_rate_entries": 0,
+    "active_users_without_rates": 0,
+    "projects_without_tasks": 0,
+    "tasks_without_subtasks": 0
+  },
+  "details": {
+    "active_users_without_rates": [],
+    "projects_without_tasks": [],
+    "tasks_without_subtasks": [],
+    "example_ids": {
+      "orphan_user_refs": [],
+      "orphan_project_refs": [],
+      "orphan_task_refs": [],
+      "orphan_subtask_refs": [],
+      "wbs_task_project_mismatch": [],
+      "wbs_subtask_task_mismatch": [],
+      "non_positive_rate_entries": [],
+      "missing_effective_rate_entries": []
+    }
+  }
+}

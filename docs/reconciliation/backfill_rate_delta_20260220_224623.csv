@@ -1,0 +1,6 @@
+metric,value
+before_missing_effective_rate_entries,1534
+after_missing_effective_rate_entries,0
+delta_resolved,1534
+inserted_rate_rows_count,5
+unresolved_users_count,0

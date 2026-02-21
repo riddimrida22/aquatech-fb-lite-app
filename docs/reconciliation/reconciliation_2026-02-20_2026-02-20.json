@@ -1,0 +1,22 @@
+{
+  "start": "2026-02-20",
+  "end": "2026-02-20",
+  "snapshot": {
+    "users_total": 0,
+    "users_active": 0,
+    "projects_total": 0,
+    "projects_active": 0,
+    "projects_overhead": 0,
+    "tasks_total": 0,
+    "subtasks_total": 0,
+    "rates_total": 0,
+    "time_entries_in_range": 0,
+    "time_entries_min_date": null,
+    "time_entries_max_date": null,
+    "hours_in_range": 0.0,
+    "bill_amount_in_range": 0.0,
+    "cost_amount_in_range": 0.0,
+    "profit_amount_in_range": 0.0
+  },
+  "monthly": []
+}
