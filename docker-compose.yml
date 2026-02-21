@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-fblite}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-fblite}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:postgres@db:5432/fblite}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-REPLACE_ME}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-REPLACE_ME}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/auth/google/callback}
+      ALLOWED_GOOGLE_DOMAIN: ${ALLOWED_GOOGLE_DOMAIN:-aquatechpc.com}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-secret-change-me}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-false}
+      TIMESHEET_REMINDER_ENABLED: ${TIMESHEET_REMINDER_ENABLED:-false}
+      TIMESHEET_REMINDER_HOUR_LOCAL: ${TIMESHEET_REMINDER_HOUR_LOCAL:-15}
+      TIMESHEET_REMINDER_MINUTE_LOCAL: ${TIMESHEET_REMINDER_MINUTE_LOCAL:-0}
+      TIMESHEET_REMINDER_TIMEZONE: ${TIMESHEET_REMINDER_TIMEZONE:-America/New_York}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      RECURRING_INVOICE_ENABLED: ${RECURRING_INVOICE_ENABLED:-true}
+      RECURRING_INVOICE_RUN_HOUR_LOCAL: ${RECURRING_INVOICE_RUN_HOUR_LOCAL:-8}
+      RECURRING_INVOICE_RUN_MINUTE_LOCAL: ${RECURRING_INVOICE_RUN_MINUTE_LOCAL:-5}
+      RECURRING_INVOICE_TIMEZONE: ${RECURRING_INVOICE_TIMEZONE:-America/New_York}
+      PAYMENT_LINK_DEFAULT_EXPIRY_DAYS: ${PAYMENT_LINK_DEFAULT_EXPIRY_DAYS:-14}
+      PAYMENT_LINKS_ENABLED: ${PAYMENT_LINKS_ENABLED:-false}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+      NEXT_PUBLIC_DEV_AUTH_BYPASS: ${NEXT_PUBLIC_DEV_AUTH_BYPASS:-false}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  db_data:

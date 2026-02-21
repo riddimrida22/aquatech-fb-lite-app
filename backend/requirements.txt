@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]
+pydantic-settings
+python-dateutil
+python-multipart
+pytest
+httpx
+requests
+google-auth
+itsdangerous
+email-validator
