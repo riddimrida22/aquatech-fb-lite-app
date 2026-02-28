@@ -107,12 +107,39 @@ Quick production availability check:
 ## Enterprise Ops Commands
 - Runtime monitor (health + latency + optional alert webhook):
 - `./scripts/ops_monitor.sh`
+- SLO point-in-time report:
+- `./scripts/ops_slo_report.sh`
 - Disaster recovery restore drill (backup + isolated restore + verification):
 - `./scripts/dr_restore_drill.sh .env.prod`
+- Access review export (CSV evidence):
+- `./scripts/access_review_export.sh .env.prod`
+- Observability stack (Prometheus + Alertmanager + Grafana + Blackbox):
+- `./scripts/observability_up.sh`
+- `./scripts/observability_status.sh`
+- `./scripts/observability_down.sh`
 - Enterprise readiness notes:
 - `docs/ENTERPRISE_READINESS_2026-02-27.md`
 - GitHub staged deploy workflow:
 - `.github/workflows/deploy.yml` (staging -> production with approval + rollback option)
+- GitHub security workflow:
+- `.github/workflows/security.yml` (dependency and filesystem vulnerability scanning)
+- GitHub uptime monitor workflow:
+- `.github/workflows/uptime-monitor.yml` (checks production every 5 minutes)
+
+## Uptime Alerts (app.aquatechpc.com)
+Configure one GitHub repository secret, then the scheduled monitor will notify you automatically when production is down.
+
+1. Add repository secret:
+- `MONITOR_ALERT_WEBHOOK_URL` (Slack/Teams-compatible incoming webhook URL)
+2. Ensure workflow is enabled:
+- `.github/workflows/uptime-monitor.yml`
+3. Optional manual run:
+- GitHub Actions -> `Uptime Monitor` -> `Run workflow`
+
+## Observability URLs
+- Grafana: `http://localhost:3001`
+- Prometheus: `http://localhost:9090`
+- Alertmanager: `http://localhost:9093`
 
 Launch-mode smoke test (works with `DEV_AUTH_BYPASS=false`):
 - `./scripts/smoke_test_launch.sh`

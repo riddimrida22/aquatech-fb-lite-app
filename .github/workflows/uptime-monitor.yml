@@ -1,0 +1,25 @@
+name: Uptime Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  monitor-production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run production uptime checks
+        env:
+          APP_BASE_URL: https://app.aquatechpc.com
+          API_BASE_URL: https://app.aquatechpc.com/api
+          LATENCY_BUDGET_MS: "2500"
+          CURL_MAX_TIME_S: "15"
+          ALERT_WEBHOOK_URL: ${{ secrets.MONITOR_ALERT_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/ops_monitor.sh
+          ./scripts/ops_monitor.sh
