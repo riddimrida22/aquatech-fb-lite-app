@@ -1,0 +1,155 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_commit:
+        description: "Commit SHA/ref to deploy (default: current workflow SHA)"
+        required: false
+        type: string
+      run_rollback:
+        description: "Run rollback instead of deploy"
+        required: true
+        default: false
+        type: boolean
+      rollback_target:
+        description: "Rollback target environment"
+        required: true
+        default: production
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  validate:
+    if: ${{ !inputs.run_rollback }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run backend integration tests
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite:////tmp/aquatech_ci_deploy.db
+          SESSION_SECRET: ci-deploy-secret
+          ALLOWED_GOOGLE_DOMAIN: aquatechpc.com
+          DEV_AUTH_BYPASS: "true"
+          FRONTEND_ORIGIN: http://localhost:3000
+        run: pytest -q tests/test_mvp.py tests/test_financial_flows.py
+
+  deploy-staging:
+    if: ${{ !inputs.run_rollback }}
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+
+      - name: Deploy to staging
+        env:
+          TARGET_REF: ${{ inputs.target_commit || github.sha }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && git fetch --all --tags --prune && ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
+
+      - name: Staging runtime monitor
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
+          STAGING_APP_BASE_URL: ${{ secrets.STAGING_APP_BASE_URL }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && APP_BASE_URL='$STAGING_APP_BASE_URL' API_BASE_URL='${STAGING_APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
+
+  deploy-production:
+    if: ${{ !inputs.run_rollback }}
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+
+      - name: Deploy to production
+        env:
+          TARGET_REF: ${{ inputs.target_commit || github.sha }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_USER: ${{ secrets.PROD_USER }}
+          PROD_APP_DIR: ${{ secrets.PROD_APP_DIR }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && git fetch --all --tags --prune && ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
+
+      - name: Production runtime monitor
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_USER: ${{ secrets.PROD_USER }}
+          PROD_APP_DIR: ${{ secrets.PROD_APP_DIR }}
+          PROD_APP_BASE_URL: ${{ secrets.PROD_APP_BASE_URL }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && APP_BASE_URL='$PROD_APP_BASE_URL' API_BASE_URL='${PROD_APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
+
+  rollback:
+    if: ${{ inputs.run_rollback }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.rollback_target }}
+    steps:
+      - name: Start SSH agent (staging)
+        if: ${{ inputs.rollback_target == 'staging' }}
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+
+      - name: Start SSH agent (production)
+        if: ${{ inputs.rollback_target == 'production' }}
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+
+      - name: Rollback staging
+        if: ${{ inputs.rollback_target == 'staging' }}
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && ./scripts/rollback_last_deploy.sh .env.prod"
+
+      - name: Rollback production
+        if: ${{ inputs.rollback_target == 'production' }}
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_USER: ${{ secrets.PROD_USER }}
+          PROD_APP_DIR: ${{ secrets.PROD_APP_DIR }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && ./scripts/rollback_last_deploy.sh .env.prod"

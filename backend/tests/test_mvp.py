@@ -69,6 +69,9 @@ def test_end_to_end_timesheet_flow() -> None:
                 "name": "P1",
                 "client_name": "Client A",
                 "pm_user_id": admin_id,
+                "start_date": "2026-02-01",
+                "end_date": "2026-12-31",
+                "overall_budget_fee": 10000,
                 "is_overhead": False,
             },
         )
