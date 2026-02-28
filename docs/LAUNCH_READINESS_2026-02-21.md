@@ -1,7 +1,7 @@
 # Launch Readiness Report (2026-02-21)
 
 ## Scope
-This report reflects the current Aquatech FB-Lite codebase after launch-hardening updates:
+This report reflects the current AquatechPM codebase after launch-hardening updates:
 - secrets/config moved to `.env` pattern
 - launch preflight script added
 - financial currency formatting standardized (commas + accounting negatives in red parentheses)

@@ -18,7 +18,18 @@ def _create_engine():
             connect_args={"check_same_thread": False},
             pool_pre_ping=True,
         )
-    return create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+    return create_engine(
+        settings.DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=20,
+        max_overflow=40,
+        pool_timeout=60,
+        pool_recycle=1800,
+        pool_use_lifo=True,
+        connect_args={
+            "options": "-c idle_in_transaction_session_timeout=15000 -c statement_timeout=30000",
+        },
+    )
 
 
 engine = _create_engine()
@@ -32,6 +43,7 @@ def init_db() -> None:
     _ensure_task_columns()
     _ensure_invoice_columns()
     _ensure_invoice_line_columns()
+    _ensure_bank_columns()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -52,6 +64,8 @@ def _ensure_project_columns() -> None:
         statements.append("ALTER TABLE projects ADD COLUMN target_gross_margin_pct DOUBLE PRECISION DEFAULT 0")
     if "start_date" not in cols:
         statements.append("ALTER TABLE projects ADD COLUMN start_date DATE")
+    if "end_date" not in cols:
+        statements.append("ALTER TABLE projects ADD COLUMN end_date DATE")
     if "is_billable" not in cols:
         statements.append("ALTER TABLE projects ADD COLUMN is_billable BOOLEAN DEFAULT TRUE")
     if not statements:
@@ -135,3 +149,25 @@ def _ensure_invoice_line_columns() -> None:
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+
+
+def _ensure_bank_columns() -> None:
+    insp = inspect(engine)
+    statements: list[str] = []
+    if insp.has_table("bank_accounts"):
+        account_cols = {c["name"] for c in insp.get_columns("bank_accounts")}
+        if "is_business" not in account_cols:
+            statements.append("ALTER TABLE bank_accounts ADD COLUMN is_business BOOLEAN DEFAULT TRUE")
+    if insp.has_table("bank_transactions"):
+        tx_cols = {c["name"] for c in insp.get_columns("bank_transactions")}
+        if "is_business" not in tx_cols:
+            statements.append("ALTER TABLE bank_transactions ADD COLUMN is_business BOOLEAN DEFAULT TRUE")
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+        if insp.has_table("bank_accounts"):
+            conn.execute(text("UPDATE bank_accounts SET is_business = TRUE WHERE is_business IS NULL"))
+        if insp.has_table("bank_transactions"):
+            conn.execute(text("UPDATE bank_transactions SET is_business = TRUE WHERE is_business IS NULL"))

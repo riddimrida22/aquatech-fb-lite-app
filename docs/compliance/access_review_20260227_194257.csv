@@ -1,0 +1,7 @@
+id,email,full_name,role,is_active,start_date,created_at
+3,ailsa.welch@aquatechpc.com,Ailsa Welch,admin,t,"",2026-02-16 04:10:05.335158
+1,bertrand.byrne@aquatechpc.com,Bertrand Byrne,admin,t,"",2026-02-16 04:07:55.064875
+2,courtney.byrne@aquatechpc.com,Courtney Byrne,employee,t,"",2026-02-16 04:10:05.335153
+6,robert.svadlenka@aquatechpc.com,Robert Svadlenka,employee,t,"",2026-02-16 04:10:05.335164
+5,stacey.hodge@aquatechpc.com,Stacey Hodge,employee,t,"",2026-02-16 04:10:05.335163
+4,zachary.gilliam@aquatechpc.com,Zachary Gilliam,employee,t,"",2026-02-16 04:10:05.335162

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.db import SessionLocal, init_db
 from app.models import TimeEntry, User, UserRate
 
-OUT_DIR = Path("/home/sharing_pc_unix01/projects/aquatech-fb-lite-app/docs/reconciliation")
+OUT_DIR = Path("/home/sharing_pc_unix01/projects/AquatechPM/docs/reconciliation")
 
 
 def _missing_effective_entries(entries: list[TimeEntry], rates_by_user: dict[int, list[UserRate]]) -> list[TimeEntry]:

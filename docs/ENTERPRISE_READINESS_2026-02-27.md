@@ -5,6 +5,10 @@
 - One-command pre-deploy gate (preflight + integration tests + optional live smoke).
 - Runtime monitor script with optional webhook alerts.
 - Disaster-recovery restore drill script (backup -> isolated restore -> verification).
+- Security workflow with dependency + Trivy scanning.
+- Access review export script for compliance evidence.
+- SLO target and incident response runbooks.
+- Centralized observability stack with Prometheus, Alertmanager, Grafana, and Blackbox probes.
 
 ## New operational commands
 - CI (GitHub Actions): `.github/workflows/ci.yml`
@@ -16,6 +20,16 @@
   - Optional webhook alerting: `ALERT_WEBHOOK_URL=<url> ./scripts/ops_monitor.sh`
 - Disaster recovery restore drill:
   - `./scripts/dr_restore_drill.sh .env.prod`
+- Access review export:
+  - `./scripts/access_review_export.sh .env.prod`
+- SLO report generator:
+  - `./scripts/ops_slo_report.sh`
+- Observability stack control:
+  - `./scripts/observability_up.sh`
+  - `./scripts/observability_status.sh`
+  - `./scripts/observability_down.sh`
+  - optional alert routing: `ALERT_WEBHOOK_URL=<url> ./scripts/observability_up.sh`
+  - runbook: `docs/ops/OBSERVABILITY_STACK_RUNBOOK_2026-02-28.md`
 
 ## GitHub Deployment Setup
 1. Create GitHub Environments:
@@ -60,7 +74,7 @@
   3. Deploy with `./scripts/deploy_prod.sh .env.prod`
 
 ## Remaining enterprise gaps (next phase)
-- Add centralized logs/metrics dashboards (Grafana/Loki/Prometheus or managed equivalent).
+- Add log aggregation (Loki/Promtail or managed logging) for backend/frontend/caddy application logs.
 - Add policy-based IAM/SSO/SCIM and formal quarterly access-review evidence exports.
-- Add staged deploy promotion (dev -> staging -> prod) with approval gates.
+- Add policy-based IAM/SSO/SCIM with automated deprovisioning.
 - Add load testing baseline and SLO-driven alert thresholds.

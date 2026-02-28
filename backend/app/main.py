@@ -22,7 +22,8 @@ from fastapi.responses import RedirectResponse, Response
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import and_, false, func, select
+from sqlalchemy import and_, exists, false, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -30,6 +31,11 @@ from .authz import get_current_user, permissions_for_role, require_permission
 from .db import SessionLocal, get_db, init_db
 from .models import (
     AuditEvent,
+    BankAccount,
+    BankConnection,
+    BankMerchantRule,
+    BankTransaction,
+    BankTransactionMatch,
     Invoice,
     InvoiceLine,
     Project,
@@ -47,16 +53,33 @@ from .timeframes import pay_period_for
 
 
 settings = get_settings()
-app = FastAPI(title="Aquatech Project Controls")
-app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET, same_site="lax", https_only=False)
+app = FastAPI(title="AquatechPM")
+cors_origin_regex = (
+    r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$"
+    if settings.CORS_ALLOW_INTERNAL_REGEX
+    else None
+)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.SESSION_SECRET,
+    same_site=settings.SESSION_SAME_SITE,
+    https_only=settings.SESSION_HTTPS_ONLY,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.FRONTEND_ORIGIN, "http://localhost:3000"],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$",
+    allow_origin_regex=cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+HIDDEN_PROJECT_NAMES = {"no project", "imported project"}
+
+
+def _is_hidden_project_name(name: str | None) -> bool:
+    normalized = (name or "").strip().lower()
+    return normalized in HIDDEN_PROJECT_NAMES
 
 
 class DevBootstrapRequest(BaseModel):
@@ -85,11 +108,23 @@ class UserUpdate(BaseModel):
     role: str | None = None
 
 
+class AuditEventOut(BaseModel):
+    id: int
+    entity_type: str
+    entity_id: int
+    action: str
+    actor_user_id: int | None
+    actor_user_email: str | None = None
+    payload_json: str
+    created_at: datetime
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     client_name: str | None = Field(default=None, max_length=255)
     pm_user_id: int | None = None
     start_date: date | None = None
+    end_date: date | None = None
     overall_budget_fee: float = Field(default=0, ge=0)
     target_gross_margin_pct: float = Field(default=0, ge=0, le=100)
     is_overhead: bool = False
@@ -102,6 +137,7 @@ class ProjectOut(BaseModel):
     client_name: str | None
     pm_user_id: int | None
     start_date: date | None
+    end_date: date | None
     overall_budget_fee: float
     target_gross_margin_pct: float
     is_overhead: bool
@@ -114,6 +150,7 @@ class ProjectUpdate(BaseModel):
     client_name: str | None = Field(default=None, max_length=255)
     pm_user_id: int | None = None
     start_date: date | None = None
+    end_date: date | None = None
     overall_budget_fee: float = Field(default=0, ge=0)
     target_gross_margin_pct: float = Field(default=0, ge=0, le=100)
     is_overhead: bool = False
@@ -236,6 +273,165 @@ class AccountingPreviewRow(BaseModel):
     account_id: str
     vendor_norm: str
     dedupe_hash: str
+
+
+class BankConnectionOut(BaseModel):
+    id: int
+    provider: str
+    institution_name: str
+    institution_id: str | None
+    status: str
+    last_synced_at: datetime | None
+    created_at: datetime
+    account_count: int = 0
+    transaction_count: int = 0
+
+
+class BankAccountOut(BaseModel):
+    id: int
+    connection_id: int
+    account_id: str
+    name: str
+    mask: str | None
+    type: str | None
+    subtype: str | None
+    is_business: bool
+    current_balance: float | None
+    available_balance: float | None
+    iso_currency_code: str | None
+
+
+class BankAccountClassificationRequest(BaseModel):
+    is_business: bool
+
+
+class BankTransactionClassificationRequest(BaseModel):
+    is_business: bool
+
+
+class BankTransactionCategoryRequest(BaseModel):
+    expense_group: str = Field(default="OH", min_length=1, max_length=64)
+    category: str = Field(default="Uncategorized", min_length=1, max_length=128)
+    learn_for_merchant: bool = True
+
+
+class PlaidSandboxConnectRequest(BaseModel):
+    institution_id: str = "ins_109508"
+    initial_products: list[str] = Field(default_factory=lambda: ["transactions"])
+
+
+class PlaidSandboxConnectOut(BaseModel):
+    ok: bool
+    connection_id: int
+    institution_name: str
+    accounts: int
+
+
+class PlaidLinkTokenOut(BaseModel):
+    link_token: str
+    expiration: str
+
+
+class PlaidPublicTokenExchangeRequest(BaseModel):
+    public_token: str
+
+
+class BankSyncOut(BaseModel):
+    ok: bool
+    connection_id: int
+    added: int
+    modified: int
+    removed: int
+    has_more: bool
+
+
+class BankReconciliationQueueRow(BaseModel):
+    bank_transaction_id: int
+    connection_id: int
+    account_id: str
+    account_name: str | None
+    posted_date: date | None
+    description: str
+    amount: float
+    merchant_name: str | None
+    pending: bool
+    is_business: bool
+    expense_group: str | None = None
+    category: str | None = None
+    suggested_invoice_id: int | None = None
+    suggested_invoice_number: str | None = None
+    suggested_invoice_client: str | None = None
+    suggested_confidence: float | None = None
+
+
+class BankReconciliationQueueOut(BaseModel):
+    rows: list[BankReconciliationQueueRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class BankReconciliationMatchRequest(BaseModel):
+    bank_transaction_id: int
+    match_type: str = Field(default="invoice", pattern="^(invoice|expense|other)$")
+    match_entity_id: int = Field(gt=0)
+    status: str = Field(default="confirmed", pattern="^(suggested|confirmed|rejected)$")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    notes: str = ""
+
+
+class BankImportExpenseCatOut(BaseModel):
+    ok: bool
+    connection_id: int
+    connection_name: str
+    accounts_created: int
+    transactions_created: int
+    transactions_updated: int
+    rows_total: int
+    rows_skipped: int
+
+
+class BankImportedPlaidReconcileOut(BaseModel):
+    ok: bool
+    imported_candidates: int
+    plaid_candidates: int
+    matched_duplicates: int
+    remaining_unmatched_imported: int
+
+
+class BankCategoryRecommendationOut(BaseModel):
+    ok: bool
+    reviewed: int
+    updated: int
+    skipped_manual: int
+    skipped_already_categorized: int
+    skipped_no_match: int
+
+
+class BankCategoryGroupOut(BaseModel):
+    group: str
+    categories: list[str]
+
+
+class BankCategorySummaryRow(BaseModel):
+    expense_group: str
+    category: str
+    transaction_count: int
+    amount_abs: float
+
+
+class BankExpenseSummaryRow(BaseModel):
+    dimension: str
+    label: str
+    transaction_count: int
+    amount_abs: float
+
+
+class BankTransactionPostExpenseRequest(BaseModel):
+    project_id: int = Field(gt=0)
+    category: str = Field(default="Bank Import", min_length=1, max_length=128)
+    description: str = Field(default="", max_length=255)
+    expense_date: date | None = None
 
 
 class TimeImportRowOut(BaseModel):
@@ -486,6 +682,55 @@ class InvoiceRenderContextOut(BaseModel):
 
 
 NOISE_WORDS = {"POS", "ONLINE", "PAYMENT", "DEBIT", "CREDIT", "CARD", "PURCHASE"}
+DEFAULT_EXPENSE_CATEGORY_MAP: dict[str, list[str]] = {
+    "COGS": [
+        "Labor",
+        "Subconsultants",
+        "Materials",
+        "Field Services",
+        "Permits And Fees",
+        "Equipment Rental",
+    ],
+    "OH": [
+        "Payroll Taxes And Processing",
+        "Software And Subscriptions",
+        "Office Supplies",
+        "Insurance",
+        "Travel",
+        "Meals",
+        "Rent",
+        "Utilities",
+        "Professional Services",
+        "Bank Fees",
+        "Interest Expense",
+        "Taxes",
+    ],
+    "Other": [
+        "Loan Payment",
+        "Transfer",
+        "Equity Transfer In/Out (...6611 / ...0273)",
+        "Owner Draw",
+        "Uncategorized",
+    ],
+}
+BANK_CATEGORY_KEYWORD_RULES: list[tuple[list[str], tuple[str, str, float]]] = [
+    (["adobe", "microsoft", "google workspace", "quickbooks", "xero", "dropbox", "github", "notion", "slack", "zoom", "atlassian"], ("OH", "Software And Subscriptions", 0.94)),
+    (["insurance", "liability", "workers comp", "umbrella policy"], ("OH", "Insurance", 0.93)),
+    (["hotel", "airbnb", "delta", "united", "american airlines", "uber", "lyft", "hertz", "enterprise"], ("OH", "Travel", 0.9)),
+    (["restaurant", "cafe", "coffee", "lunch", "dinner", "doordash", "ubereats", "grubhub"], ("OH", "Meals", 0.86)),
+    (["office depot", "staples", "amazon business", "printer", "ink", "paper"], ("OH", "Office Supplies", 0.9)),
+    (["verizon", "att", "t mobile", "comcast", "pseg", "water", "electric"], ("OH", "Utilities", 0.9)),
+    (["payroll", "gusto", "adp", "paychex"], ("OH", "Payroll Taxes And Processing", 0.95)),
+    (["interest", "finance charge"], ("OH", "Interest Expense", 0.92)),
+    (["bank fee", "service fee", "wire fee", "overdraft"], ("OH", "Bank Fees", 0.93)),
+    (["permit", "inspection fee", "municipal fee", "filing fee"], ("COGS", "Permits And Fees", 0.9)),
+    (["equipment rental", "rental", "home depot", "lowes", "grainger"], ("COGS", "Equipment Rental", 0.88)),
+    (["material", "supply house", "build", "construction supply"], ("COGS", "Materials", 0.82)),
+    (["consulting", "subcontract", "subconsultant"], ("COGS", "Subconsultants", 0.89)),
+    (["ach transfer", "transfer", "internal transfer", "zelle", "venmo"], ("Other", "Equity Transfer In/Out (...6611 / ...0273)", 0.9)),
+    (["owner draw", "draw"], ("Other", "Owner Draw", 0.94)),
+    (["loan payment", "principal payment"], ("Other", "Loan Payment", 0.92)),
+]
 DATE_COLUMNS = ["Date", "Posted Date", "Posting Date", "Transaction Date"]
 DESC_COLUMNS = ["Description", "Transaction Description", "Memo", "Details", "Payee", "Name"]
 AMOUNT_COLUMNS = ["Amount"]
@@ -542,7 +787,1321 @@ def startup() -> None:
 @app.get("/")
 def health(db: Session = Depends(get_db)) -> dict[str, object]:
     user_count = db.scalar(select(func.count(User.id))) or 0
-    return {"ok": True, "app": "aquatech-fb-lite", "users": user_count}
+    return {"ok": True, "app": "aquatechpm", "users": user_count}
+
+
+@app.get("/health")
+def healthcheck(db: Session = Depends(get_db)) -> dict[str, object]:
+    user_count = db.scalar(select(func.count(User.id))) or 0
+    return {"ok": True, "app": "aquatechpm", "users": user_count}
+
+
+def _plaid_base_url() -> str:
+    env = (settings.PLAID_ENV or "sandbox").strip().lower()
+    if env == "production":
+        return "https://production.plaid.com"
+    if env == "development":
+        return "https://development.plaid.com"
+    return "https://sandbox.plaid.com"
+
+
+def _plaid_products() -> list[str]:
+    values = [v.strip() for v in (settings.PLAID_PRODUCTS or "transactions").split(",")]
+    return [v for v in values if v] or ["transactions"]
+
+
+def _plaid_country_codes() -> list[str]:
+    values = [v.strip().upper() for v in (settings.PLAID_COUNTRY_CODES or "US").split(",")]
+    return [v for v in values if v] or ["US"]
+
+
+def _plaid_post(path: str, payload: dict[str, object], timeout: int = 30) -> dict[str, object]:
+    if not settings.PLAID_CLIENT_ID or not settings.PLAID_SECRET:
+        raise HTTPException(status_code=400, detail="Plaid is not configured. Set PLAID_CLIENT_ID and PLAID_SECRET.")
+    body = {"client_id": settings.PLAID_CLIENT_ID, "secret": settings.PLAID_SECRET, **payload}
+    resp = requests.post(f"{_plaid_base_url()}{path}", json=body, timeout=timeout)
+    if resp.status_code >= 300:
+        try:
+            err = resp.json()
+            code = str(err.get("error_code") or "").strip()
+            message = str(err.get("error_message") or "").strip()
+            if code == "INVALID_PRODUCT":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Plaid production access is missing the requested product. "
+                        "Enable the Transactions product in Plaid Dashboard (Request products), then retry."
+                    ),
+                )
+            if code == "INVALID_API_KEYS":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid Plaid client ID/secret for the selected environment. Verify production keys in .env and restart services.",
+                )
+            compact = f"{code}: {message}".strip(": ").strip()
+            if compact:
+                raise HTTPException(status_code=502, detail=f"Plaid API error {resp.status_code}: {compact}")
+        except ValueError:
+            pass
+        detail = resp.text[:400]
+        raise HTTPException(status_code=502, detail=f"Plaid API error {resp.status_code}: {detail}")
+    return resp.json()
+
+
+def _parse_optional_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _truncate_text(value: str | None, max_len: int) -> str:
+    txt = (value or "").strip()
+    return txt[:max_len] if len(txt) > max_len else txt
+
+
+def _parse_json_obj(raw: str | None) -> dict[str, object]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _merchant_rule_key(merchant_name: str | None, description: str | None) -> str:
+    base = (merchant_name or "").strip()
+    if not base:
+        base = (description or "").strip()
+    normalized = re.sub(r"[^a-z0-9]+", " ", base.lower()).strip()
+    return _truncate_text(normalized, 255)
+
+
+def _normalize_bank_text(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def _token_similarity(a: str, b: str) -> float:
+    a_tokens = {t for t in a.split() if t}
+    b_tokens = {t for t in b.split() if t}
+    if not a_tokens or not b_tokens:
+        return 0.0
+    overlap = len(a_tokens & b_tokens)
+    return overlap / float(max(len(a_tokens), len(b_tokens)))
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    if not phrase:
+        return False
+    normalized_phrase = _normalize_bank_text(phrase)
+    if not normalized_phrase:
+        return False
+    return normalized_phrase in text
+
+
+def _recommend_bank_category(
+    tx: BankTransaction,
+    merchant_rules: dict[str, tuple[str, str]],
+    account_mask: str | None = None,
+) -> tuple[str, str, float, str] | None:
+    normalized_merchant = _normalize_bank_text(tx.merchant_name)
+    normalized_name = _normalize_bank_text(tx.name)
+    combined = f"{normalized_merchant} {normalized_name}".strip()
+    if not combined:
+        return None
+
+    # Aquatech-specific transfer rule:
+    # transfers between accounts ending 6611 and 0273 are treated as internal.
+    transfer_markers = ("transfer", "ach", "internal transfer", "zelle", "venmo")
+    has_transfer_marker = any(marker in combined for marker in transfer_markers)
+    has_6611 = "6611" in combined or (account_mask or "") == "6611"
+    has_0273 = "0273" in combined or (account_mask or "") == "0273"
+    if has_transfer_marker and has_6611 and has_0273:
+        return "Other", "Equity Transfer In/Out (...6611 / ...0273)", 0.995, "rule:aq_equity_transfer_6611_0273"
+
+    rule_key = _merchant_rule_key(tx.merchant_name, tx.name)
+    learned = merchant_rules.get(rule_key)
+    if learned:
+        return learned[0], learned[1], 0.98, "merchant_rule"
+
+    for phrases, recommendation in BANK_CATEGORY_KEYWORD_RULES:
+        for phrase in phrases:
+            if _contains_phrase(combined, phrase):
+                expense_group, category, confidence = recommendation
+                return expense_group, category, confidence, f"keyword:{phrase}"
+    return None
+
+
+def _matched_bank_transaction_ids(db: Session) -> set[int]:
+    return {int(v) for v in db.scalars(select(BankTransactionMatch.bank_transaction_id)).all() if v is not None}
+
+
+def _tx_category_from_json(tx: BankTransaction) -> tuple[str | None, str | None]:
+    category = None
+    try:
+        parsed = json.loads(tx.category_json or "[]")
+        if isinstance(parsed, list) and parsed:
+            category = str(parsed[0] or "").strip() or None
+    except Exception:
+        category = None
+    raw_obj = _parse_json_obj(tx.raw_json)
+    expense_group = str(raw_obj.get("expense_group") or "").strip() or None
+    return expense_group, category
+
+
+def _apply_merchant_rule_to_tx(
+    tx: BankTransaction,
+    raw_payload: dict[str, object],
+    rules_by_key: dict[str, tuple[str, str]],
+) -> None:
+    rule_key = _merchant_rule_key(tx.merchant_name, tx.name)
+    if not rule_key:
+        return
+    rule = rules_by_key.get(rule_key)
+    if not rule:
+        return
+    current_raw = _parse_json_obj(tx.raw_json)
+    if str(current_raw.get("category_source") or "").strip().lower() == "manual":
+        return
+    expense_group, category = rule
+    tx.category_json = json.dumps([category])
+    merged = {**raw_payload, **current_raw}
+    merged["expense_group"] = expense_group
+    merged["category"] = category
+    merged["category_source"] = "merchant_rule"
+    tx.raw_json = json.dumps(merged)
+
+
+def _refresh_plaid_accounts(connection: BankConnection, db: Session) -> int:
+    payload = _plaid_post("/accounts/balance/get", {"access_token": connection.access_token})
+    accounts = payload.get("accounts", []) if isinstance(payload.get("accounts"), list) else []
+    now = datetime.utcnow()
+    upserted = 0
+    for raw in accounts:
+        if not isinstance(raw, dict):
+            continue
+        account_id = _truncate_text(str(raw.get("account_id") or "").strip(), 128)
+        if not account_id:
+            continue
+        bal = raw.get("balances") if isinstance(raw.get("balances"), dict) else {}
+        row = db.scalar(
+            select(BankAccount).where(
+                BankAccount.connection_id == connection.id,
+                BankAccount.account_id == account_id,
+            )
+        )
+        if not row:
+            row = BankAccount(connection_id=connection.id, account_id=account_id)
+            db.add(row)
+        row.name = _truncate_text(str(raw.get("name") or ""), 255)
+        row.mask = _truncate_text(str(raw.get("mask") or ""), 16) or None
+        row.type = _truncate_text(str(raw.get("type") or ""), 64) or None
+        row.subtype = _truncate_text(str(raw.get("subtype") or ""), 64) or None
+        row.iso_currency_code = _truncate_text(str(raw.get("iso_currency_code") or ""), 16) or None
+        row.current_balance = float(bal.get("current")) if bal.get("current") is not None else None
+        row.available_balance = float(bal.get("available")) if bal.get("available") is not None else None
+        if row.is_business is None:
+            row.is_business = True
+        row.last_synced_at = now
+        upserted += 1
+    return upserted
+
+
+def _sync_plaid_transactions(connection: BankConnection, db: Session) -> tuple[int, int, int, bool]:
+    cursor = connection.sync_cursor or ""
+    account_business_map = {
+        a.account_id: bool(a.is_business)
+        for a in db.scalars(select(BankAccount).where(BankAccount.connection_id == connection.id)).all()
+    }
+    added_count = 0
+    modified_count = 0
+    removed_count = 0
+    rules_by_key = {
+        r.merchant_key: (r.expense_group, r.category)
+        for r in db.scalars(select(BankMerchantRule).where(BankMerchantRule.user_id == connection.user_id)).all()
+    }
+    has_more = True
+    while has_more:
+        payload = _plaid_post("/transactions/sync", {"access_token": connection.access_token, "cursor": cursor})
+        added = payload.get("added", []) if isinstance(payload.get("added"), list) else []
+        modified = payload.get("modified", []) if isinstance(payload.get("modified"), list) else []
+        removed = payload.get("removed", []) if isinstance(payload.get("removed"), list) else []
+        for raw in added:
+            if not isinstance(raw, dict):
+                continue
+            tx_id = _truncate_text(str(raw.get("transaction_id") or "").strip(), 128)
+            if not tx_id:
+                continue
+            row = db.scalar(
+                select(BankTransaction).where(
+                    BankTransaction.connection_id == connection.id,
+                    BankTransaction.transaction_id == tx_id,
+                )
+            )
+            if not row:
+                row = BankTransaction(connection_id=connection.id, transaction_id=tx_id, account_id=_truncate_text(str(raw.get("account_id") or ""), 128))
+                db.add(row)
+            row.account_id = _truncate_text(str(raw.get("account_id") or ""), 128)
+            if row.is_business is None:
+                row.is_business = bool(account_business_map.get(row.account_id, True))
+            row.posted_date = _parse_optional_date(str(raw.get("date") or ""))
+            row.name = _truncate_text(str(raw.get("name") or ""), 255)
+            row.merchant_name = _truncate_text(str(raw.get("merchant_name") or ""), 255) or None
+            row.amount = float(raw.get("amount") or 0)
+            row.iso_currency_code = _truncate_text(str(raw.get("iso_currency_code") or ""), 16) or None
+            row.pending = bool(raw.get("pending") or False)
+            row.category_json = json.dumps(raw.get("category") or [])
+            row.raw_json = json.dumps(raw)
+            _apply_merchant_rule_to_tx(row, raw if isinstance(raw, dict) else {}, rules_by_key)
+            added_count += 1
+        for raw in modified:
+            if not isinstance(raw, dict):
+                continue
+            tx_id = _truncate_text(str(raw.get("transaction_id") or "").strip(), 128)
+            if not tx_id:
+                continue
+            row = db.scalar(
+                select(BankTransaction).where(
+                    BankTransaction.connection_id == connection.id,
+                    BankTransaction.transaction_id == tx_id,
+                )
+            )
+            if not row:
+                row = BankTransaction(connection_id=connection.id, transaction_id=tx_id, account_id=_truncate_text(str(raw.get("account_id") or ""), 128))
+                db.add(row)
+            row.account_id = _truncate_text(str(raw.get("account_id") or ""), 128)
+            if row.is_business is None:
+                row.is_business = bool(account_business_map.get(row.account_id, True))
+            row.posted_date = _parse_optional_date(str(raw.get("date") or ""))
+            row.name = _truncate_text(str(raw.get("name") or ""), 255)
+            row.merchant_name = _truncate_text(str(raw.get("merchant_name") or ""), 255) or None
+            row.amount = float(raw.get("amount") or 0)
+            row.iso_currency_code = _truncate_text(str(raw.get("iso_currency_code") or ""), 16) or None
+            row.pending = bool(raw.get("pending") or False)
+            row.category_json = json.dumps(raw.get("category") or [])
+            row.raw_json = json.dumps(raw)
+            _apply_merchant_rule_to_tx(row, raw if isinstance(raw, dict) else {}, rules_by_key)
+            modified_count += 1
+        for raw in removed:
+            if not isinstance(raw, dict):
+                continue
+            tx_id = str(raw.get("transaction_id") or "").strip()
+            if not tx_id:
+                continue
+            row = db.scalar(
+                select(BankTransaction).where(
+                    BankTransaction.connection_id == connection.id,
+                    BankTransaction.transaction_id == tx_id,
+                )
+            )
+            if row:
+                db.delete(row)
+                removed_count += 1
+        has_more = bool(payload.get("has_more") or False)
+        cursor = str(payload.get("next_cursor") or cursor)
+        # Persist each page before the next Plaid call so we never hold
+        # an open transaction idle while waiting on network I/O.
+        connection.sync_cursor = cursor
+        connection.last_synced_at = datetime.utcnow()
+        db.commit()
+        connection = db.get(BankConnection, connection.id) or connection
+    return added_count, modified_count, removed_count, has_more
+
+
+def _upsert_plaid_connection_from_access_token(access_token: str, user_id: int, db: Session) -> BankConnection:
+    item = _plaid_post("/item/get", {"access_token": access_token})
+    item_payload = item.get("item") if isinstance(item.get("item"), dict) else {}
+    item_id = str(item_payload.get("item_id") or "")
+    institution_id = str(item_payload.get("institution_id") or "") or None
+    institution_name = institution_id or "Plaid Institution"
+    if institution_id:
+        try:
+            inst = _plaid_post("/institutions/get_by_id", {"institution_id": institution_id, "country_codes": _plaid_country_codes()})
+            institution_name = str((inst.get("institution") or {}).get("name") or institution_name)
+        except Exception:
+            pass
+    row = db.scalar(select(BankConnection).where(BankConnection.item_id == item_id)) if item_id else None
+    if not row:
+        row = BankConnection(
+            provider="plaid",
+            user_id=user_id,
+            institution_name=institution_name,
+            institution_id=institution_id,
+            item_id=item_id or None,
+            access_token=access_token,
+            status="connected",
+        )
+        db.add(row)
+        db.flush()
+    else:
+        row.user_id = user_id
+        row.institution_name = institution_name
+        row.institution_id = institution_id
+        row.access_token = access_token
+        row.status = "connected"
+    return row
+
+
+@app.get("/bank/connections", response_model=list[BankConnectionOut])
+def list_bank_connections(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> list[BankConnectionOut]:
+    _ = current_user
+    rows = db.scalars(select(BankConnection).order_by(BankConnection.created_at.desc())).all()
+    out: list[BankConnectionOut] = []
+    for row in rows:
+        account_count = db.scalar(select(func.count(BankAccount.id)).where(BankAccount.connection_id == row.id)) or 0
+        transaction_count = db.scalar(select(func.count(BankTransaction.id)).where(BankTransaction.connection_id == row.id)) or 0
+        out.append(
+            BankConnectionOut(
+                id=row.id,
+                provider=row.provider,
+                institution_name=row.institution_name,
+                institution_id=row.institution_id,
+                status=row.status,
+                last_synced_at=row.last_synced_at,
+                created_at=row.created_at,
+                account_count=int(account_count),
+                transaction_count=int(transaction_count),
+            )
+        )
+    return out
+
+
+@app.get("/bank/accounts", response_model=list[BankAccountOut])
+def list_bank_accounts(
+    connection_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> list[BankAccountOut]:
+    _ = current_user
+    stmt = select(BankAccount).order_by(BankAccount.connection_id.asc(), BankAccount.name.asc(), BankAccount.id.asc())
+    if connection_id is not None:
+        stmt = stmt.where(BankAccount.connection_id == connection_id)
+    rows = db.scalars(stmt).all()
+    return [
+        BankAccountOut(
+            id=row.id,
+            connection_id=row.connection_id,
+            account_id=row.account_id,
+            name=row.name,
+            mask=row.mask,
+            type=row.type,
+            subtype=row.subtype,
+            is_business=bool(row.is_business),
+            current_balance=row.current_balance,
+            available_balance=row.available_balance,
+            iso_currency_code=row.iso_currency_code,
+        )
+        for row in rows
+    ]
+
+
+@app.post("/bank/accounts/{bank_account_id}/classification", response_model=dict[str, bool])
+def classify_bank_account(
+    bank_account_id: int,
+    payload: BankAccountClassificationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, bool]:
+    row = db.get(BankAccount, bank_account_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Bank account not found.")
+    row.is_business = bool(payload.is_business)
+    tx_rows = db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.connection_id == row.connection_id,
+            BankTransaction.account_id == row.account_id,
+        )
+    ).all()
+    for tx in tx_rows:
+        tx.is_business = bool(payload.is_business)
+    _log_audit_event(
+        db=db,
+        entity_type="bank_account",
+        entity_id=row.id,
+        action="classify_bank_account",
+        actor_user_id=current_user.id,
+        payload={
+            "connection_id": row.connection_id,
+            "account_id": row.account_id,
+            "is_business": bool(payload.is_business),
+            "updated_transactions": len(tx_rows),
+        },
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/bank/transactions/{bank_transaction_id}/classification", response_model=dict[str, bool])
+def classify_bank_transaction(
+    bank_transaction_id: int,
+    payload: BankTransactionClassificationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, bool]:
+    row = db.get(BankTransaction, bank_transaction_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Bank transaction not found.")
+    row.is_business = bool(payload.is_business)
+    _log_audit_event(
+        db=db,
+        entity_type="bank_transaction",
+        entity_id=row.id,
+        action="classify_bank_transaction",
+        actor_user_id=current_user.id,
+        payload={
+            "connection_id": row.connection_id,
+            "account_id": row.account_id,
+            "is_business": bool(payload.is_business),
+        },
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/bank/categories", response_model=list[BankCategoryGroupOut])
+def list_bank_categories(
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> list[BankCategoryGroupOut]:
+    _ = current_user
+    return [BankCategoryGroupOut(group=k, categories=v) for k, v in DEFAULT_EXPENSE_CATEGORY_MAP.items()]
+
+
+@app.get("/bank/categories/summary", response_model=list[BankCategorySummaryRow])
+def bank_category_summary(
+    include_personal: bool = Query(default=False),
+    unmatched_only: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> list[BankCategorySummaryRow]:
+    _ = current_user
+    stmt = select(BankTransaction)
+    if not include_personal:
+        stmt = stmt.where(BankTransaction.is_business.is_(True))
+    if unmatched_only:
+        stmt = stmt.where(~exists(select(BankTransactionMatch.id).where(BankTransactionMatch.bank_transaction_id == BankTransaction.id)))
+    tx_rows = db.scalars(stmt).all()
+
+    agg: dict[tuple[str, str], dict[str, float]] = {}
+    for tx in tx_rows:
+        expense_group, category = _tx_category_from_json(tx)
+        g = (expense_group or "Unassigned").strip() or "Unassigned"
+        c = (category or "Uncategorized").strip() or "Uncategorized"
+        key = (g, c)
+        if key not in agg:
+            agg[key] = {"count": 0.0, "abs": 0.0}
+        agg[key]["count"] += 1
+        agg[key]["abs"] += abs(float(tx.amount or 0.0))
+
+    rows = [
+        BankCategorySummaryRow(
+            expense_group=k[0],
+            category=k[1],
+            transaction_count=int(v["count"]),
+            amount_abs=float(v["abs"]),
+        )
+        for k, v in agg.items()
+    ]
+    rows.sort(key=lambda r: r.amount_abs, reverse=True)
+    return rows
+
+
+@app.get("/bank/summary", response_model=list[BankExpenseSummaryRow])
+def bank_expense_summary(
+    group_by: str = Query(default="category", pattern="^(category|merchant|expense_group)$"),
+    include_personal: bool = Query(default=False),
+    unmatched_only: bool = Query(default=True),
+    limit: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> list[BankExpenseSummaryRow]:
+    _ = current_user
+    stmt = select(BankTransaction)
+    if not include_personal:
+        stmt = stmt.where(BankTransaction.is_business.is_(True))
+    if unmatched_only:
+        stmt = stmt.where(~exists(select(BankTransactionMatch.id).where(BankTransactionMatch.bank_transaction_id == BankTransaction.id)))
+    tx_rows = db.scalars(stmt).all()
+
+    agg: dict[str, dict[str, float]] = {}
+    for tx in tx_rows:
+        expense_group, category = _tx_category_from_json(tx)
+        if group_by == "merchant":
+            label = (tx.merchant_name or "").strip() or _merchant_rule_key(None, tx.name) or "Unknown Merchant"
+        elif group_by == "expense_group":
+            label = (expense_group or "Unassigned").strip() or "Unassigned"
+        else:
+            label = (category or "Uncategorized").strip() or "Uncategorized"
+        if label not in agg:
+            agg[label] = {"count": 0.0, "abs": 0.0}
+        agg[label]["count"] += 1
+        agg[label]["abs"] += abs(float(tx.amount or 0.0))
+
+    rows = [
+        BankExpenseSummaryRow(
+            dimension=group_by,
+            label=label,
+            transaction_count=int(v["count"]),
+            amount_abs=float(v["abs"]),
+        )
+        for label, v in agg.items()
+    ]
+    rows.sort(key=lambda r: r.amount_abs, reverse=True)
+    return rows[:limit]
+
+
+@app.post("/bank/transactions/{bank_transaction_id}/categorize", response_model=dict[str, bool])
+def categorize_bank_transaction(
+    bank_transaction_id: int,
+    payload: BankTransactionCategoryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, bool]:
+    tx = db.get(BankTransaction, bank_transaction_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Bank transaction not found.")
+    expense_group = _truncate_text(payload.expense_group, 64) or "OH"
+    category = _truncate_text(payload.category, 128) or "Uncategorized"
+    tx.category_json = json.dumps([category])
+    raw_obj = _parse_json_obj(tx.raw_json)
+    raw_obj["expense_group"] = expense_group
+    raw_obj["category"] = category
+    raw_obj["category_source"] = "manual"
+    tx.raw_json = json.dumps(raw_obj)
+
+    merchant_key = _merchant_rule_key(tx.merchant_name, tx.name)
+    if payload.learn_for_merchant and merchant_key:
+        rule = db.scalar(
+            select(BankMerchantRule).where(
+                BankMerchantRule.user_id == current_user.id,
+                BankMerchantRule.merchant_key == merchant_key,
+            )
+        )
+        if not rule:
+            rule = BankMerchantRule(
+                user_id=current_user.id,
+                merchant_key=merchant_key,
+                expense_group=expense_group,
+                category=category,
+            )
+            db.add(rule)
+        else:
+            rule.expense_group = expense_group
+            rule.category = category
+            rule.updated_at = datetime.utcnow()
+        # Apply learned merchant rule to existing unmatched business transactions with same merchant pattern.
+        candidate_rows = db.scalars(
+            select(BankTransaction)
+            .join(BankConnection, BankConnection.id == BankTransaction.connection_id)
+            .where(BankConnection.user_id == current_user.id, BankTransaction.is_business.is_(True))
+        ).all()
+        matched_ids = {
+            m.bank_transaction_id for m in db.scalars(select(BankTransactionMatch)).all() if m.bank_transaction_id is not None
+        }
+        for candidate in candidate_rows:
+            if candidate.id in matched_ids:
+                continue
+            if _merchant_rule_key(candidate.merchant_name, candidate.name) != merchant_key:
+                continue
+            candidate.category_json = json.dumps([category])
+            c_raw = _parse_json_obj(candidate.raw_json)
+            if str(c_raw.get("category_source") or "").strip().lower() == "manual":
+                continue
+            c_raw["expense_group"] = expense_group
+            c_raw["category"] = category
+            c_raw["category_source"] = "merchant_rule"
+            candidate.raw_json = json.dumps(c_raw)
+    _log_audit_event(
+        db=db,
+        entity_type="bank_transaction",
+        entity_id=tx.id,
+        action="categorize_bank_transaction",
+        actor_user_id=current_user.id,
+        payload={
+            "expense_group": expense_group,
+            "category": category,
+            "learn_for_merchant": bool(payload.learn_for_merchant),
+            "merchant_key": merchant_key,
+        },
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/bank/import/expense-cat-categorized", response_model=BankImportExpenseCatOut)
+async def import_expense_cat_categorized_csv(
+    file: UploadFile = File(...),
+    connection_name: str = Form(default="Expense_CAT Import"),
+    default_is_business: bool = Form(default=True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> BankImportExpenseCatOut:
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV file is empty.")
+    text = raw.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV header row is missing.")
+
+    required_any = {"date", "description", "amount"}
+    normalized_fields = {str(f or "").strip().lower() for f in reader.fieldnames}
+    if not required_any.issubset(normalized_fields):
+        raise HTTPException(status_code=400, detail="CSV must include date, description, and amount columns.")
+
+    connection_name_clean = (connection_name or "Expense_CAT Import").strip() or "Expense_CAT Import"
+    conn_row = db.scalar(
+        select(BankConnection).where(
+            BankConnection.provider == "expense_cat_import",
+            BankConnection.institution_name == connection_name_clean,
+            BankConnection.user_id == current_user.id,
+        )
+    )
+    if not conn_row:
+        conn_row = BankConnection(
+            provider="expense_cat_import",
+            user_id=current_user.id,
+            institution_name=connection_name_clean,
+            institution_id=None,
+            item_id=None,
+            access_token=None,
+            status="connected",
+        )
+        db.add(conn_row)
+        db.flush()
+
+    created_accounts = 0
+    created_tx = 0
+    updated_tx = 0
+    rows_total = 0
+    rows_skipped = 0
+    rules_by_key = {
+        r.merchant_key: (r.expense_group, r.category)
+        for r in db.scalars(select(BankMerchantRule).where(BankMerchantRule.user_id == current_user.id)).all()
+    }
+
+    account_cache: dict[str, BankAccount] = {}
+    for row in reader:
+        rows_total += 1
+        date_raw = str(row.get("date") or "").strip()
+        desc_raw = str(row.get("description") or "").strip()
+        amount_raw = str(row.get("amount") or "").strip()
+        if not date_raw or not desc_raw or not amount_raw:
+            rows_skipped += 1
+            continue
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            rows_skipped += 1
+            continue
+        posted_date = _parse_optional_date(date_raw)
+        if posted_date is None:
+            rows_skipped += 1
+            continue
+
+        account_id = _truncate_text(str(row.get("account") or "Expense_CAT_Imported"), 128) or "Expense_CAT_Imported"
+        acct = account_cache.get(account_id)
+        if acct is None:
+            acct = db.scalar(
+                select(BankAccount).where(
+                    BankAccount.connection_id == conn_row.id,
+                    BankAccount.account_id == account_id,
+                )
+            )
+            if not acct:
+                acct = BankAccount(
+                    connection_id=conn_row.id,
+                    account_id=account_id,
+                    name=account_id,
+                    is_business=bool(default_is_business),
+                )
+                db.add(acct)
+                db.flush()
+                created_accounts += 1
+            account_cache[account_id] = acct
+
+        transaction_id = _truncate_text(str(row.get("transaction_id") or ""), 128)
+        if not transaction_id:
+            dedupe_raw = f"{account_id}|{posted_date.isoformat()}|{desc_raw}|{amount:.2f}"
+            transaction_id = hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()[:40]
+
+        tx = db.scalar(
+            select(BankTransaction).where(
+                BankTransaction.connection_id == conn_row.id,
+                BankTransaction.transaction_id == transaction_id,
+            )
+        )
+        category = _truncate_text(str(row.get("final_category") or row.get("category") or ""), 180)
+        merchant = _truncate_text(str(row.get("merchant_key") or ""), 255) or None
+        needs_review_raw = str(row.get("needs_review") or "").strip().lower()
+        needs_review = needs_review_raw in {"1", "true", "yes", "y"}
+        category_arr = [category] if category else []
+        raw_payload = {
+            "source": "expense_cat",
+            "source_file": row.get("source_file"),
+            "transaction_id": row.get("transaction_id"),
+            "date": date_raw,
+            "description": desc_raw,
+            "merchant_key": row.get("merchant_key"),
+            "account": account_id,
+            "amount": amount,
+            "is_expense": row.get("is_expense"),
+            "expense_amount": row.get("expense_amount"),
+            "category": row.get("category"),
+            "final_category": row.get("final_category"),
+            "confidence": row.get("confidence"),
+            "category_source": row.get("category_source"),
+            "needs_review": needs_review,
+            "notes": row.get("notes"),
+        }
+
+        if not tx:
+            tx = BankTransaction(
+                connection_id=conn_row.id,
+                account_id=account_id,
+                transaction_id=transaction_id,
+            )
+            db.add(tx)
+            created_tx += 1
+        else:
+            updated_tx += 1
+        tx.posted_date = posted_date
+        tx.name = _truncate_text(desc_raw, 255)
+        tx.merchant_name = merchant
+        tx.amount = float(amount)
+        tx.iso_currency_code = str(row.get("currency") or "USD").strip() or "USD"
+        tx.pending = False
+        tx.is_business = bool(acct.is_business)
+        tx.category_json = json.dumps(category_arr)
+        tx.raw_json = json.dumps(raw_payload)
+        _apply_merchant_rule_to_tx(tx, raw_payload, rules_by_key)
+
+    conn_row.last_synced_at = datetime.utcnow()
+    _log_audit_event(
+        db=db,
+        entity_type="bank_connection",
+        entity_id=conn_row.id,
+        action="import_expense_cat_categorized",
+        actor_user_id=current_user.id,
+        payload={
+            "connection_name": connection_name_clean,
+            "default_is_business": bool(default_is_business),
+            "rows_total": rows_total,
+            "rows_skipped": rows_skipped,
+            "accounts_created": created_accounts,
+            "transactions_created": created_tx,
+            "transactions_updated": updated_tx,
+        },
+    )
+    db.commit()
+    return BankImportExpenseCatOut(
+        ok=True,
+        connection_id=conn_row.id,
+        connection_name=connection_name_clean,
+        accounts_created=created_accounts,
+        transactions_created=created_tx,
+        transactions_updated=updated_tx,
+        rows_total=rows_total,
+        rows_skipped=rows_skipped,
+    )
+
+
+@app.post("/bank/reconciliation/reconcile-imported", response_model=BankImportedPlaidReconcileOut)
+def reconcile_imported_vs_plaid_duplicates(
+    max_days_apart: int = Query(default=3, ge=0, le=7),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> BankImportedPlaidReconcileOut:
+    matched_tx_ids = _matched_bank_transaction_ids(db)
+    base_stmt = (
+        select(BankTransaction)
+        .join(BankConnection, BankConnection.id == BankTransaction.connection_id)
+        .where(BankConnection.user_id == current_user.id, BankTransaction.is_business.is_(True), BankTransaction.pending.is_(False))
+    )
+    imported_rows = [
+        t
+        for t in db.scalars(base_stmt.where(BankConnection.provider == "expense_cat_import")).all()
+        if t.id not in matched_tx_ids and t.posted_date is not None
+    ]
+    plaid_rows = [
+        t
+        for t in db.scalars(base_stmt.where(BankConnection.provider == "plaid")).all()
+        if t.id not in matched_tx_ids and t.posted_date is not None
+    ]
+    if not imported_rows or not plaid_rows:
+        return BankImportedPlaidReconcileOut(
+            ok=True,
+            imported_candidates=len(imported_rows),
+            plaid_candidates=len(plaid_rows),
+            matched_duplicates=0,
+            remaining_unmatched_imported=len(imported_rows),
+        )
+
+    plaid_by_cents: dict[int, list[BankTransaction]] = defaultdict(list)
+    for row in plaid_rows:
+        cents = int(round(abs(float(row.amount or 0.0)) * 100))
+        plaid_by_cents[cents].append(row)
+    for rows in plaid_by_cents.values():
+        rows.sort(key=lambda r: (r.posted_date or date.min, r.id), reverse=True)
+
+    used_plaid_ids: set[int] = set()
+    matched_count = 0
+    for imported in sorted(imported_rows, key=lambda r: (r.posted_date or date.min, r.id), reverse=True):
+        cents = int(round(abs(float(imported.amount or 0.0)) * 100))
+        candidates = plaid_by_cents.get(cents, [])
+        if not candidates:
+            continue
+        imported_date = imported.posted_date
+        if not imported_date:
+            continue
+        imported_text = _normalize_bank_text(imported.merchant_name or imported.name)
+        best: tuple[BankTransaction, float] | None = None
+        for candidate in candidates:
+            if candidate.id in used_plaid_ids:
+                continue
+            candidate_date = candidate.posted_date
+            if not candidate_date:
+                continue
+            day_gap = abs((imported_date - candidate_date).days)
+            if day_gap > max_days_apart:
+                continue
+            candidate_text = _normalize_bank_text(candidate.merchant_name or candidate.name)
+            text_score = _token_similarity(imported_text, candidate_text)
+            date_score = 1.0 - (day_gap / max(1, max_days_apart + 1))
+            score = (text_score * 0.7) + (date_score * 0.3)
+            if imported_text and candidate_text and imported_text == candidate_text:
+                score += 0.15
+            if not best or score > best[1]:
+                best = (candidate, score)
+        if not best:
+            continue
+        candidate, score = best
+        if score < 0.45:
+            continue
+        db.add(
+            BankTransactionMatch(
+                bank_transaction_id=imported.id,
+                match_type="other",
+                match_entity_id=candidate.id,
+                status="confirmed",
+                confidence=min(1.0, max(0.0, score)),
+                notes=f"Auto-duplicate of Plaid tx {candidate.id}",
+                created_by_user_id=current_user.id,
+            )
+        )
+        used_plaid_ids.add(candidate.id)
+        matched_count += 1
+    db.commit()
+    return BankImportedPlaidReconcileOut(
+        ok=True,
+        imported_candidates=len(imported_rows),
+        plaid_candidates=len(plaid_rows),
+        matched_duplicates=matched_count,
+        remaining_unmatched_imported=max(0, len(imported_rows) - matched_count),
+    )
+
+
+@app.post("/bank/reconciliation/apply-category-recommendations", response_model=BankCategoryRecommendationOut)
+def apply_bank_category_recommendations(
+    min_confidence: float = Query(default=0.8, ge=0.5, le=1.0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> BankCategoryRecommendationOut:
+    matched_tx_ids = _matched_bank_transaction_ids(db)
+    merchant_rules = {
+        r.merchant_key: (r.expense_group, r.category)
+        for r in db.scalars(select(BankMerchantRule).where(BankMerchantRule.user_id == current_user.id)).all()
+    }
+    account_rows = db.scalars(
+        select(BankAccount)
+        .join(BankConnection, BankConnection.id == BankAccount.connection_id)
+        .where(BankConnection.user_id == current_user.id)
+    ).all()
+    account_mask_by_key = {
+        (a.connection_id, a.account_id): (str(a.mask or "").strip() or None)
+        for a in account_rows
+    }
+    tx_rows = db.scalars(
+        select(BankTransaction)
+        .join(BankConnection, BankConnection.id == BankTransaction.connection_id)
+        .where(
+            BankConnection.user_id == current_user.id,
+            BankTransaction.is_business.is_(True),
+            BankTransaction.pending.is_(False),
+        )
+    ).all()
+
+    reviewed = 0
+    updated = 0
+    skipped_manual = 0
+    skipped_already = 0
+    skipped_no_match = 0
+
+    for tx in tx_rows:
+        if tx.id in matched_tx_ids:
+            continue
+        reviewed += 1
+        raw = _parse_json_obj(tx.raw_json)
+        source = str(raw.get("category_source") or "").strip().lower()
+        expense_group, category = _tx_category_from_json(tx)
+        has_meaningful_category = bool((category or "").strip()) and (category or "").strip().lower() != "uncategorized"
+        if source == "manual":
+            skipped_manual += 1
+            continue
+        if has_meaningful_category and source in {"merchant_rule", "manual", "expense_cat", "heuristic_recommendation"}:
+            skipped_already += 1
+            continue
+
+        recommendation = _recommend_bank_category(
+            tx,
+            merchant_rules,
+            account_mask=account_mask_by_key.get((tx.connection_id, tx.account_id)),
+        )
+        if not recommendation:
+            skipped_no_match += 1
+            continue
+        rec_group, rec_category, rec_confidence, rec_reason = recommendation
+        if rec_confidence < min_confidence:
+            skipped_no_match += 1
+            continue
+
+        tx.category_json = json.dumps([rec_category])
+        merged_raw = {**raw}
+        merged_raw["expense_group"] = rec_group
+        merged_raw["category"] = rec_category
+        merged_raw["category_source"] = (
+            "heuristic_recommendation"
+            if rec_reason.startswith("keyword:") or rec_reason.startswith("rule:")
+            else "merchant_rule"
+        )
+        merged_raw["category_confidence"] = round(rec_confidence, 4)
+        merged_raw["category_reason"] = rec_reason
+        tx.raw_json = json.dumps(merged_raw)
+        updated += 1
+
+    _log_audit_event(
+        db=db,
+        entity_type="bank_connection",
+        entity_id=0,
+        action="apply_bank_category_recommendations",
+        actor_user_id=current_user.id,
+        payload={
+            "min_confidence": min_confidence,
+            "reviewed": reviewed,
+            "updated": updated,
+            "skipped_manual": skipped_manual,
+            "skipped_already_categorized": skipped_already,
+            "skipped_no_match": skipped_no_match,
+        },
+    )
+    db.commit()
+    return BankCategoryRecommendationOut(
+        ok=True,
+        reviewed=reviewed,
+        updated=updated,
+        skipped_manual=skipped_manual,
+        skipped_already_categorized=skipped_already,
+        skipped_no_match=skipped_no_match,
+    )
+
+
+@app.post("/bank/plaid/sandbox/connect", response_model=PlaidSandboxConnectOut)
+def plaid_sandbox_connect(
+    payload: PlaidSandboxConnectRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> PlaidSandboxConnectOut:
+    try:
+        create_payload: dict[str, object] = {
+            "institution_id": payload.institution_id,
+            "initial_products": payload.initial_products or _plaid_products(),
+            "options": {"webhook": "https://example.invalid/plaid/webhook"},
+        }
+        sandbox_resp = _plaid_post("/sandbox/public_token/create", create_payload)
+        public_token = str(sandbox_resp.get("public_token") or "")
+        if not public_token:
+            raise HTTPException(status_code=502, detail="Plaid sandbox did not return public_token.")
+        exchange = _plaid_post("/item/public_token/exchange", {"public_token": public_token})
+        access_token = str(exchange.get("access_token") or "")
+        if not access_token:
+            raise HTTPException(status_code=502, detail="Plaid token exchange failed.")
+        row = _upsert_plaid_connection_from_access_token(access_token, current_user.id, db)
+        db.commit()
+        accounts = _refresh_plaid_accounts(row, db)
+        _sync_plaid_transactions(row, db)
+        db.commit()
+        return PlaidSandboxConnectOut(ok=True, connection_id=row.id, institution_name=row.institution_name, accounts=accounts)
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Temporary database timeout during Plaid sync. Please retry.")
+
+
+@app.post("/bank/plaid/link-token", response_model=PlaidLinkTokenOut)
+def create_plaid_link_token(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> PlaidLinkTokenOut:
+    _ = db
+    payload = {
+        "user": {"client_user_id": str(current_user.id)},
+        "client_name": "AquatechPM",
+        "products": _plaid_products(),
+        "country_codes": _plaid_country_codes(),
+        "language": "en",
+    }
+    resp = _plaid_post("/link/token/create", payload)
+    link_token = str(resp.get("link_token") or "")
+    expiration = str(resp.get("expiration") or "")
+    if not link_token:
+        raise HTTPException(status_code=502, detail="Plaid did not return link_token.")
+    return PlaidLinkTokenOut(link_token=link_token, expiration=expiration)
+
+
+@app.post("/bank/plaid/exchange-public-token", response_model=PlaidSandboxConnectOut)
+def plaid_exchange_public_token(
+    payload: PlaidPublicTokenExchangeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> PlaidSandboxConnectOut:
+    try:
+        exchange = _plaid_post("/item/public_token/exchange", {"public_token": payload.public_token})
+        access_token = str(exchange.get("access_token") or "")
+        if not access_token:
+            raise HTTPException(status_code=502, detail="Plaid token exchange failed.")
+        row = _upsert_plaid_connection_from_access_token(access_token, current_user.id, db)
+        db.commit()
+        accounts = _refresh_plaid_accounts(row, db)
+        _sync_plaid_transactions(row, db)
+        db.commit()
+        return PlaidSandboxConnectOut(ok=True, connection_id=row.id, institution_name=row.institution_name, accounts=accounts)
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Temporary database timeout during Plaid sync. Please retry.")
+
+
+@app.post("/bank/connections/{connection_id}/sync", response_model=BankSyncOut)
+def sync_bank_connection(
+    connection_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> BankSyncOut:
+    _ = current_user
+    try:
+        row = db.get(BankConnection, connection_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Bank connection not found.")
+        if row.provider != "plaid":
+            raise HTTPException(status_code=400, detail="Unsupported provider.")
+        if not row.access_token:
+            raise HTTPException(status_code=400, detail="Connection has no access token.")
+        db.commit()
+        _refresh_plaid_accounts(row, db)
+        added, modified, removed, has_more = _sync_plaid_transactions(row, db)
+        db.commit()
+        return BankSyncOut(
+            ok=True,
+            connection_id=row.id,
+            added=added,
+            modified=modified,
+            removed=removed,
+            has_more=has_more,
+        )
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Temporary database timeout during bank sync. Please retry.")
+
+
+def _build_bank_reconciliation_rows(
+    db: Session,
+    limit: int,
+    offset: int,
+    include_personal: bool,
+) -> tuple[list[BankReconciliationQueueRow], int]:
+    matched_tx_ids = select(BankTransactionMatch.bank_transaction_id)
+    base_stmt = select(BankTransaction).where(~BankTransaction.id.in_(matched_tx_ids))
+    if not include_personal:
+        base_stmt = base_stmt.where(BankTransaction.is_business.is_(True))
+    total = int(db.scalar(select(func.count()).select_from(base_stmt.subquery())) or 0)
+    tx_rows = db.scalars(
+        base_stmt.order_by(BankTransaction.posted_date.desc().nullslast(), BankTransaction.id.desc()).offset(offset).limit(limit)
+    ).all()
+    invoices = db.scalars(select(Invoice).where(Invoice.status.in_(["sent", "partial", "paid"]))).all()
+    account_rows = db.scalars(select(BankAccount)).all()
+    account_name_by_key = {(a.connection_id, a.account_id): a.name for a in account_rows}
+    out: list[BankReconciliationQueueRow] = []
+    for tx in tx_rows:
+        expense_group, category = _tx_category_from_json(tx)
+        suggested_invoice: Invoice | None = None
+        confidence = None
+        if not tx.pending:
+            best_score = -1.0
+            for inv in invoices:
+                if inv.subtotal_amount <= 0:
+                    continue
+                amt_diff = abs(float(tx.amount) - float(inv.subtotal_amount))
+                if amt_diff > 0.01:
+                    continue
+                score = 0.75
+                if tx.posted_date and inv.issue_date and abs((tx.posted_date - inv.issue_date).days) <= 14:
+                    score += 0.15
+                if tx.merchant_name and inv.client_name and tx.merchant_name.lower() in inv.client_name.lower():
+                    score += 0.1
+                if score > best_score:
+                    best_score = score
+                    suggested_invoice = inv
+            if suggested_invoice:
+                confidence = min(1.0, best_score)
+        out.append(
+            BankReconciliationQueueRow(
+                bank_transaction_id=tx.id,
+                connection_id=tx.connection_id,
+                account_id=tx.account_id,
+                account_name=account_name_by_key.get((tx.connection_id, tx.account_id)),
+                posted_date=tx.posted_date,
+                description=tx.name,
+                amount=tx.amount,
+                merchant_name=tx.merchant_name,
+                pending=tx.pending,
+                is_business=bool(tx.is_business),
+                expense_group=expense_group,
+                category=category,
+                suggested_invoice_id=suggested_invoice.id if suggested_invoice else None,
+                suggested_invoice_number=suggested_invoice.invoice_number if suggested_invoice else None,
+                suggested_invoice_client=suggested_invoice.client_name if suggested_invoice else None,
+                suggested_confidence=confidence,
+            )
+        )
+    return out, total
+
+
+@app.get("/bank/reconciliation/queue", response_model=list[BankReconciliationQueueRow])
+def bank_reconciliation_queue(
+    limit: int = Query(default=50, ge=1, le=500),
+    include_personal: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> list[BankReconciliationQueueRow]:
+    _ = current_user
+    out, _total = _build_bank_reconciliation_rows(db=db, limit=limit, offset=0, include_personal=include_personal)
+    return out
+
+
+@app.get("/bank/reconciliation/queue-page", response_model=BankReconciliationQueueOut)
+def bank_reconciliation_queue_page(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    include_personal: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> BankReconciliationQueueOut:
+    _ = current_user
+    rows, total = _build_bank_reconciliation_rows(db=db, limit=limit, offset=offset, include_personal=include_personal)
+    return BankReconciliationQueueOut(rows=rows, total=total, limit=limit, offset=offset)
+
+
+@app.post("/bank/reconciliation/match", response_model=dict[str, bool])
+def create_bank_reconciliation_match(
+    payload: BankReconciliationMatchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, bool]:
+    tx = db.get(BankTransaction, payload.bank_transaction_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Bank transaction not found.")
+    existing = db.scalar(select(BankTransactionMatch).where(BankTransactionMatch.bank_transaction_id == tx.id))
+    if not existing:
+        existing = BankTransactionMatch(
+            bank_transaction_id=tx.id,
+            match_type=payload.match_type,
+            match_entity_id=payload.match_entity_id,
+            status=payload.status,
+            confidence=payload.confidence,
+            notes=payload.notes,
+            created_by_user_id=current_user.id,
+        )
+        db.add(existing)
+    else:
+        existing.match_type = payload.match_type
+        existing.match_entity_id = payload.match_entity_id
+        existing.status = payload.status
+        existing.confidence = payload.confidence
+        existing.notes = payload.notes
+        existing.created_by_user_id = current_user.id
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/bank/transactions/{bank_transaction_id}/post-expense", response_model=ProjectExpenseOut)
+def post_bank_transaction_to_project_expense(
+    bank_transaction_id: int,
+    payload: BankTransactionPostExpenseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> ProjectExpenseOut:
+    tx = db.get(BankTransaction, bank_transaction_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Bank transaction not found.")
+    project = db.get(Project, payload.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    existing_match = db.scalar(select(BankTransactionMatch).where(BankTransactionMatch.bank_transaction_id == tx.id))
+    if existing_match and existing_match.match_type == "expense":
+        raise HTTPException(status_code=400, detail="Transaction is already posted as a project expense.")
+    if existing_match and existing_match.match_type != "expense":
+        raise HTTPException(status_code=400, detail="Transaction already matched. Clear that match first.")
+
+    expense_amount = abs(float(tx.amount or 0.0))
+    if expense_amount <= 0:
+        raise HTTPException(status_code=400, detail="Only non-zero transactions can be posted as expenses.")
+    expense_date = payload.expense_date or tx.posted_date or datetime.utcnow().date()
+    description = (payload.description or "").strip() or tx.name
+    exp = ProjectExpense(
+        project_id=project.id,
+        expense_date=expense_date,
+        category=payload.category,
+        description=_truncate_text(description, 255),
+        amount=expense_amount,
+    )
+    db.add(exp)
+    db.flush()
+
+    match = BankTransactionMatch(
+        bank_transaction_id=tx.id,
+        match_type="expense",
+        match_entity_id=exp.id,
+        status="confirmed",
+        confidence=1.0,
+        notes=f"Posted to project {project.name}",
+        created_by_user_id=current_user.id,
+    )
+    db.add(match)
+    _log_audit_event(
+        db=db,
+        entity_type="bank_transaction",
+        entity_id=tx.id,
+        action="post_bank_tx_to_project_expense",
+        actor_user_id=current_user.id,
+        payload={
+            "project_id": project.id,
+            "project_name": project.name,
+            "project_expense_id": exp.id,
+            "expense_amount": expense_amount,
+        },
+    )
+    db.commit()
+    return ProjectExpenseOut(
+        id=exp.id,
+        project_id=exp.project_id,
+        expense_date=exp.expense_date,
+        category=exp.category,
+        description=exp.description,
+        amount=exp.amount,
+    )
 
 
 @app.get("/auth/google/login")
@@ -783,6 +2342,41 @@ def list_users(
     return [_to_user_out(u) for u in users]
 
 
+@app.get("/audit/events", response_model=list[AuditEventOut])
+def list_audit_events(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    entity_type: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_USERS")),
+) -> list[AuditEventOut]:
+    q = select(AuditEvent)
+    if entity_type and entity_type.strip():
+        q = q.where(AuditEvent.entity_type == entity_type.strip())
+    if action and action.strip():
+        q = q.where(AuditEvent.action == action.strip())
+    rows = db.scalars(q.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).offset(offset).limit(limit)).all()
+    actor_ids = sorted({int(r.actor_user_id) for r in rows if r.actor_user_id is not None})
+    actor_email_by_id: dict[int, str] = {}
+    if actor_ids:
+        users = db.scalars(select(User).where(User.id.in_(actor_ids))).all()
+        actor_email_by_id = {u.id: u.email for u in users}
+    return [
+        AuditEventOut(
+            id=r.id,
+            entity_type=r.entity_type,
+            entity_id=r.entity_id,
+            action=r.action,
+            actor_user_id=r.actor_user_id,
+            actor_user_email=actor_email_by_id.get(int(r.actor_user_id)) if r.actor_user_id is not None else None,
+            payload_json=r.payload_json or "{}",
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
 @app.put("/users/{user_id}", response_model=UserOut)
 def update_user(
     user_id: int,
@@ -874,6 +2468,12 @@ def create_project(
     if not payload.is_overhead:
         if not payload.client_name or not payload.pm_user_id:
             raise HTTPException(status_code=400, detail="Non-overhead projects require client_name and pm_user_id")
+    if not payload.start_date or not payload.end_date:
+        raise HTTPException(status_code=400, detail="Project start_date and end_date are required")
+    if payload.start_date and payload.end_date and payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="Project end_date cannot be before start_date")
+    if payload.overall_budget_fee <= 0:
+        raise HTTPException(status_code=400, detail="Project overall_budget_fee must be greater than 0")
 
     if payload.pm_user_id and not db.get(User, payload.pm_user_id):
         raise HTTPException(status_code=400, detail="pm_user_id does not exist")
@@ -886,6 +2486,7 @@ def create_project(
         client_name=payload.client_name.strip() if payload.client_name else None,
         pm_user_id=payload.pm_user_id,
         start_date=payload.start_date,
+        end_date=payload.end_date,
         overall_budget_fee=payload.overall_budget_fee,
         target_gross_margin_pct=payload.target_gross_margin_pct,
         is_overhead=payload.is_overhead,
@@ -906,7 +2507,7 @@ def list_projects(
     q = select(Project).order_by(Project.created_at.desc())
     if not include_inactive:
         q = q.where(Project.is_active.is_(True))
-    projects = db.scalars(q).all()
+    projects = [p for p in db.scalars(q).all() if not _is_hidden_project_name(p.name)]
     return [_to_project_out(p) for p in projects]
 
 
@@ -924,6 +2525,12 @@ def update_project(
     if not payload.is_overhead:
         if not payload.client_name or not payload.pm_user_id:
             raise HTTPException(status_code=400, detail="Non-overhead projects require client_name and pm_user_id")
+    if payload.start_date and payload.end_date and payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="Project end_date cannot be before start_date")
+    if payload.is_active and (not payload.start_date or not payload.end_date):
+        raise HTTPException(status_code=400, detail="Active projects require start_date and end_date")
+    if payload.is_active and payload.overall_budget_fee <= 0:
+        raise HTTPException(status_code=400, detail="Active projects require overall_budget_fee greater than 0")
     if payload.pm_user_id and not db.get(User, payload.pm_user_id):
         raise HTTPException(status_code=400, detail="pm_user_id does not exist")
     duplicate = db.scalar(
@@ -942,6 +2549,7 @@ def update_project(
     project.client_name = payload.client_name.strip() if payload.client_name else None
     project.pm_user_id = payload.pm_user_id
     project.start_date = payload.start_date
+    project.end_date = payload.end_date
     project.overall_budget_fee = payload.overall_budget_fee
     project.target_gross_margin_pct = payload.target_gross_margin_pct
     project.is_overhead = payload.is_overhead
@@ -958,6 +2566,7 @@ def update_project(
             "client_name": project.client_name,
             "pm_user_id": project.pm_user_id,
             "start_date": project.start_date.isoformat() if project.start_date else None,
+            "end_date": project.end_date.isoformat() if project.end_date else None,
             "overall_budget_fee": project.overall_budget_fee,
             "target_gross_margin_pct": project.target_gross_margin_pct,
             "is_overhead": project.is_overhead,
@@ -1763,6 +3372,28 @@ def generate_timesheets_for_range(
     }
 
 
+@app.post("/timesheets/ensure", response_model=TimesheetOut)
+def ensure_timesheet_for_user_week(
+    user_id: int,
+    week_start: date,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("APPROVE_TIMESHEETS")),
+) -> TimesheetOut:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    ws = _week_start(week_start)
+    we = ws + timedelta(days=6)
+    ts = db.scalar(select(Timesheet).where(and_(Timesheet.user_id == user_id, Timesheet.week_start == ws)))
+    if not ts:
+        ts = Timesheet(user_id=user_id, week_start=ws, week_end=we)
+        db.add(ts)
+        db.commit()
+        db.refresh(ts)
+    total_hours = _timesheet_hours(db, user_id, ts.week_start, ts.week_end)
+    return _to_timesheet_out(ts, total_hours)
+
+
 @app.post("/timesheets/{timesheet_id}/submit", response_model=TimesheetOut)
 def submit_timesheet(
     timesheet_id: int,
@@ -1786,6 +3417,42 @@ def submit_timesheet(
     return _to_timesheet_out(ts, total_hours)
 
 
+@app.post("/timesheets/{timesheet_id}/submit-admin", response_model=TimesheetOut)
+def submit_timesheet_admin(
+    timesheet_id: int,
+    db: Session = Depends(get_db),
+    approver: User = Depends(require_permission("APPROVE_TIMESHEETS")),
+) -> TimesheetOut:
+    ts = db.get(Timesheet, timesheet_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Timesheet not found")
+    if ts.status not in {"draft", "rejected"}:
+        raise HTTPException(status_code=400, detail="Timesheet cannot be submitted in current state")
+
+    ts.status = "submitted"
+    if not ts.employee_signed_at:
+        ts.employee_signed_at = datetime.utcnow()
+    _log_audit_event(
+        db=db,
+        entity_type="timesheet",
+        entity_id=ts.id,
+        action="submit_timesheet_admin",
+        actor_user_id=approver.id,
+        payload={
+            "timesheet_id": ts.id,
+            "user_id": ts.user_id,
+            "week_start": ts.week_start.isoformat(),
+            "week_end": ts.week_end.isoformat(),
+            "status": ts.status,
+        },
+    )
+    db.commit()
+    db.refresh(ts)
+
+    total_hours = _timesheet_hours(db, ts.user_id, ts.week_start, ts.week_end)
+    return _to_timesheet_out(ts, total_hours)
+
+
 @app.post("/timesheets/{timesheet_id}/approve", response_model=TimesheetOut)
 def approve_timesheet(
     timesheet_id: int,
@@ -1806,6 +3473,42 @@ def approve_timesheet(
         entity_type="timesheet",
         entity_id=ts.id,
         action="approve_timesheet",
+        actor_user_id=approver.id,
+        payload={
+            "timesheet_id": ts.id,
+            "user_id": ts.user_id,
+            "week_start": ts.week_start.isoformat(),
+            "week_end": ts.week_end.isoformat(),
+            "status": ts.status,
+        },
+    )
+    db.commit()
+    db.refresh(ts)
+
+    total_hours = _timesheet_hours(db, ts.user_id, ts.week_start, ts.week_end)
+    return _to_timesheet_out(ts, total_hours)
+
+
+@app.post("/timesheets/{timesheet_id}/return", response_model=TimesheetOut)
+def return_timesheet(
+    timesheet_id: int,
+    db: Session = Depends(get_db),
+    approver: User = Depends(require_permission("APPROVE_TIMESHEETS")),
+) -> TimesheetOut:
+    ts = db.get(Timesheet, timesheet_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Timesheet not found")
+    if ts.status not in {"submitted", "approved"}:
+        raise HTTPException(status_code=400, detail="Only submitted or approved timesheets can be returned")
+
+    ts.status = "rejected"
+    ts.supervisor_signed_at = None
+    ts.approved_by_user_id = None
+    _log_audit_event(
+        db=db,
+        entity_type="timesheet",
+        entity_id=ts.id,
+        action="return_timesheet",
         actor_user_id=approver.id,
         payload={
             "timesheet_id": ts.id,
@@ -2161,18 +3864,24 @@ def ar_summary(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
+    def _invoice_open_balance(inv: Invoice) -> float:
+        subtotal = float(inv.subtotal_amount or 0.0)
+        paid = float(inv.amount_paid or 0.0)
+        stored = float(inv.balance_due or 0.0)
+        derived = max(0.0, subtotal - paid)
+        return max(stored, derived)
+
     today = date.today()
-    invoices = db.scalars(
-        select(Invoice).where(and_(Invoice.status != "void", Invoice.balance_due > 0.0))
-    ).all()
-    total_outstanding = float(sum(float(i.balance_due or 0.0) for i in invoices))
+    candidate_invoices = db.scalars(select(Invoice).where(Invoice.status != "void")).all()
+    invoices = [i for i in candidate_invoices if _invoice_open_balance(i) > 0.0001]
+    total_outstanding = float(sum(_invoice_open_balance(i) for i in invoices))
     overdue = [i for i in invoices if i.due_date and i.due_date < today]
-    overdue_total = float(sum(float(i.balance_due or 0.0) for i in overdue))
+    overdue_total = float(sum(_invoice_open_balance(i) for i in overdue))
 
     aging = {"current": 0.0, "1_30": 0.0, "31_60": 0.0, "61_90": 0.0, "90_plus": 0.0}
     by_client: dict[str, dict[str, float | str | int]] = {}
     for i in invoices:
-        bal = float(i.balance_due or 0.0)
+        bal = _invoice_open_balance(i)
         if not i.due_date:
             aging["current"] += bal
         else:
@@ -2328,6 +4037,8 @@ def invoice_preview(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> InvoicePreviewOut:
+    if project_id is None:
+        raise HTTPException(status_code=400, detail="Select a project to preview an invoice.")
     lines, client_name, total_cost = _invoice_preview_rows(db, start, end, project_id, approved_only)
     subtotal = float(sum(line.amount for line in lines))
     total_hours = float(sum(line.hours for line in lines))
@@ -2355,6 +4066,8 @@ def create_invoice(
 ) -> InvoiceOut:
     if payload.end < payload.start:
         raise HTTPException(status_code=400, detail="end must be on or after start")
+    if payload.project_id is None:
+        raise HTTPException(status_code=400, detail="Select a project before creating an invoice.")
     lines, client_name, total_cost = _invoice_preview_rows(
         db,
         payload.start,
@@ -2867,6 +4580,23 @@ async def import_legacy_invoices(
                 notes="Imported from FreshBooks legacy invoices",
             )
             db.add(existing)
+            db.flush()
+            db.add(
+                InvoiceLine(
+                    invoice_id=existing.id,
+                    source_time_entry_id=None,
+                    work_date=issue_date,
+                    user_id=None,
+                    project_id=None,
+                    task_id=None,
+                    subtask_id=None,
+                    description="Legacy imported invoice total",
+                    note="Imported from FreshBooks legacy invoices",
+                    hours=1.0,
+                    bill_rate=float(total_amount),
+                    amount=float(total_amount),
+                )
+            )
             imported += 1
         else:
             existing.client_name = client_name
@@ -2878,6 +4608,24 @@ async def import_legacy_invoices(
             existing.amount_paid = float(amount_paid)
             existing.balance_due = float(balance_due)
             existing.paid_date = issue_date if status == "paid" else existing.paid_date
+            has_lines = db.scalar(select(func.count(InvoiceLine.id)).where(InvoiceLine.invoice_id == existing.id)) or 0
+            if int(has_lines) == 0:
+                db.add(
+                    InvoiceLine(
+                        invoice_id=existing.id,
+                        source_time_entry_id=None,
+                        work_date=issue_date,
+                        user_id=None,
+                        project_id=None,
+                        task_id=None,
+                        subtask_id=None,
+                        description="Legacy imported invoice total",
+                        note="Imported from FreshBooks legacy invoices",
+                        hours=1.0,
+                        bill_rate=float(total_amount),
+                        amount=float(total_amount),
+                    )
+                )
             updated += 1
 
         rows_out.append(
@@ -3029,7 +4777,7 @@ def _reconciliation_rows(db: Session, start: date, end: date) -> tuple[dict[str,
 
 
 def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[str, object]]:
-    projects = db.scalars(select(Project).order_by(Project.id.asc())).all()
+    projects = [p for p in db.scalars(select(Project).order_by(Project.id.asc())).all() if not _is_hidden_project_name(p.name)]
     projects_by_id = {p.id: p for p in projects}
     users = db.scalars(select(User)).all()
     users_by_id = {u.id: u for u in users}
@@ -3705,9 +5453,9 @@ def _invoice_preview_rows(
 
     if project_id is not None:
         project = db.get(Project, project_id)
-        client_name = (project.client_name or "Aquatech Client") if project else "Aquatech Client"
+        client_name = (project.client_name or "AquatechPM Client") if project else "AquatechPM Client"
     else:
-        client_name = "Aquatech Client"
+        client_name = "AquatechPM Client"
     return lines, client_name, float(total_cost)
 
 
@@ -3769,6 +5517,31 @@ def _invoice_out(db: Session, invoice: Invoice, include_lines: bool) -> InvoiceO
             users_by_id, projects_by_id, tasks_by_id, subtasks_by_id = _load_time_entry_reference_maps(db, src)
         for l in db_lines:
             src = source_map.get(int(l.source_time_entry_id)) if l.source_time_entry_id else None
+            legacy_description = (l.description or "").strip()
+            legacy_employee = ""
+            legacy_task = "Legacy Service"
+            if legacy_description:
+                # FreshBooks legacy lines often look like:
+                # "(Task Name) Employee Name – Jan 22, 2026"
+                if ")" in legacy_description and legacy_description.startswith("("):
+                    try:
+                        left, right = legacy_description.split(")", 1)
+                        parsed_task = left[1:].strip()
+                        if parsed_task:
+                            legacy_task = parsed_task
+                        right = right.strip()
+                        if "–" in right:
+                            legacy_employee = right.split("–", 1)[0].strip()
+                        elif "-" in right:
+                            legacy_employee = right.split("-", 1)[0].strip()
+                        else:
+                            legacy_employee = right
+                    except Exception:
+                        legacy_employee = ""
+                if not legacy_employee and "–" in legacy_description:
+                    legacy_employee = legacy_description.split("–", 1)[0].strip()
+                if not legacy_employee and "-" in legacy_description:
+                    legacy_employee = legacy_description.split("-", 1)[0].strip()
             src_out = (
                 _to_time_entry_out_with_refs(
                     src,
@@ -3788,9 +5561,9 @@ def _invoice_out(db: Session, invoice: Invoice, include_lines: bool) -> InvoiceO
                     task_id=l.task_id,
                     subtask_id=l.subtask_id,
                     work_date=l.work_date,
-                    employee=(src_out.user_full_name or src_out.user_email or f"User {src_out.user_id}") if src_out else "",
-                    project=(src_out.project_name or f"Project {src_out.project_id}") if src_out else "",
-                    task=(src_out.task_name or f"Task {src_out.task_id}") if src_out else "",
+                    employee=(src_out.user_full_name or src_out.user_email or f"User {src_out.user_id}") if src_out else (legacy_employee or "Legacy Import"),
+                    project=(src_out.project_name or f"Project {src_out.project_id}") if src_out else (invoice.client_name or "Legacy Import"),
+                    task=(src_out.task_name or f"Task {src_out.task_id}") if src_out else legacy_task,
                     subtask=(src_out.subtask_name or src_out.subtask_code or f"Subtask {src_out.subtask_id}") if src_out else "",
                     description=l.description,
                     hours=float(l.hours or 0.0),
@@ -3892,6 +5665,7 @@ def _to_project_out(project: Project) -> ProjectOut:
         client_name=project.client_name,
         pm_user_id=project.pm_user_id,
         start_date=project.start_date,
+        end_date=project.end_date,
         overall_budget_fee=float(project.overall_budget_fee or 0.0),
         target_gross_margin_pct=float(project.target_gross_margin_pct or 0.0),
         is_overhead=project.is_overhead,
@@ -4189,7 +5963,7 @@ def _send_timesheet_reminder_email(to_email: str, full_name: str) -> None:
             f"Hi {full_name or to_email},\n\n"
             "This is your daily reminder to complete today's timesheet entries before end of day.\n"
             f"Open the app here: {settings.FRONTEND_ORIGIN}\n\n"
-            "Thanks,\nAquatech Project Controls"
+            "Thanks,\nAquatechPM"
         )
     )
     with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=20) as smtp:

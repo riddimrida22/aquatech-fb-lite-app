@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     RECURRING_INVOICE_TIMEZONE: str = "America/New_York"
     PAYMENT_LINK_DEFAULT_EXPIRY_DAYS: int = 14
     PAYMENT_LINKS_ENABLED: bool = False
+    PLAID_CLIENT_ID: str = ""
+    PLAID_SECRET: str = ""
+    PLAID_ENV: str = "sandbox"
+    PLAID_PRODUCTS: str = "transactions"
+    PLAID_COUNTRY_CODES: str = "US"
+    SESSION_HTTPS_ONLY: bool = False
+    SESSION_SAME_SITE: str = "lax"
+    CORS_ALLOW_INTERNAL_REGEX: bool = True
 
 
 @lru_cache

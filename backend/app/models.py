@@ -26,6 +26,7 @@ class Project(Base):
     client_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pm_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     overall_budget_fee: Mapped[float] = mapped_column(Float, default=0.0)
     target_gross_margin_pct: Mapped[float] = mapped_column(Float, default=0.0)
     is_overhead: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -190,3 +191,87 @@ class RecurringInvoiceSchedule(Base):
     notes_template: Mapped[str] = mapped_column(Text, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class BankConnection(Base):
+    __tablename__ = "bank_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), default="plaid", index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    institution_name: Mapped[str] = mapped_column(String(255), default="")
+    institution_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    item_id: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
+    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sync_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="connected", index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class BankAccount(Base):
+    __tablename__ = "bank_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("bank_connections.id"), index=True)
+    account_id: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    mask: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subtype: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    iso_currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    current_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    available_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_business: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (UniqueConstraint("connection_id", "account_id", name="uq_bank_account_conn_account"),)
+
+
+class BankTransaction(Base):
+    __tablename__ = "bank_transactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("bank_connections.id"), index=True)
+    account_id: Mapped[str] = mapped_column(String(128), index=True)
+    transaction_id: Mapped[str] = mapped_column(String(128), index=True)
+    posted_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    merchant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    iso_currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_business: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    category_json: Mapped[str] = mapped_column(Text, default="[]")
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (UniqueConstraint("connection_id", "transaction_id", name="uq_bank_tx_conn_txid"),)
+
+
+class BankTransactionMatch(Base):
+    __tablename__ = "bank_transaction_matches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bank_transaction_id: Mapped[int] = mapped_column(ForeignKey("bank_transactions.id"), index=True, unique=True)
+    match_type: Mapped[str] = mapped_column(String(32), default="invoice", index=True)  # invoice|expense|other
+    match_entity_id: Mapped[int] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(String(32), default="confirmed", index=True)  # suggested|confirmed|rejected
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class BankMerchantRule(Base):
+    __tablename__ = "bank_merchant_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    merchant_key: Mapped[str] = mapped_column(String(255), index=True)
+    expense_group: Mapped[str] = mapped_column(String(64), default="OH")
+    category: Mapped[str] = mapped_column(String(128), default="Uncategorized")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (UniqueConstraint("user_id", "merchant_key", name="uq_bank_merchant_rule_user_key"),)
