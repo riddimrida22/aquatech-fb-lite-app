@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_BASE_URL="${APP_BASE_URL:-https://app.aquatechpc.com}"
+API_BASE_URL="${API_BASE_URL:-https://app.aquatechpc.com/api}"
+LATENCY_BUDGET_MS="${LATENCY_BUDGET_MS:-2500}"
+ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
+
+pass() { echo "PASS: $1"; }
+warn() { echo "WARN: $1"; }
+fail() { echo "FAIL: $1"; }
+
+post_alert() {
+  local message="$1"
+  if [[ -z "$ALERT_WEBHOOK_URL" ]]; then
+    return 0
+  fi
+  curl -sS -X POST "$ALERT_WEBHOOK_URL" \
+    -H 'Content-Type: application/json' \
+    -d "{\"text\":\"AquatechPM monitor alert: ${message}\"}" >/dev/null || true
+}
+
+http_check() {
+  local label="$1"
+  local url="$2"
+  local expected_prefix="$3"
+
+  local out
+  out="$(curl -sS -o /tmp/aq_mon_body.$$ -w '%{http_code} %{time_total}' "$url" || echo '000 99')"
+  local code latency_s
+  code="${out%% *}"
+  latency_s="${out##* }"
+  local latency_ms
+  latency_ms="$(awk -v s="$latency_s" 'BEGIN { printf("%d", s*1000) }')"
+
+  if [[ "$code" != $expected_prefix* ]]; then
+    fail "$label returned HTTP $code"
+    post_alert "$label failed with HTTP $code at $url"
+    return 1
+  fi
+
+  if (( latency_ms > LATENCY_BUDGET_MS )); then
+    warn "$label latency ${latency_ms}ms exceeds budget ${LATENCY_BUDGET_MS}ms"
+  else
+    pass "$label HTTP $code latency ${latency_ms}ms"
+  fi
+}
+
+overall_fail=0
+
+echo "== AquatechPM Runtime Monitor =="
+echo "APP_BASE_URL=$APP_BASE_URL"
+echo "API_BASE_URL=$API_BASE_URL"
+
+http_check "Frontend home" "$APP_BASE_URL" "2" || overall_fail=1
+http_check "Backend health" "$API_BASE_URL/health" "2" || overall_fail=1
+http_check "Google login redirect" "$API_BASE_URL/auth/google/login" "3" || overall_fail=1
+
+if command -v docker >/dev/null 2>&1 && [[ -f docker-compose.prod.yml ]]; then
+  echo "== docker compose status =="
+  docker compose -f docker-compose.prod.yml ps || true
+fi
+
+if (( overall_fail > 0 )); then
+  echo ""
+  echo "Monitor result: FAILED"
+  exit 1
+fi
+
+echo ""
+echo "Monitor result: PASS"

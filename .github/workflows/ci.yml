@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run backend integration tests
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite:////tmp/aquatech_ci.db
+          SESSION_SECRET: ci-secret
+          ALLOWED_GOOGLE_DOMAIN: aquatechpc.com
+          DEV_AUTH_BYPASS: "true"
+          FRONTEND_ORIGIN: http://localhost:3000
+        run: pytest -q tests/test_mvp.py tests/test_financial_flows.py
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_BASE: http://localhost:8000
+          NEXT_PUBLIC_DEV_AUTH_BYPASS: "false"
+        run: npm run build
