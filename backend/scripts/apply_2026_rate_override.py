@@ -12,7 +12,7 @@ from sqlalchemy import and_, select
 from app.db import SessionLocal, init_db
 from app.models import Project, TimeEntry, User, UserRate
 
-OUT_DIR = Path("/home/sharing_pc_unix01/projects/aquatech-fb-lite-app/docs/reconciliation")
+OUT_DIR = Path("/home/sharing_pc_unix01/projects/AquatechPM/docs/reconciliation")
 OVERRIDE_DATE = date(2026, 1, 1)
 START_2026 = date(2026, 1, 1)
 END_2026 = date(2026, 12, 31)

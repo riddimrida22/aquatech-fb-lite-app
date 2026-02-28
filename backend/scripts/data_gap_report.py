@@ -11,7 +11,7 @@ from sqlalchemy import and_, func, select
 from app.db import SessionLocal, init_db
 from app.models import Project, Subtask, Task, TimeEntry, User, UserRate
 
-OUT_DIR = Path("/home/sharing_pc_unix01/projects/aquatech-fb-lite-app/docs/reconciliation")
+OUT_DIR = Path("/home/sharing_pc_unix01/projects/AquatechPM/docs/reconciliation")
 
 
 def to_jsonable(v):

@@ -1,0 +1,18 @@
+route:
+  receiver: default-log
+  group_by: [alertname, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 2h
+  routes:
+    - receiver: webhook
+      matchers:
+        - severity=~"warning|critical"
+
+receivers:
+  - name: default-log
+
+  - name: webhook
+    webhook_configs:
+      - url: "${ALERT_WEBHOOK_URL}"
+        send_resolved: true

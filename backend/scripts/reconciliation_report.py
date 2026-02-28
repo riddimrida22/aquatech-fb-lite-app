@@ -9,7 +9,7 @@ from pathlib import Path
 from app.db import SessionLocal, init_db
 from app.main import _reconciliation_rows
 
-OUT_DIR = Path("/home/sharing_pc_unix01/projects/aquatech-fb-lite-app/docs/reconciliation")
+OUT_DIR = Path("/home/sharing_pc_unix01/projects/AquatechPM/docs/reconciliation")
 
 
 def to_iso(value):

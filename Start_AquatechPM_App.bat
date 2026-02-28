@@ -2,15 +2,23 @@
 setlocal EnableDelayedExpansion
 
 if /i "%~1" neq "run" (
-  start "Aquatech FB-Lite" cmd /k ""%~f0" run"
+  start "AquatechPM" cmd /k ""%~f0" run"
   exit /b
 )
 
-cd /d "%~dp0"
+pushd "%~dp0"
+if errorlevel 1 (
+  echo Could not access app folder:
+  echo %~dp0
+  pause
+  exit /b 1
+)
 set "DOCKER_CMD=docker"
 set "DOCKER_EXE=C:\Program Files\Docker\Docker\resources\bin\docker.exe"
 set "DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe"
 set "LOG_FILE=%~dp0start_log.txt"
+set "FRONTEND_URL=http://localhost:3000"
+set "BACKEND_PORT=8000"
 
 if not exist "%~dp0.env" (
   if exist "%~dp0.env.example" (
@@ -24,10 +32,17 @@ if not exist "%~dp0.env" (
   )
 )
 
+for /f "usebackq tokens=1,* delims==" %%A in ("%~dp0.env") do (
+  if /i "%%~A"=="FRONTEND_ORIGIN" set "FRONTEND_URL=%%~B"
+  if /i "%%~A"=="BACKEND_PORT" set "BACKEND_PORT=%%~B"
+)
+
+set "BACKEND_URL=http://localhost:%BACKEND_PORT%"
+
 echo [%date% %time%] Starting launcher > "%LOG_FILE%"
 
 echo =====================================
-echo   Aquatech FB-Lite - Starting App
+echo   AquatechPM - Starting App
 echo =====================================
 
 where docker >nul 2>&1
@@ -81,18 +96,19 @@ if errorlevel 1 (
 
 echo.
 echo App is starting. Opening browser tabs...
-start "" "http://localhost:3000"
-start "" "http://localhost:8000"
+start "" "%FRONTEND_URL%"
+start "" "%BACKEND_URL%"
 
 echo.
 echo Done. Your app should be available at:
-echo - Frontend: http://localhost:3000
-echo - Backend:  http://localhost:8000
+echo - Frontend: %FRONTEND_URL%
+echo - Backend:  %BACKEND_URL%
 echo.
-echo To stop the app, double-click Stop_Aquatech_App.bat
+echo To stop the app, double-click Stop_AquatechPM_App.bat
 echo [%date% %time%] Startup completed successfully >> "%LOG_FILE%"
 echo Log file: "%LOG_FILE%"
 pause
+popd
 exit /b 0
 
 :wait_for_docker
