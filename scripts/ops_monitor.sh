@@ -5,6 +5,7 @@ APP_BASE_URL="${APP_BASE_URL:-https://app.aquatechpc.com}"
 API_BASE_URL="${API_BASE_URL:-https://app.aquatechpc.com/api}"
 LATENCY_BUDGET_MS="${LATENCY_BUDGET_MS:-2500}"
 ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
+CURL_MAX_TIME_S="${CURL_MAX_TIME_S:-15}"
 
 pass() { echo "PASS: $1"; }
 warn() { echo "WARN: $1"; }
@@ -26,7 +27,7 @@ http_check() {
   local expected_prefix="$3"
 
   local out
-  out="$(curl -sS -o /tmp/aq_mon_body.$$ -w '%{http_code} %{time_total}' "$url" || echo '000 99')"
+  out="$(curl -sS --max-time "$CURL_MAX_TIME_S" -o /tmp/aq_mon_body.$$ -w '%{http_code} %{time_total}' "$url" || echo '000 99')"
   local code latency_s
   code="${out%% *}"
   latency_s="${out##* }"
@@ -35,7 +36,7 @@ http_check() {
 
   if [[ "$code" != $expected_prefix* ]]; then
     fail "$label returned HTTP $code"
-    post_alert "$label failed with HTTP $code at $url"
+    failures+=("$label failed with HTTP $code at $url")
     return 1
   fi
 
@@ -47,6 +48,7 @@ http_check() {
 }
 
 overall_fail=0
+failures=()
 
 echo "== AquatechPM Runtime Monitor =="
 echo "APP_BASE_URL=$APP_BASE_URL"
@@ -62,6 +64,7 @@ if command -v docker >/dev/null 2>&1 && [[ -f docker-compose.prod.yml ]]; then
 fi
 
 if (( overall_fail > 0 )); then
+  post_alert "$(printf '%s; ' "${failures[@]}")"
   echo ""
   echo "Monitor result: FAILED"
   exit 1
