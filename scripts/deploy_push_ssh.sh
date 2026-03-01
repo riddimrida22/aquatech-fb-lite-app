@@ -49,7 +49,7 @@ echo "Pushing ${DEPLOY_BRANCH} to ${DEPLOY_REMOTE}..."
 git push "${DEPLOY_REMOTE}" "${DEPLOY_BRANCH}"
 
 echo "Deploying on ${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}..."
-ssh -o BatchMode=yes "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "
+ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "
   set -euo pipefail
   cd '${DEPLOY_SERVER_DIR}'
   git fetch '${DEPLOY_REMOTE}'
