@@ -65,6 +65,26 @@ Quick safer workflow:
 - Keep your local `.env` unchanged.
 - Use `.env.prod` for production:
 - `./scripts/deploy_prod.sh .env.prod`
+
+## Codex One-Command Deploy (Push + SSH)
+Use this when you want Codex to deploy after your changes are committed.
+
+1. Copy deploy env template:
+- `cp .env.deploy.example .env.deploy`
+2. Edit `.env.deploy`:
+- `DEPLOY_SSH_HOST` (server IP)
+- `DEPLOY_SSH_USER` (server user)
+- `DEPLOY_SERVER_DIR` (usually `/opt/AquatechPM`)
+3. Ensure SSH key login to server works without password prompts.
+4. Run:
+- `./scripts/deploy_push_ssh.sh .env.deploy`
+
+What it does:
+- pushes your current branch to remote
+- SSHes to server
+- pulls latest code
+- rebuilds containers with `docker-compose`
+- checks app URL health
 - Gate runs before deploy by default (`RUN_GATE=true`).
 - Skip gate only if needed: `RUN_GATE=false ./scripts/deploy_prod.sh .env.prod`
 
