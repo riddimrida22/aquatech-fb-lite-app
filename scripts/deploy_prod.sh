@@ -51,6 +51,39 @@ if [ -n "$PORT_443_OWNERS" ]; then
   exit 1
 fi
 
+# Handle non-container listeners on 443 (e.g. host nginx/caddy).
+PORT_443_HOST_LISTENERS=""
+if command -v ss >/dev/null 2>&1; then
+  PORT_443_HOST_LISTENERS="$(ss -ltn 2>/dev/null | awk 'NR>1 && $4 ~ /:443$/ {print $0}')"
+fi
+if [ -n "$PORT_443_HOST_LISTENERS" ]; then
+  echo "Detected host listeners on 443:"
+  echo "$PORT_443_HOST_LISTENERS"
+  if [ "$FORCE_TAKEOVER_443" = "true" ]; then
+    echo "FORCE_TAKEOVER_443=true: attempting to free host port 443"
+    if command -v sudo >/dev/null 2>&1; then
+      sudo -n systemctl stop nginx caddy apache2 traefik >/dev/null 2>&1 || true
+      sudo -n fuser -k 443/tcp >/dev/null 2>&1 || true
+    fi
+    if command -v fuser >/dev/null 2>&1; then
+      fuser -k 443/tcp >/dev/null 2>&1 || true
+    fi
+    if command -v pkill >/dev/null 2>&1; then
+      pkill -f 'nginx|caddy|traefik|apache2' >/dev/null 2>&1 || true
+    fi
+    if command -v ss >/dev/null 2>&1; then
+      PORT_443_HOST_LISTENERS="$(ss -ltn 2>/dev/null | awk 'NR>1 && $4 ~ /:443$/ {print $0}')"
+    else
+      PORT_443_HOST_LISTENERS=""
+    fi
+  fi
+fi
+if [ -n "$PORT_443_HOST_LISTENERS" ]; then
+  echo "FAIL: host port 443 is still busy after takeover attempts."
+  echo "$PORT_443_HOST_LISTENERS"
+  exit 1
+fi
+
 if docker compose version >/dev/null 2>&1; then
   docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml up -d --build
   docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml ps
