@@ -28,6 +28,7 @@ declare global {
 const DEV_AUTH_ENABLED = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true";
 const ENABLE_CLIENT_PAYMENT_LINKS = false;
 const ALLOW_TIMESHEET_SUBMIT = true;
+const NO_SUBTASK_CODE = "NO-SUBTASK";
 
 type User = {
   id: number;
@@ -765,6 +766,18 @@ function isHiddenProjectName(name: string): boolean {
   return n === "no project" || n === "imported project";
 }
 
+function formatWbsSubtaskLabel(subtask: WbsSubtask): string {
+  if ((subtask.code || "").trim().toUpperCase() === NO_SUBTASK_CODE) return "No Sub-Task";
+  return `${subtask.code} - ${subtask.name}`;
+}
+
+function formatSubtaskLabelFromEntry(entry: TimeEntry): string {
+  if ((entry.subtask_code || "").trim().toUpperCase() === NO_SUBTASK_CODE) return "No Sub-Task";
+  if (entry.subtask_code) return `${entry.subtask_code}${entry.subtask_name ? ` - ${entry.subtask_name}` : ""}`;
+  if (entry.subtask_name) return entry.subtask_name;
+  return `Subtask ${entry.subtask_id}`;
+}
+
 function daysBetweenInclusive(startYmd: string, endYmd: string): number {
   if (!isValidYmd(startYmd) || !isValidYmd(endYmd)) return 0;
   const start = parseYmdUtc(startYmd);
@@ -1077,6 +1090,7 @@ export default function Home() {
   const [projectPerformance, setProjectPerformance] = useState<ProjectPerformance[]>([]);
   const [contractProjectPerformance, setContractProjectPerformance] = useState<ProjectPerformance[]>([]);
   const [message, setMessage] = useState<string>("");
+  const [isMessagePopupOpen, setIsMessagePopupOpen] = useState(false);
   const [isRefreshingWorkspace, setIsRefreshingWorkspace] = useState(false);
   const [isRunningMonthEndCheck, setIsRunningMonthEndCheck] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string>("");
@@ -1395,9 +1409,7 @@ export default function Home() {
           key,
           projectLabel: entry.project_name || `Project ${entry.project_id}`,
           taskLabel: entry.task_name || `Task ${entry.task_id}`,
-          subtaskLabel: entry.subtask_code
-            ? `${entry.subtask_code}${entry.subtask_name ? ` - ${entry.subtask_name}` : ""}`
-            : entry.subtask_name || `Subtask ${entry.subtask_id}`,
+          subtaskLabel: formatSubtaskLabelFromEntry(entry),
           byDay: {},
           byDayNotes: {},
           total: 0,
@@ -3649,10 +3661,12 @@ export default function Home() {
   }, [reportStart, reportEnd, adminEntryStart, adminEntryEnd, message]);
 
   useEffect(() => {
-    if (!message || messageIsError) return;
-    const t = setTimeout(() => setMessage(""), 4500);
-    return () => clearTimeout(t);
-  }, [message, messageIsError]);
+    if (!message) {
+      setIsMessagePopupOpen(false);
+      return;
+    }
+    setIsMessagePopupOpen(true);
+  }, [message]);
 
   useEffect(() => {
     if (reportPreset !== "annual") return;
@@ -4400,8 +4414,16 @@ export default function Home() {
       setMessage("You can only save entries in your own timesheet context. Switch to My Timesheet and try again.");
       return;
     }
-    if (!entryDate || !entryProjectId || !entryTaskId || !entrySubtaskId || Number(entryHours) <= 0) {
-      setMessage("Pick date, project, task, subtask, and positive hours.");
+    const missing: string[] = [];
+    if (!entryDate) missing.push("date");
+    if (!entryProjectId) missing.push("project");
+    if (!entryTaskId) missing.push("task");
+    if (!entrySubtaskId) missing.push("sub-task (or choose 'No Sub-Task')");
+    if (Number(entryHours) <= 0) missing.push("hours greater than 0");
+    if (missing.length > 0) {
+      setMessage(
+        `Cannot save timesheet entry yet.\nPlease provide: ${missing.join(", ")}.\nTip: choose 'No Sub-Task' when your entry has no specific sub-task.`,
+      );
       return;
     }
     try {
@@ -5296,19 +5318,47 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
           </div>
         </div>
       )}
-      {message && (
-        <p
+      {message && isMessagePopupOpen && (
+        <div
           style={{
-            color: messageIsError ? "#8a3a2a" : "#0a5",
-            background: messageIsError ? "#fff1eb" : "#e8f0fa",
-            border: `1px solid ${messageIsError ? "#f2c7b8" : "#c8d7ea"}`,
-            padding: "8px 10px",
-            borderRadius: 8,
-            margin: "0 18px 10px",
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 3000,
+            padding: 16,
           }}
         >
-          {message}
-        </p>
+          <div
+            role="alertdialog"
+            aria-live="assertive"
+            style={{
+              width: "min(680px, 96vw)",
+              background: "#fff",
+              borderRadius: 10,
+              border: `1px solid ${messageIsError ? "#e2b8ae" : "#c8d7ea"}`,
+              boxShadow: "0 12px 36px rgba(0,0,0,0.28)",
+              padding: 16,
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px 0", color: messageIsError ? "#8a3a2a" : "#1d4064" }}>
+              {messageIsError ? "Action Needed" : "Notice"}
+            </h3>
+            <div style={{ whiteSpace: "pre-wrap", color: "#23384e", marginBottom: 12 }}>{message}</div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  setIsMessagePopupOpen(false);
+                  setMessage("");
+                }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {!me && (
@@ -7073,7 +7123,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                 <option value="">All subtasks</option>
                 {((timeFilterProjectId ? wbsByProject[timeFilterProjectId] || [] : []).find((t) => t.id === timeFilterTaskId)?.subtasks || []).map((s) => (
                   <option key={`tf-sub-${s.id}`} value={s.id}>
-                    {s.code} - {s.name}
+                    {formatWbsSubtaskLabel(s)}
                   </option>
                 ))}
               </select>
@@ -7320,7 +7370,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                           <option value="">Select subtask</option>
                           {((entryProjectId ? wbsByProject[entryProjectId] || [] : []).find((t) => t.id === entryTaskId)?.subtasks || []).map((s) => (
                             <option key={s.id} value={s.id}>
-                              {s.code} - {s.name}
+                              {formatWbsSubtaskLabel(s)}
                             </option>
                           ))}
                         </select>
@@ -7341,7 +7391,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     </div>
                     <div style={{ marginTop: 6, fontSize: 12, color: "#4a6076" }}>
                       Day total: <strong>{selectedDayTotalHours.toFixed(2)}h</strong>
-                      {!isOwnTimeEntryContext ? " | Copy actions are available only on your own timesheet." : ""}
+                      {!isOwnTimeEntryContext ? " | Save and copy actions are available only on your own timesheet." : ""}
                     </div>
                     <div style={{ marginTop: 16 }}>
                       <h4 style={{ margin: "0 0 8px 0" }}>Entries On {entryDate}</h4>
@@ -7349,7 +7399,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                       {selectedDayEntries.map((entry) => (
                         <div key={entry.id} style={{ border: "1px solid #eee", padding: 8, marginBottom: 8 }}>
                           <div>
-                            {entry.hours}h | {entry.project_name || `P${entry.project_id}`} / {entry.task_name || `T${entry.task_id}`} / {entry.subtask_code ? `${entry.subtask_code} ${entry.subtask_name || ""}` : `S${entry.subtask_id}`}
+                            {entry.hours}h | {entry.project_name || `P${entry.project_id}`} / {entry.task_name || `T${entry.task_id}`} / {formatSubtaskLabelFromEntry(entry)}
                           </div>
                           <div>{entry.note || "-"}</div>
                           <div style={{ marginTop: 6, display: "flex", gap: 8 }}>
