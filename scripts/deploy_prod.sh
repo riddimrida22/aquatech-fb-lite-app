@@ -27,23 +27,29 @@ if [ "$RUN_GATE" = "true" ]; then
   ./scripts/pre_deploy_gate.sh "$ENV_FILE_PATH"
 fi
 
-# Ensure HTTPS port is either free or held by this project's caddy container.
-V1_CADDY_NAME="${PROJECT_NAME}_caddy_1"
+# Ensure HTTPS port is free before compose starts caddy.
 V2_CADDY_NAME="${PROJECT_NAME}-caddy-1"
-for OWNER in $(docker ps --filter publish=443 --format '{{.Names}}'); do
-  if [ "$OWNER" = "$V1_CADDY_NAME" ] || [ "$OWNER" = "$V2_CADDY_NAME" ]; then
-    continue
-  fi
-  if [ "$FORCE_TAKEOVER_443" = "true" ]; then
-    echo "Port 443 owned by '$OWNER'; stopping it due to FORCE_TAKEOVER_443=true"
-    docker stop "$OWNER" >/dev/null 2>&1 || true
-    docker rm "$OWNER" >/dev/null 2>&1 || true
-    continue
-  fi
-  echo "FAIL: port 443 is already in use by container '$OWNER'."
-  echo "Set FORCE_TAKEOVER_443=true to stop/remove that container during deploy."
+PORT_443_OWNERS="$(docker ps --filter publish=443 --format '{{.ID}} {{.Names}}')"
+if [ -n "$PORT_443_OWNERS" ]; then
+  echo "Detected containers using 443:"
+  echo "$PORT_443_OWNERS"
+fi
+if [ "$FORCE_TAKEOVER_443" = "true" ] && [ -n "$PORT_443_OWNERS" ]; then
+  echo "FORCE_TAKEOVER_443=true: clearing all running containers bound to 443"
+  echo "$PORT_443_OWNERS" | while IFS=' ' read -r OWNER_ID OWNER_NAME; do
+    [ -n "$OWNER_ID" ] || continue
+    echo "Stopping/removing '$OWNER_NAME' ($OWNER_ID)"
+    docker stop "$OWNER_ID" >/dev/null 2>&1 || true
+    docker rm "$OWNER_ID" >/dev/null 2>&1 || true
+  done
+  PORT_443_OWNERS="$(docker ps --filter publish=443 --format '{{.Names}}')"
+fi
+if [ -n "$PORT_443_OWNERS" ]; then
+  echo "FAIL: port 443 is still in use by:"
+  echo "$PORT_443_OWNERS"
+  echo "Unable to continue deploy safely."
   exit 1
-done
+fi
 
 if docker compose version >/dev/null 2>&1; then
   docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml up -d --build
