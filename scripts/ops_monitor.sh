@@ -5,6 +5,13 @@ APP_BASE_URL="${APP_BASE_URL:-https://app.aquatechpc.com}"
 API_BASE_URL="${API_BASE_URL:-https://app.aquatechpc.com/api}"
 LATENCY_BUDGET_MS="${LATENCY_BUDGET_MS:-2500}"
 ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
+ALERT_EMAIL_TO="${ALERT_EMAIL_TO:-}"
+SMTP_HOST="${SMTP_HOST:-}"
+SMTP_PORT="${SMTP_PORT:-587}"
+SMTP_USERNAME="${SMTP_USERNAME:-}"
+SMTP_PASSWORD="${SMTP_PASSWORD:-}"
+SMTP_FROM_EMAIL="${SMTP_FROM_EMAIL:-}"
+SMTP_USE_TLS="${SMTP_USE_TLS:-true}"
 CURL_MAX_TIME_S="${CURL_MAX_TIME_S:-15}"
 CHECK_RETRIES="${CHECK_RETRIES:-3}"
 RETRY_DELAY_S="${RETRY_DELAY_S:-2}"
@@ -16,11 +23,51 @@ fail() { echo "FAIL: $1"; }
 post_alert() {
   local message="$1"
   if [[ -z "$ALERT_WEBHOOK_URL" ]]; then
+    :
+  else
+    curl -sS -X POST "$ALERT_WEBHOOK_URL" \
+      -H 'Content-Type: application/json' \
+      -d "{\"text\":\"AquatechPM monitor alert: ${message}\"}" >/dev/null || true
+  fi
+
+  if [[ -z "$ALERT_EMAIL_TO" || -z "$SMTP_HOST" || -z "$SMTP_FROM_EMAIL" ]]; then
     return 0
   fi
-  curl -sS -X POST "$ALERT_WEBHOOK_URL" \
-    -H 'Content-Type: application/json' \
-    -d "{\"text\":\"AquatechPM monitor alert: ${message}\"}" >/dev/null || true
+
+  ALERT_MESSAGE="$message" python3 - <<'PY' || true
+import os
+import smtplib
+from email.message import EmailMessage
+
+to_email = os.environ.get("ALERT_EMAIL_TO", "")
+smtp_host = os.environ.get("SMTP_HOST", "")
+smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+smtp_user = os.environ.get("SMTP_USERNAME", "")
+smtp_pass = os.environ.get("SMTP_PASSWORD", "")
+smtp_from = os.environ.get("SMTP_FROM_EMAIL", "")
+smtp_use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() in {"1", "true", "yes"}
+message = os.environ.get("ALERT_MESSAGE", "unknown monitor failure")
+
+if not to_email or not smtp_host or not smtp_from:
+    raise SystemExit(0)
+
+msg = EmailMessage()
+msg["Subject"] = "AquatechPM Alert: timesheet/uptime check failed"
+msg["From"] = smtp_from
+msg["To"] = to_email
+msg.set_content(
+    "AquatechPM monitor detected a production issue.\n\n"
+    f"Details: {message}\n\n"
+    "Please review app health and deployment status."
+)
+
+with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
+    if smtp_use_tls:
+        smtp.starttls()
+    if smtp_user:
+        smtp.login(smtp_user, smtp_pass)
+    smtp.send_message(msg)
+PY
 }
 
 http_check() {
@@ -70,6 +117,7 @@ echo "APP_BASE_URL=$APP_BASE_URL"
 echo "API_BASE_URL=$API_BASE_URL"
 
 http_check "Frontend home" "$APP_BASE_URL" "2" || overall_fail=1
+http_check "Timesheet page" "$APP_BASE_URL/?timesheet_only=1" "2" || overall_fail=1
 http_check "Backend health" "$API_BASE_URL/health" "2" || overall_fail=1
 http_check "Google login redirect" "$API_BASE_URL/auth/google/login" "3" || overall_fail=1
 
