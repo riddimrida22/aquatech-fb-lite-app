@@ -22,7 +22,7 @@ from fastapi.responses import RedirectResponse, Response
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import and_, exists, false, func, select
+from sqlalchemy import and_, exists, false, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
@@ -75,6 +75,8 @@ app.add_middleware(
 )
 
 HIDDEN_PROJECT_NAMES = {"no project", "imported project"}
+NO_SUBTASK_CODE = "NO-SUBTASK"
+NO_SUBTASK_NAME = "No Sub-Task"
 
 
 def _is_hidden_project_name(name: str | None) -> bool:
@@ -780,8 +782,21 @@ _recurring_thread_started = False
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    _ensure_default_subtasks_for_all_tasks()
     _start_timesheet_reminder_worker()
     _start_recurring_invoice_worker()
+
+
+def _ensure_default_subtasks_for_all_tasks() -> None:
+    with SessionLocal() as db:
+        tasks = db.scalars(select(Task)).all()
+        created = 0
+        for task in tasks:
+            _, did_create = _ensure_default_subtask_for_task(db, task)
+            if did_create:
+                created += 1
+        if created > 0:
+            db.commit()
 
 
 @app.get("/")
@@ -2592,6 +2607,8 @@ def create_task(
     task_is_billable = payload.is_billable if payload.is_billable is not None else bool(project.is_billable)
     task = Task(project_id=project_id, name=payload.name.strip(), is_billable=task_is_billable)
     db.add(task)
+    db.flush()
+    _ensure_default_subtask_for_task(db, task)
     db.commit()
     db.refresh(task)
     return {"id": task.id, "name": task.name, "project_id": project_id, "is_billable": task.is_billable}
@@ -2742,6 +2759,13 @@ def get_wbs(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     tasks = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.id.asc())).all()
+    created_default_subtask = False
+    for task in tasks:
+        _, created = _ensure_default_subtask_for_task(db, task)
+        created_default_subtask = created_default_subtask or created
+    if created_default_subtask:
+        db.commit()
+
     task_ids = [t.id for t in tasks]
     subtasks = db.scalars(select(Subtask).where(Subtask.task_id.in_(task_ids) if task_ids else false())).all()
 
@@ -5607,6 +5631,30 @@ def _invoice_out(db: Session, invoice: Invoice, include_lines: bool) -> InvoiceO
 
 def _week_start(d: date) -> date:
     return d - timedelta(days=d.weekday())
+
+
+def _ensure_default_subtask_for_task(db: Session, task: Task) -> tuple[Subtask, bool]:
+    existing = db.scalar(
+        select(Subtask).where(
+            and_(
+                Subtask.task_id == task.id,
+                or_(Subtask.code == NO_SUBTASK_CODE, Subtask.name == NO_SUBTASK_NAME),
+            )
+        )
+    )
+    if existing:
+        return existing, False
+
+    default_subtask = Subtask(
+        task_id=task.id,
+        code=NO_SUBTASK_CODE,
+        name=NO_SUBTASK_NAME,
+        budget_hours=0.0,
+        budget_fee=0.0,
+    )
+    db.add(default_subtask)
+    db.flush()
+    return default_subtask, True
 
 
 def _sum_subtask_budget_fee_for_project(db: Session, project_id: int) -> float:
