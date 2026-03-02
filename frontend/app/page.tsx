@@ -7022,6 +7022,22 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                 <span style={{ color: "#666", fontSize: 12 }}>
                   Pick a period and view mode (week or month). Add time, save entries, then submit at week end.
                 </span>
+                {selectedReviewTimesheet &&
+                  (selectedReviewTimesheet.status === "draft" || selectedReviewTimesheet.status === "rejected") && (
+                    <button
+                      onClick={() => {
+                        if (canApproveTimesheets && selectedReviewTimesheet.user_id !== me?.id) {
+                          submitTimesheetForEmployee(selectedReviewTimesheet.id);
+                        } else {
+                          submitTimesheet(selectedReviewTimesheet.id);
+                        }
+                      }}
+                    >
+                      {canApproveTimesheets && selectedReviewTimesheet.user_id !== me?.id
+                        ? "Submit for Employee"
+                        : "Submit Timesheet"}
+                    </button>
+                  )}
                 {canApproveTimesheets && (
                   <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
                     <strong>Employee:</strong>
