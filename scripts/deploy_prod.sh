@@ -3,6 +3,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT_DIR"
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]')}"
 
 ENV_FILE="${1:-.env.prod}"
 RUN_GATE="${RUN_GATE:-true}"
@@ -30,6 +31,13 @@ if docker compose version >/dev/null 2>&1; then
   docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml ps
 elif command -v docker-compose >/dev/null 2>&1; then
   # Legacy docker-compose path on older hosts.
+  # Clear stale Compose v2 caddy container name to avoid 443 bind conflicts.
+  V2_CADDY_NAME="${PROJECT_NAME}-caddy-1"
+  if docker ps -a --format '{{.Names}}' | grep -Fx "$V2_CADDY_NAME" >/dev/null 2>&1; then
+    echo "Removing stale container: $V2_CADDY_NAME"
+    docker stop "$V2_CADDY_NAME" >/dev/null 2>&1 || true
+    docker rm "$V2_CADDY_NAME" >/dev/null 2>&1 || true
+  fi
   # Source env file with nounset disabled to avoid failures on optional expansions.
   set +u
   set -a
