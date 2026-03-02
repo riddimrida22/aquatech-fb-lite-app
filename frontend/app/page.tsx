@@ -3455,6 +3455,11 @@ export default function Home() {
   }, [lockToMyTimesheet, isNarrowViewport]);
 
   useEffect(() => {
+    if (!lockToMyTimesheet || !isNarrowViewport) return;
+    if (timeViewMode !== "day") setTimeViewMode("day");
+  }, [lockToMyTimesheet, isNarrowViewport, timeViewMode]);
+
+  useEffect(() => {
     if (!lockToMyTimesheet) return;
     const current = timesheets.find((t) => t.week_start <= todayYmd && t.week_end >= todayYmd);
     if (current) {
@@ -7237,7 +7242,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                 </div>
               ) : (
                 <div style={{ overflowX: "auto", border: "1px solid #c4cfdb", borderRadius: 6 }}>
-                  <table data-disable-table-sort="true" style={{ borderCollapse: "collapse", width: "100%", minWidth: lockToMyTimesheet ? (isNarrowViewport ? Math.max(540, 220 + displayedGridDates.length * 58) : Math.max(860, 360 + displayedGridDates.length * 84)) : Math.max(960, 380 + displayedGridDates.length * 92) }}>
+                  <table data-disable-table-sort="true" style={{ borderCollapse: "collapse", width: "100%", minWidth: lockToMyTimesheet ? (isNarrowViewport ? 0 : Math.max(860, 360 + displayedGridDates.length * 84)) : Math.max(960, 380 + displayedGridDates.length * 92) }}>
                     <thead>
                       <tr style={{ background: "#f7f9fb" }}>
                         <th style={{ borderBottom: "1px solid #c4cfdb", borderRight: "1px solid #d7dfe8", textAlign: "left", padding: 8 }}>
