@@ -42,6 +42,7 @@ jobs:
       - name: Run backend integration tests
         working-directory: backend
         env:
+          PYTHONPATH: ${{ github.workspace }}/backend
           DATABASE_URL: sqlite:////tmp/aquatech_ci_deploy.db
           SESSION_SECRET: ci-deploy-secret
           ALLOWED_GOOGLE_DOMAIN: aquatechpc.com
