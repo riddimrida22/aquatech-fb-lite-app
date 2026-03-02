@@ -4396,6 +4396,10 @@ export default function Home() {
 
   async function saveSelectedDayEntry() {
     if (isSavingTimeEntry) return;
+    if (!isOwnTimeEntryContext) {
+      setMessage("You can only save entries in your own timesheet context. Switch to My Timesheet and try again.");
+      return;
+    }
     if (!entryDate || !entryProjectId || !entryTaskId || !entrySubtaskId || Number(entryHours) <= 0) {
       setMessage("Pick date, project, task, subtask, and positive hours.");
       return;
@@ -7331,7 +7335,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                       </label>
                       <button onClick={copyPreviousDayEntries} disabled={editingEntryId !== null || !isOwnTimeEntryContext}>Copy Previous Day</button>
                       <button onClick={fillEntryToEightHours} disabled={editingEntryId !== null}>Fill to 8h</button>
-                      <button onClick={saveSelectedDayEntry} disabled={isSavingTimeEntry}>
+                      <button onClick={saveSelectedDayEntry} disabled={isSavingTimeEntry || !isOwnTimeEntryContext}>
                         {isSavingTimeEntry ? "Saving..." : editingEntryId ? "Update Entry" : "Save Entry"}
                       </button>
                     </div>
