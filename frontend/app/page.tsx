@@ -1143,6 +1143,7 @@ export default function Home() {
   const [myTimesheetPeriodFilter, setMyTimesheetPeriodFilter] = useState("");
   const [timesheetUserFilter, setTimesheetUserFilter] = useState<number | null>(null);
   const [timesheetPeriodFilter, setTimesheetPeriodFilter] = useState("");
+  const [isNarrowViewport, setIsNarrowViewport] = useState(false);
   const todayYmd = new Date().toISOString().slice(0, 10);
   const [reapplyRateStart, setReapplyRateStart] = useState(`${todayYmd.slice(0, 4)}-01-01`);
   const [reapplyRateEnd, setReapplyRateEnd] = useState(`${todayYmd.slice(0, 4)}-12-31`);
@@ -1189,6 +1190,7 @@ export default function Home() {
   const refreshDataQueuedRef = useRef(false);
   const refreshDataRequestIdRef = useRef(0);
   const ensuredTimesheetKeysRef = useRef<Set<string>>(new Set());
+  const timesheetOnlyMobileModeSetRef = useRef(false);
   const [dashboardAnalysisLimit, setDashboardAnalysisLimit] = useState<10 | 20 | 50>(10);
   const [invoiceStart, setInvoiceStart] = useState(`${todayYmd.slice(0, 4)}-01-01`);
   const [invoiceEnd, setInvoiceEnd] = useState(todayYmd);
@@ -3426,12 +3428,31 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateViewport = () => setIsNarrowViewport(window.innerWidth <= 768);
+    updateViewport();
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
+  }, []);
+
+  useEffect(() => {
     if (!lockToMyTimesheet) return;
     if (activeView !== "time") setActiveView("time");
     if (timeSubView !== "entry") setTimeSubView("entry");
     if (!canApproveTimesheets && timeAnchorDate !== todayYmd) setTimeAnchorDate(todayYmd);
     if (timesheetSubView !== "mine") setTimesheetSubView("mine");
   }, [lockToMyTimesheet, activeView, timeSubView, timeAnchorDate, todayYmd, timesheetSubView, canApproveTimesheets]);
+
+  useEffect(() => {
+    if (!lockToMyTimesheet) {
+      timesheetOnlyMobileModeSetRef.current = false;
+      return;
+    }
+    if (!isNarrowViewport) return;
+    if (timesheetOnlyMobileModeSetRef.current) return;
+    timesheetOnlyMobileModeSetRef.current = true;
+    setTimeViewMode("day");
+  }, [lockToMyTimesheet, isNarrowViewport]);
 
   useEffect(() => {
     if (!lockToMyTimesheet) return;
@@ -7039,7 +7060,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     </button>
                   )}
                 {canApproveTimesheets && (
-                  <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+                  <div style={{ marginLeft: isNarrowViewport ? 0 : "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <strong>Employee:</strong>
                     <select
                       value={timesheetUserFilter ?? ""}
@@ -7216,7 +7237,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                 </div>
               ) : (
                 <div style={{ overflowX: "auto", border: "1px solid #c4cfdb", borderRadius: 6 }}>
-                  <table data-disable-table-sort="true" style={{ borderCollapse: "collapse", width: "100%", minWidth: lockToMyTimesheet ? Math.max(860, 360 + displayedGridDates.length * 84) : Math.max(960, 380 + displayedGridDates.length * 92) }}>
+                  <table data-disable-table-sort="true" style={{ borderCollapse: "collapse", width: "100%", minWidth: lockToMyTimesheet ? (isNarrowViewport ? Math.max(540, 220 + displayedGridDates.length * 58) : Math.max(860, 360 + displayedGridDates.length * 84)) : Math.max(960, 380 + displayedGridDates.length * 92) }}>
                     <thead>
                       <tr style={{ background: "#f7f9fb" }}>
                         <th style={{ borderBottom: "1px solid #c4cfdb", borderRight: "1px solid #d7dfe8", textAlign: "left", padding: 8 }}>
@@ -7225,7 +7246,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                         {!lockToMyTimesheet && <th style={{ borderBottom: "1px solid #c4cfdb", borderRight: "1px solid #d7dfe8", textAlign: "left", padding: 8 }}>Task</th>}
                         {!lockToMyTimesheet && <th style={{ borderBottom: "1px solid #c4cfdb", borderRight: "1px solid #d7dfe8", textAlign: "left", padding: 8 }}>Subtask</th>}
                         {displayedGridDates.map((day) => (
-                          <th key={`grid-head-${day}`} style={{ borderBottom: "1px solid #c4cfdb", borderLeft: "1px solid #d7dfe8", textAlign: "center", padding: 8, minWidth: 92, background: "#f4f7fa" }}>
+                          <th key={`grid-head-${day}`} style={{ borderBottom: "1px solid #c4cfdb", borderLeft: "1px solid #d7dfe8", textAlign: "center", padding: 8, minWidth: isNarrowViewport ? 68 : 92, background: "#f4f7fa" }}>
                             <div style={{ display: "grid", gap: 4, justifyItems: "center" }}>
                               <span style={{ fontSize: 12 }}>{dayLabelFromYmd(day)}</span>
                               <button onClick={() => openEntryForDate(day)} title={`Add entry on ${day}`}>+</button>
@@ -7272,7 +7293,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                                 <div style={{ display: "grid", gap: 2, justifyItems: "center" }}>
                                   <strong style={{ fontSize: 12 }}>{row.byDay[day].toFixed(2)}</strong>
                                   {noteList.length > 0 && (
-                                    <span style={{ fontSize: 10, color: "#567", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    <span style={{ fontSize: 10, color: "#567", maxWidth: isNarrowViewport ? 56 : 78, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                       {noteList[0]}
                                     </span>
                                   )}

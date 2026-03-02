@@ -348,3 +348,22 @@ table th.aq-sortable-header.aq-sortable-desc::after {
     padding: 8px;
   }
 }
+
+@media (max-width: 768px) {
+  :root {
+    --aq-button-scale: 0.86;
+  }
+
+  .aq-shell-timesheet-only .aq-main-pane {
+    padding: 6px;
+  }
+
+  .aq-shell-timesheet-only .aq-main-pane section {
+    padding: 10px !important;
+    border-radius: 10px;
+  }
+
+  .aq-main-pane h2 {
+    font-size: 18px;
+  }
+}
