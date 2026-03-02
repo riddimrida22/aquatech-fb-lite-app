@@ -25,9 +25,12 @@ if docker compose version >/dev/null 2>&1; then
   docker compose --env-file "$ENV_FILE" -f docker-compose.prod.yml ps
 elif command -v docker-compose >/dev/null 2>&1; then
   # Legacy docker-compose path on older hosts.
+  # Source env file with nounset disabled to avoid failures on optional expansions.
+  set +u
   set -a
   . "$ENV_FILE"
   set +a
+  set -u
   docker-compose -f docker-compose.prod.yml up -d --build
   docker-compose -f docker-compose.prod.yml ps
 else
