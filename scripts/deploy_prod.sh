@@ -5,6 +5,7 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]')}"
 FORCE_TAKEOVER_443="${FORCE_TAKEOVER_443:-false}"
+ALLOW_SKIP_CADDY_ON_443_CONFLICT="${ALLOW_SKIP_CADDY_ON_443_CONFLICT:-false}"
 
 ENV_FILE="${1:-.env.prod}"
 RUN_GATE="${RUN_GATE:-true}"
@@ -44,11 +45,17 @@ if [ "$FORCE_TAKEOVER_443" = "true" ] && [ -n "$PORT_443_OWNERS" ]; then
   done
   PORT_443_OWNERS="$(docker ps --filter publish=443 --format '{{.Names}}')"
 fi
+SKIP_CADDY=false
 if [ -n "$PORT_443_OWNERS" ]; then
-  echo "FAIL: port 443 is still in use by:"
-  echo "$PORT_443_OWNERS"
-  echo "Unable to continue deploy safely."
-  exit 1
+  if [ "$ALLOW_SKIP_CADDY_ON_443_CONFLICT" = "true" ]; then
+    echo "Port 443 still in use; proceeding without caddy due to ALLOW_SKIP_CADDY_ON_443_CONFLICT=true"
+    SKIP_CADDY=true
+  else
+    echo "FAIL: port 443 is still in use by:"
+    echo "$PORT_443_OWNERS"
+    echo "Unable to continue deploy safely."
+    exit 1
+  fi
 fi
 
 # Handle non-container listeners on 443 (e.g. host nginx/caddy).
@@ -79,13 +86,28 @@ if [ -n "$PORT_443_HOST_LISTENERS" ]; then
   fi
 fi
 if [ -n "$PORT_443_HOST_LISTENERS" ]; then
-  echo "FAIL: host port 443 is still busy after takeover attempts."
-  echo "$PORT_443_HOST_LISTENERS"
-  exit 1
+  if [ "$ALLOW_SKIP_CADDY_ON_443_CONFLICT" = "true" ]; then
+    echo "Host 443 still busy; proceeding without caddy due to ALLOW_SKIP_CADDY_ON_443_CONFLICT=true"
+    SKIP_CADDY=true
+  else
+    echo "FAIL: host port 443 is still busy after takeover attempts."
+    echo "$PORT_443_HOST_LISTENERS"
+    exit 1
+  fi
+fi
+
+if [ "$SKIP_CADDY" = "true" ]; then
+  DEPLOY_SERVICES="db backend frontend db-backup"
+else
+  DEPLOY_SERVICES=""
 fi
 
 if docker compose version >/dev/null 2>&1; then
-  docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml up -d --build
+  if [ -n "$DEPLOY_SERVICES" ]; then
+    docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml up -d --build $DEPLOY_SERVICES
+  else
+    docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml up -d --build
+  fi
   docker compose --env-file "$ENV_FILE_PATH" -f docker-compose.prod.yml ps
 elif command -v docker-compose >/dev/null 2>&1; then
   # Legacy docker-compose path on older hosts.
@@ -101,7 +123,11 @@ elif command -v docker-compose >/dev/null 2>&1; then
   . "$ENV_FILE_PATH"
   set +a
   set -u
-  docker-compose -f docker-compose.prod.yml up -d --build
+  if [ -n "$DEPLOY_SERVICES" ]; then
+    docker-compose -f docker-compose.prod.yml up -d --build $DEPLOY_SERVICES
+  else
+    docker-compose -f docker-compose.prod.yml up -d --build
+  fi
   docker-compose -f docker-compose.prod.yml ps
 else
   echo "FAIL: neither 'docker compose' nor 'docker-compose' is available on this host."
