@@ -18,7 +18,16 @@ jobs:
           API_BASE_URL: https://app.aquatechpc.com/api
           LATENCY_BUDGET_MS: "2500"
           CURL_MAX_TIME_S: "15"
+          CHECK_RETRIES: "4"
+          RETRY_DELAY_S: "3"
           ALERT_WEBHOOK_URL: ${{ secrets.MONITOR_ALERT_WEBHOOK_URL }}
+          ALERT_EMAIL_TO: ${{ secrets.MONITOR_ALERT_EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
+          SMTP_USE_TLS: ${{ secrets.SMTP_USE_TLS }}
         run: |
           set -euo pipefail
           chmod +x ./scripts/ops_monitor.sh
