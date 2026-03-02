@@ -6,6 +6,8 @@ API_BASE_URL="${API_BASE_URL:-https://app.aquatechpc.com/api}"
 LATENCY_BUDGET_MS="${LATENCY_BUDGET_MS:-2500}"
 ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
 CURL_MAX_TIME_S="${CURL_MAX_TIME_S:-15}"
+CHECK_RETRIES="${CHECK_RETRIES:-3}"
+RETRY_DELAY_S="${RETRY_DELAY_S:-2}"
 
 pass() { echo "PASS: $1"; }
 warn() { echo "WARN: $1"; }
@@ -26,11 +28,24 @@ http_check() {
   local url="$2"
   local expected_prefix="$3"
 
-  local out
-  out="$(curl -sS --max-time "$CURL_MAX_TIME_S" -o /tmp/aq_mon_body.$$ -w '%{http_code} %{time_total}' "$url" || echo '000 99')"
-  local code latency_s
-  code="${out%% *}"
-  latency_s="${out##* }"
+  local out code latency_s latency_ms
+  local attempt=1
+  code="000"
+  latency_s="99"
+  while (( attempt <= CHECK_RETRIES )); do
+    out="$(curl -sS --max-time "$CURL_MAX_TIME_S" -o /tmp/aq_mon_body.$$ -w '%{http_code} %{time_total}' "$url" || echo '000 99')"
+    code="${out%% *}"
+    latency_s="${out##* }"
+    if [[ "$code" == $expected_prefix* ]]; then
+      break
+    fi
+    if (( attempt < CHECK_RETRIES )); then
+      warn "$label attempt $attempt/$CHECK_RETRIES got HTTP $code; retrying in ${RETRY_DELAY_S}s"
+      sleep "$RETRY_DELAY_S"
+    fi
+    ((attempt++))
+  done
+
   local latency_ms
   latency_ms="$(awk -v s="$latency_s" 'BEGIN { printf("%d", s*1000) }')"
 

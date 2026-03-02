@@ -87,7 +87,7 @@ jobs:
           STAGING_APP_BASE_URL: ${{ secrets.STAGING_APP_BASE_URL }}
         run: |
           set -euo pipefail
-          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && APP_BASE_URL='$STAGING_APP_BASE_URL' API_BASE_URL='${STAGING_APP_BASE_URL}/api' ./scripts/ops_monitor.sh" || echo "Warning: staging runtime monitor failed"
+          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && CHECK_RETRIES=4 RETRY_DELAY_S=3 APP_BASE_URL='$STAGING_APP_BASE_URL' API_BASE_URL='${STAGING_APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
 
   deploy-production:
     if: ${{ !inputs.run_rollback }}
@@ -124,7 +124,7 @@ jobs:
           PROD_APP_BASE_URL: ${{ secrets.PROD_APP_BASE_URL }}
         run: |
           set -euo pipefail
-          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && APP_BASE_URL='$PROD_APP_BASE_URL' API_BASE_URL='${PROD_APP_BASE_URL}/api' ./scripts/ops_monitor.sh" || echo "Warning: production runtime monitor failed"
+          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && CHECK_RETRIES=4 RETRY_DELAY_S=3 APP_BASE_URL='$PROD_APP_BASE_URL' API_BASE_URL='${PROD_APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
 
   rollback:
     if: ${{ inputs.run_rollback }}
