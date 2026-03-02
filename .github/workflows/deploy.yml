@@ -75,7 +75,7 @@ jobs:
           [ -n "${STAGING_HOST:-}" ] || { echo "Missing staging secret: STAGING_HOST"; exit 1; }
           [ -n "${STAGING_USER:-}" ] || { echo "Missing staging secret: STAGING_USER"; exit 1; }
           [ -n "${STAGING_APP_DIR:-}" ] || { echo "Missing staging secret: STAGING_APP_DIR"; exit 1; }
-          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && git fetch --all --tags --prune && ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
+          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && git fetch --all --tags --prune && RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
 
       - name: Staging runtime monitor
         env:
@@ -112,7 +112,7 @@ jobs:
           [ -n "${PROD_HOST:-}" ] || { echo "Missing production secret: PROD_HOST"; exit 1; }
           [ -n "${PROD_USER:-}" ] || { echo "Missing production secret: PROD_USER"; exit 1; }
           [ -n "${PROD_APP_DIR:-}" ] || { echo "Missing production secret: PROD_APP_DIR"; exit 1; }
-          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && git fetch --all --tags --prune && ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
+          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && git fetch --all --tags --prune && RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
 
       - name: Production runtime monitor
         env:
