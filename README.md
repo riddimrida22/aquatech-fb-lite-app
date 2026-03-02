@@ -156,6 +156,18 @@ Configure one GitHub repository secret, then the scheduled monitor will notify y
 3. Optional manual run:
 - GitHub Actions -> `Uptime Monitor` -> `Run workflow`
 
+## Mobile Apps (iOS + Android)
+A native mobile wrapper is included for timesheets:
+
+- Project: `mobile-timesheet/`
+- Opens: `https://app.aquatechpc.com/?timesheet_only=1`
+- Build/submit guide: `mobile-timesheet/README.md`
+
+Quick start:
+- `cd mobile-timesheet`
+- `npm install`
+- `npx expo start`
+
 ## Observability URLs
 - Grafana: `http://localhost:3001`
 - Prometheus: `http://localhost:9090`
