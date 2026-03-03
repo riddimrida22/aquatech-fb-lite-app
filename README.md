@@ -65,6 +65,7 @@ Quick safer workflow:
 - Keep your local `.env` unchanged.
 - Use `.env.prod` for production:
 - `./scripts/deploy_prod.sh .env.prod`
+- Do not overwrite server `.env.prod` wholesale from another machine; update only the intended keys (for example Plaid keys only), then redeploy.
 
 ## Codex One-Command Deploy (Push + SSH)
 Use this when you want Codex to deploy after your changes are committed.
