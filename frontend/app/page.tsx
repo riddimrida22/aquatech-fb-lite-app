@@ -3226,7 +3226,7 @@ export default function Home() {
     });
   }
 
-  async function connectPlaidLink() {
+  async function connectPlaidLink(connectionId?: number) {
     if (!canViewFinancials) {
       setMessage("You do not have permission to connect bank feeds.");
       return;
@@ -3235,7 +3235,9 @@ export default function Home() {
     setIsPlaidConnecting(true);
     try {
       await ensurePlaidScriptLoaded();
-      const tokenPayload = await apiPost<{ link_token: string; expiration: string }>("/bank/plaid/link-token", {});
+      const tokenPayload = await apiPost<{ link_token: string; expiration: string }>("/bank/plaid/link-token", {
+        connection_id: connectionId ?? null,
+      });
       if (!window.Plaid) throw new Error("Plaid script did not initialize.");
       const handler = window.Plaid.create({
         token: tokenPayload.link_token,
@@ -3245,7 +3247,11 @@ export default function Home() {
               "/bank/plaid/exchange-public-token",
               { public_token },
             );
-            setMessage(`Plaid bank connected (${res.institution_name}). Accounts discovered: ${res.accounts}.`);
+            setMessage(
+              connectionId
+                ? `Plaid re-authentication complete (${res.institution_name}). Accounts discovered: ${res.accounts}.`
+                : `Plaid bank connected (${res.institution_name}). Accounts discovered: ${res.accounts}.`,
+            );
             await refreshBankWorkspaceData();
           } catch (err) {
             setMessage(String(err));
@@ -3288,10 +3294,23 @@ export default function Home() {
       return;
     }
     try {
-      const res = await apiPost<{ ok: boolean; added: number; modified: number; removed: number }>(
+      const res = await apiPost<{
+        ok: boolean;
+        added: number;
+        modified: number;
+        removed: number;
+        reauth_required?: boolean;
+        reauth_detail?: string | null;
+      }>(
         `/bank/connections/${connectionId}/sync`,
         {},
       );
+      if (res.reauth_required) {
+        setMessage(res.reauth_detail || "Bank requires a one-time re-authentication. Opening Plaid now...");
+        await refreshBankWorkspaceData();
+        await connectPlaidLink(connectionId);
+        return;
+      }
       setMessage(`Bank sync complete. Added: ${res.added}, modified: ${res.modified}, removed: ${res.removed}.`);
       await refreshBankWorkspaceData();
     } catch (err) {
@@ -6422,10 +6441,15 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                       <div key={`bank-conn-${c.id}`} style={{ border: "1px solid #e3ebf3", borderRadius: 8, padding: 6, background: "#fff" }}>
                         <div style={{ fontWeight: 600 }}>{c.institution_name || "Plaid Institution"}</div>
                         <div style={{ fontSize: 11, color: "#5c7288" }}>
-                          Provider: {c.provider} | Accounts: {c.account_count} | Transactions: {c.transaction_count} | Last sync: {c.last_synced_at ? new Date(c.last_synced_at).toLocaleString() : "-"}
+                          Provider: {c.provider} | Status: {c.status} | Accounts: {c.account_count} | Transactions: {c.transaction_count} | Last sync: {c.last_synced_at ? new Date(c.last_synced_at).toLocaleString() : "-"}
                         </div>
                         {c.provider === "plaid" ? (
-                          <button style={{ marginTop: 4 }} onClick={() => syncBankConnection(c.id)}>Sync Now</button>
+                          <div style={{ marginTop: 4, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <button onClick={() => syncBankConnection(c.id)}>Sync Now</button>
+                            {c.status === "reauth_required" && (
+                              <button onClick={() => connectPlaidLink(c.id)}>Re-authenticate</button>
+                            )}
+                          </div>
                         ) : (
                           <div style={{ marginTop: 4, fontSize: 11, color: "#5c7288" }}>
                             Imported connection (no live sync).

@@ -334,6 +334,10 @@ class PlaidLinkTokenOut(BaseModel):
     expiration: str
 
 
+class PlaidLinkTokenRequest(BaseModel):
+    connection_id: int | None = None
+
+
 class PlaidPublicTokenExchangeRequest(BaseModel):
     public_token: str
 
@@ -345,6 +349,8 @@ class BankSyncOut(BaseModel):
     modified: int
     removed: int
     has_more: bool
+    reauth_required: bool = False
+    reauth_detail: str | None = None
 
 
 class BankReconciliationQueueRow(BaseModel):
@@ -853,6 +859,9 @@ def _plaid_post(path: str, payload: dict[str, object], timeout: int = 30) -> dic
                     status_code=400,
                     detail="Invalid Plaid client ID/secret for the selected environment. Verify production keys in .env and restart services.",
                 )
+            if code in {"ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN"}:
+                compact = f"{code}: {message}".strip(": ").strip()
+                raise HTTPException(status_code=409, detail=f"Plaid re-authentication required. {compact}")
             compact = f"{code}: {message}".strip(": ").strip()
             if compact:
                 raise HTTPException(status_code=502, detail=f"Plaid API error {resp.status_code}: {compact}")
@@ -1858,18 +1867,29 @@ def plaid_sandbox_connect(
 
 @app.post("/bank/plaid/link-token", response_model=PlaidLinkTokenOut)
 def create_plaid_link_token(
+    payload: PlaidLinkTokenRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> PlaidLinkTokenOut:
-    _ = db
-    payload = {
+    request_payload: dict[str, object] = {
         "user": {"client_user_id": str(current_user.id)},
         "client_name": "AquatechPM",
         "products": _plaid_products(),
         "country_codes": _plaid_country_codes(),
         "language": "en",
     }
-    resp = _plaid_post("/link/token/create", payload)
+
+    if payload.connection_id is not None:
+        row = db.get(BankConnection, payload.connection_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Bank connection not found.")
+        if row.provider != "plaid":
+            raise HTTPException(status_code=400, detail="Unsupported provider.")
+        if not row.access_token:
+            raise HTTPException(status_code=400, detail="Connection has no access token.")
+        request_payload["access_token"] = row.access_token
+
+    resp = _plaid_post("/link/token/create", request_payload)
     link_token = str(resp.get("link_token") or "")
     expiration = str(resp.get("expiration") or "")
     if not link_token:
@@ -1917,6 +1937,7 @@ def sync_bank_connection(
         db.commit()
         _refresh_plaid_accounts(row, db)
         added, modified, removed, has_more = _sync_plaid_transactions(row, db)
+        row.status = "connected"
         db.commit()
         return BankSyncOut(
             ok=True,
@@ -1926,6 +1947,23 @@ def sync_bank_connection(
             removed=removed,
             has_more=has_more,
         )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            row = db.get(BankConnection, connection_id)
+            if row:
+                row.status = "reauth_required"
+                db.commit()
+            return BankSyncOut(
+                ok=False,
+                connection_id=connection_id,
+                added=0,
+                modified=0,
+                removed=0,
+                has_more=False,
+                reauth_required=True,
+                reauth_detail=str(exc.detail),
+            )
+        raise
     except SQLAlchemyError:
         db.rollback()
         raise HTTPException(status_code=503, detail="Temporary database timeout during bank sync. Please retry.")
