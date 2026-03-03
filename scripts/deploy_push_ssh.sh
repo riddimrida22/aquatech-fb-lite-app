@@ -30,7 +30,7 @@ done
 
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 DEPLOY_REMOTE="${DEPLOY_REMOTE:-origin}"
-DEPLOY_REBUILD_CMD="${DEPLOY_REBUILD_CMD:-sudo docker-compose up -d --build}"
+DEPLOY_REBUILD_CMD="${DEPLOY_REBUILD_CMD:-if docker compose version >/dev/null 2>&1; then sudo docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build; elif command -v docker-compose >/dev/null 2>&1; then sudo docker-compose --env-file .env.prod -f docker-compose.prod.yml up -d --build; else echo 'FAIL: neither docker compose nor docker-compose found on server.'; exit 1; fi}"
 DEPLOY_VERIFY_URL="${DEPLOY_VERIFY_URL:-https://app.aquatechpc.com}"
 RUN_TESTS_BEFORE_PUSH="${RUN_TESTS_BEFORE_PUSH:-false}"
 

@@ -61,6 +61,18 @@ else
   pass "GOOGLE_CLIENT_SECRET set."
 fi
 
+if is_placeholder "${PLAID_CLIENT_ID:-}"; then
+  fail "PLAID_CLIENT_ID is missing/placeholder."
+else
+  pass "PLAID_CLIENT_ID set."
+fi
+
+if is_placeholder "${PLAID_SECRET:-}"; then
+  fail "PLAID_SECRET is missing/placeholder."
+else
+  pass "PLAID_SECRET set."
+fi
+
 if [[ "${DEV_AUTH_BYPASS:-true}" != "false" ]]; then
   fail "DEV_AUTH_BYPASS must be false for launch."
 else
