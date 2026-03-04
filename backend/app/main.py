@@ -3720,6 +3720,15 @@ def project_performance_range(
     }
 
 
+@app.get("/reports/unbilled-since-last-invoice")
+def unbilled_since_last_invoice(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    rows = _unbilled_since_last_invoice_by_client(db)
+    return {"as_of": date.today().isoformat(), "by_client": rows}
+
+
 @app.get("/reports/project-performance.csv")
 def project_performance_csv(
     start: date,
@@ -4987,6 +4996,51 @@ def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[
         rows.append(row)
 
     return rows
+
+
+def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object]]:
+    projects = [p for p in db.scalars(select(Project).order_by(Project.id.asc())).all() if not _is_hidden_project_name(p.name)]
+    projects_by_id = {p.id: p for p in projects}
+    tasks = db.scalars(select(Task)).all()
+    tasks_by_id = {t.id: t for t in tasks}
+
+    last_invoice_date_by_project: dict[int, date] = {}
+    last_invoice_rows = db.execute(
+        select(Invoice.project_id, func.max(Invoice.issue_date))
+        .where(and_(Invoice.project_id.is_not(None), Invoice.status != "void"))
+        .group_by(Invoice.project_id)
+    ).all()
+    for project_id, last_issue in last_invoice_rows:
+        if project_id is not None and isinstance(last_issue, date):
+            last_invoice_date_by_project[int(project_id)] = last_issue
+
+    by_project_unbilled: dict[int, float] = defaultdict(float)
+    for te in db.scalars(select(TimeEntry)).all():
+        project_ref = projects_by_id.get(te.project_id)
+        if not project_ref:
+            continue
+        task_ref = tasks_by_id.get(te.task_id)
+        is_billable = bool(project_ref.is_billable) and bool(task_ref.is_billable if task_ref else False)
+        if not is_billable:
+            continue
+        last_invoice_date = last_invoice_date_by_project.get(te.project_id)
+        if last_invoice_date and te.work_date <= last_invoice_date:
+            continue
+        by_project_unbilled[te.project_id] += float(te.hours * te.bill_rate_applied)
+
+    by_client: dict[str, dict[str, object]] = {}
+    for project_id, amount in by_project_unbilled.items():
+        if amount <= 0.0001:
+            continue
+        project_ref = projects_by_id.get(project_id)
+        if not project_ref:
+            continue
+        client_name = (project_ref.client_name or "Unassigned Client").strip() or "Unassigned Client"
+        row = by_client.setdefault(client_name, {"client_name": client_name, "unbilled": 0.0, "project_count": 0})
+        row["unbilled"] = float(row["unbilled"]) + float(amount)
+        row["project_count"] = int(row["project_count"]) + 1
+
+    return sorted(by_client.values(), key=lambda r: float(r["unbilled"]), reverse=True)
 
 
 @app.post("/accounting/import-preview")
