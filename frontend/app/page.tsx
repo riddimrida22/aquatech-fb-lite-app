@@ -1866,23 +1866,39 @@ export default function Home() {
       });
   }, [projectCockpitRows, performanceByProjectId, invoiceFinanceByProjectId]);
   const dashboardUnbilledByClient = useMemo(() => {
-    const grouped: Record<string, number> = {};
+    // Unbilled = accrued (performed) revenue less billed invoice amounts by client.
+    // This intentionally excludes future/unperformed work and includes imported invoices.
+    const accruedByClient: Record<string, number> = {};
     for (const p of projects) {
       const client = (p.client_name || "Unassigned Client").trim() || "Unassigned Client";
-      const recognizedRevenue = Number(performanceByProjectId[p.id]?.actual_revenue || 0);
-      const invoiced = Number(invoiceFinanceByProjectId[p.id]?.invoiced || 0);
-      const unbilled = Math.max(0, recognizedRevenue - invoiced);
-      if (unbilled <= 0.009) continue;
-      grouped[client] = Number(grouped[client] || 0) + unbilled;
+      const accrued = Number(performanceByProjectId[p.id]?.actual_revenue || 0);
+      if (accrued <= 0.009) continue;
+      accruedByClient[client] = Number(accruedByClient[client] || 0) + accrued;
     }
-    const rows = Object.entries(grouped)
-      .map(([client, amount]) => ({ client, amount }))
+
+    const billedByClient: Record<string, number> = {};
+    for (const inv of savedInvoices) {
+      const status = String(inv.status || "").toLowerCase();
+      if (status === "void") continue;
+      const client = (inv.client_name || "Unknown Client").trim() || "Unknown Client";
+      billedByClient[client] = Number(billedByClient[client] || 0) + Number(inv.subtotal_amount || 0);
+    }
+
+    const clientNames = new Set([...Object.keys(accruedByClient), ...Object.keys(billedByClient)]);
+    const rows = Array.from(clientNames)
+      .map((client) => {
+        const accrued = Number(accruedByClient[client] || 0);
+        const billed = Number(billedByClient[client] || 0);
+        return { client, amount: Math.max(0, accrued - billed) };
+      })
+      .filter((row) => row.amount > 0.009)
       .sort((a, b) => b.amount - a.amount);
+
     return {
       total: rows.reduce((sum, row) => sum + row.amount, 0),
       rows,
     };
-  }, [projects, performanceByProjectId, invoiceFinanceByProjectId]);
+  }, [projects, performanceByProjectId, savedInvoices]);
   const taxPrepReadiness = useMemo(() => {
     const invoicePaid = savedInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
     const invoiceOutstanding = savedInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0);
@@ -5855,6 +5871,9 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10 }}>
                       <div style={{ fontSize: 12, color: "#4a6076", marginBottom: 6 }}>
                         Unbilled By Client <strong style={{ color: "#1f3f60" }}>(Total: <Currency value={dashboardUnbilledByClient.total} />)</strong>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#607689", marginBottom: 6 }}>
+                        Accrued performed work minus billed invoices (including imported invoice history).
                       </div>
                       <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #edf2f7", borderRadius: 8 }}>
                         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
