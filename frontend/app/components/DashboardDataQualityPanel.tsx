@@ -1,5 +1,7 @@
 "use client";
 
+import type { CSSProperties } from "react";
+
 type DataQualityIssue = {
   label: string;
   value: number;
@@ -14,6 +16,22 @@ type DashboardDataQualityPanelProps = {
 };
 
 export function DashboardDataQualityPanel({ healthLabel, openCount, issues, onIssueClick }: DashboardDataQualityPanelProps) {
+  const cardLabelStyle: CSSProperties = {
+    fontSize: 12,
+    fontWeight: 500,
+    lineHeight: 1.35,
+  };
+  const cardValueStyle: CSSProperties = {
+    fontSize: 16,
+    fontWeight: 700,
+    lineHeight: 1.2,
+  };
+  const cardActionStyle: CSSProperties = {
+    fontSize: 11,
+    fontWeight: 500,
+    color: "#2f5f92",
+    textDecoration: "underline",
+  };
   return (
     <div className="aq-dashboard-section">
       <h3 className="aq-dashboard-section-title">Data Quality Guardrails</h3>
@@ -41,16 +59,16 @@ export function DashboardDataQualityPanel({ healthLabel, openCount, issues, onIs
                 }}
                 title={`Open ${issue.label}`}
               >
-                {issue.label}<br />
-                <strong style={{ color: "#b0422b" }}>{issue.value}</strong><br />
-                <span style={{ fontSize: 11, color: "#2f5f92", textDecoration: "underline" }}>Open</span>
+                <span style={cardLabelStyle}>{issue.label}</span><br />
+                <strong style={{ ...cardValueStyle, color: "#b0422b" }}>{issue.value}</strong><br />
+                <span style={cardActionStyle}>Open</span>
               </button>
             );
           }
           return (
             <div key={`dq-issue-${issue.label}`} style={{ border: "1px solid #eee", padding: 8, borderRadius: 8 }}>
-              {issue.label}<br />
-              <strong style={{ color: "#147b74" }}>{issue.value}</strong>
+              <span style={cardLabelStyle}>{issue.label}</span><br />
+              <strong style={{ ...cardValueStyle, color: "#147b74" }}>{issue.value}</strong>
             </div>
           );
         })}
