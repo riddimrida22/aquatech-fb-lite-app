@@ -1895,9 +1895,9 @@ export default function Home() {
 
     for (const inv of savedInvoices) {
       const status = String(inv.status || "").toLowerCase();
-      if (status === "void" || status === "draft") continue;
+      if (status === "void") continue;
       const projectClient = inv.project_id ? (projectById[inv.project_id]?.client_name || "") : "";
-      const client = (inv.client_name || projectClient || "Unknown Client").trim() || "Unknown Client";
+      const client = (projectClient || inv.client_name || "Unknown Client").trim() || "Unknown Client";
       const clientKey = normalizeClientKey(client);
       billedByClientKey[clientKey] = Number(billedByClientKey[clientKey] || 0) + Number(inv.subtotal_amount || 0);
       if (!displayNameByClientKey[clientKey]) displayNameByClientKey[clientKey] = client;
