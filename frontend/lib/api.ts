@@ -7,6 +7,25 @@ function resolveApiBase(): string {
 
 export const API_BASE = resolveApiBase();
 
+function serializeRequestBody(path: string, body: unknown): string | undefined {
+  if (body === undefined) return undefined;
+  try {
+    return JSON.stringify(body);
+  } catch (err) {
+    const maybeUiEvent =
+      !!body &&
+      typeof body === "object" &&
+      ("target" in (body as Record<string, unknown>) || "currentTarget" in (body as Record<string, unknown>));
+    if (maybeUiEvent) {
+      throw new Error(
+        `Invalid request payload for ${path}: a UI event object was passed instead of data. Please retry the action.`,
+      );
+    }
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid request payload for ${path}: ${detail}`);
+  }
+}
+
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     cache: "no-store",
@@ -33,14 +52,14 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return apiRequest<T>(path, {
     method: "POST",
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: serializeRequestBody(path, body),
   });
 }
 
 export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   return apiRequest<T>(path, {
     method: "PUT",
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: serializeRequestBody(path, body),
   });
 }
 
