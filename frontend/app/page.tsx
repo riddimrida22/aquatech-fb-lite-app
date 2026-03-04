@@ -512,6 +512,15 @@ type ArSummary = {
   };
   top_clients: ArClientRow[];
 };
+type UnbilledSinceLastInvoiceClientRow = {
+  client_name: string;
+  unbilled: number;
+  project_count: number;
+};
+type UnbilledSinceLastInvoice = {
+  as_of: string;
+  by_client: UnbilledSinceLastInvoiceClientRow[];
+};
 type RecurringInvoiceSchedule = {
   id: number;
   name: string;
@@ -764,16 +773,6 @@ function isPlaceholderProjectName(name: string): boolean {
 function isHiddenProjectName(name: string): boolean {
   const n = (name || "").trim().toLowerCase();
   return n === "no project" || n === "imported project";
-}
-
-function normalizeClientKey(name: string): string {
-  return (name || "")
-    .trim()
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function formatWbsSubtaskLabel(subtask: WbsSubtask): string {
@@ -1209,6 +1208,7 @@ export default function Home() {
   const [invoiceApprovedOnly, setInvoiceApprovedOnly] = useState(true);
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [savedInvoices, setSavedInvoices] = useState<InvoiceRecord[]>([]);
+  const [unbilledSinceLastInvoice, setUnbilledSinceLastInvoice] = useState<UnbilledSinceLastInvoice>({ as_of: todayYmd, by_client: [] });
   const [invoiceDetail, setInvoiceDetail] = useState<InvoiceRecord | null>(null);
   const [invoiceRenderContext, setInvoiceRenderContext] = useState<InvoiceRenderContext | null>(null);
   const [invoiceSelectedId, setInvoiceSelectedId] = useState<number | null>(null);
@@ -1876,48 +1876,15 @@ export default function Home() {
       });
   }, [projectCockpitRows, performanceByProjectId, invoiceFinanceByProjectId]);
   const dashboardUnbilledByClient = useMemo(() => {
-    // Unbilled = life-to-date accrued (performed) revenue less issued invoices.
-    // This excludes future/unperformed work and includes imported invoice history.
-    const accruedByClientKey: Record<string, number> = {};
-    const billedByClientKey: Record<string, number> = {};
-    const displayNameByClientKey: Record<string, string> = {};
-
-    for (const p of contractProjectPerformance) {
-      if (isPlaceholderProjectName(p.project_name) || isHiddenProjectName(p.project_name)) continue;
-      const project = projectById[p.project_id];
-      const client = (project?.client_name || "Unassigned Client").trim() || "Unassigned Client";
-      const clientKey = normalizeClientKey(client);
-      const accrued = Number(p.actual_revenue || 0);
-      if (accrued <= 0.009) continue;
-      accruedByClientKey[clientKey] = Number(accruedByClientKey[clientKey] || 0) + accrued;
-      if (!displayNameByClientKey[clientKey]) displayNameByClientKey[clientKey] = client;
-    }
-
-    for (const inv of savedInvoices) {
-      const status = String(inv.status || "").toLowerCase();
-      if (status === "void") continue;
-      const projectClient = inv.project_id ? (projectById[inv.project_id]?.client_name || "") : "";
-      const client = (projectClient || inv.client_name || "Unknown Client").trim() || "Unknown Client";
-      const clientKey = normalizeClientKey(client);
-      billedByClientKey[clientKey] = Number(billedByClientKey[clientKey] || 0) + Number(inv.subtotal_amount || 0);
-      if (!displayNameByClientKey[clientKey]) displayNameByClientKey[clientKey] = client;
-    }
-
-    const clientKeys = new Set([...Object.keys(accruedByClientKey), ...Object.keys(billedByClientKey)]);
-    const rows = Array.from(clientKeys)
-      .map((clientKey) => {
-        const accrued = Number(accruedByClientKey[clientKey] || 0);
-        const billed = Number(billedByClientKey[clientKey] || 0);
-        return { client: displayNameByClientKey[clientKey] || clientKey, amount: Math.max(0, accrued - billed) };
-      })
+    const rows = (unbilledSinceLastInvoice.by_client || [])
+      .map((row) => ({ client: row.client_name, amount: Number(row.unbilled || 0) }))
       .filter((row) => row.amount > 0.009)
       .sort((a, b) => b.amount - a.amount);
-
     return {
       total: rows.reduce((sum, row) => sum + row.amount, 0),
       rows,
     };
-  }, [contractProjectPerformance, projectById, savedInvoices]);
+  }, [unbilledSinceLastInvoice]);
   const taxPrepReadiness = useMemo(() => {
     const invoicePaid = savedInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
     const invoiceOutstanding = savedInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0);
@@ -3032,6 +2999,21 @@ export default function Home() {
         if (prev && rows.some((r) => r.id === prev)) return prev;
         return rows[0].id;
       });
+      await refreshUnbilledSinceLastInvoice();
+      markSyncNow();
+    } catch (err) {
+      setMessage(String(err));
+    }
+  }
+
+  async function refreshUnbilledSinceLastInvoice() {
+    if (!canViewFinancials) {
+      setUnbilledSinceLastInvoice({ as_of: todayYmd, by_client: [] });
+      return;
+    }
+    try {
+      const payload = await apiGet<UnbilledSinceLastInvoice>("/reports/unbilled-since-last-invoice");
+      setUnbilledSinceLastInvoice(payload);
       markSyncNow();
     } catch (err) {
       setMessage(String(err));
@@ -3666,6 +3648,11 @@ export default function Home() {
     if (!shouldLoadBillingData) return;
     refreshInvoices();
   }, [me?.id, shouldLoadBillingData]);
+
+  useEffect(() => {
+    if (!shouldLoadFinancialKpis) return;
+    refreshUnbilledSinceLastInvoice();
+  }, [me?.id, shouldLoadFinancialKpis]);
 
   useEffect(() => {
     if (!shouldLoadBillingData) return;
@@ -5912,7 +5899,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                         Unbilled By Client <strong style={{ color: "#1f3f60" }}>(Total: <Currency value={dashboardUnbilledByClient.total} />)</strong>
                       </div>
                       <div style={{ fontSize: 11, color: "#607689", marginBottom: 6 }}>
-                        Life-to-date accrued performed work minus issued invoices (including imported invoice history).
+                        Completed billable work since each project's last invoice date; all timesheet work is treated as approved.
                       </div>
                       <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #edf2f7", borderRadius: 8 }}>
                         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
