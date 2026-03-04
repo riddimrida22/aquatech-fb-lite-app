@@ -35,6 +35,7 @@ export function DashboardDataQualityPanel({ healthLabel, openCount, issues, onIs
                   padding: 8,
                   borderRadius: 8,
                   background: "#f7fbff",
+                  color: "#1f3248",
                   textAlign: "left",
                   cursor: "pointer",
                 }}
