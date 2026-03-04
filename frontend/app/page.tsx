@@ -1865,6 +1865,24 @@ export default function Home() {
         return a.name.localeCompare(b.name);
       });
   }, [projectCockpitRows, performanceByProjectId, invoiceFinanceByProjectId]);
+  const dashboardUnbilledByClient = useMemo(() => {
+    const grouped: Record<string, number> = {};
+    for (const p of projects) {
+      const client = (p.client_name || "Unassigned Client").trim() || "Unassigned Client";
+      const recognizedRevenue = Number(performanceByProjectId[p.id]?.actual_revenue || 0);
+      const invoiced = Number(invoiceFinanceByProjectId[p.id]?.invoiced || 0);
+      const unbilled = Math.max(0, recognizedRevenue - invoiced);
+      if (unbilled <= 0.009) continue;
+      grouped[client] = Number(grouped[client] || 0) + unbilled;
+    }
+    const rows = Object.entries(grouped)
+      .map(([client, amount]) => ({ client, amount }))
+      .sort((a, b) => b.amount - a.amount);
+    return {
+      total: rows.reduce((sum, row) => sum + row.amount, 0),
+      rows,
+    };
+  }, [projects, performanceByProjectId, invoiceFinanceByProjectId]);
   const taxPrepReadiness = useMemo(() => {
     const invoicePaid = savedInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
     const invoiceOutstanding = savedInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0);
@@ -5692,9 +5710,6 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
             <section style={{ border: "1px solid #d1dbe6", borderRadius: 10, padding: 16, marginBottom: 16, background: "#fff" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <h2 style={{ margin: 0, fontSize: 30, lineHeight: 1.1, color: "#a86735" }}>Executive Overview</h2>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => setDashboardSubView("controls")}>Open Project Control Board</button>
-                </div>
               </div>
               <p style={{ marginTop: 8, color: "#4a4a4a", fontSize: 13 }}>
                 Reporting context: <strong>{dashboardKpiContextLabel}</strong>
@@ -5772,6 +5787,9 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: "#4a6076" }}>
                       Click any project row to open full control-board detail.
                     </p>
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                      <button onClick={() => setDashboardSubView("controls")}>Open Project Control Board</button>
+                    </div>
                     <div style={{ overflowX: "auto", border: "1px solid #d8e2ed", borderRadius: 10, background: "#ffffff", boxShadow: "0 6px 20px rgba(17, 32, 24, 0.06)" }}>
                       <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
                         <thead style={{ background: "#f3f7fb" }}>
@@ -5816,6 +5834,51 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                   </div>
                 </div>
                 <div style={{ display: "grid", gap: 12 }}>
+                  <div className="aq-dashboard-section" style={{ marginTop: 8 }}>
+                    <h3 className="aq-dashboard-section-title">Invoice & Revenue Status</h3>
+                    <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, color: "#4a6076" }}>Invoice Paid To Date</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: "#1f3f60" }}>
+                        <Currency value={paymentStatusTotals.totalPaid} digits={0} />
+                      </div>
+                    </div>
+                    <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, color: "#4a6076", marginBottom: 6 }}>Invoices Outstanding By Age</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(80px, 1fr))", gap: 6, fontSize: 12 }}>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>Current<br /><strong><Currency value={effectiveArSummary.aging.current} /></strong></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>1-30<br /><strong><Currency value={effectiveArSummary.aging["1_30"]} /></strong></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>31-60<br /><strong><Currency value={effectiveArSummary.aging["31_60"]} /></strong></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>61-90<br /><strong><Currency value={effectiveArSummary.aging["61_90"]} /></strong></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>90+<br /><strong><Currency value={effectiveArSummary.aging["90_plus"]} /></strong></div>
+                      </div>
+                    </div>
+                    <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10 }}>
+                      <div style={{ fontSize: 12, color: "#4a6076", marginBottom: 6 }}>
+                        Unbilled By Client <strong style={{ color: "#1f3f60" }}>(Total: <Currency value={dashboardUnbilledByClient.total} />)</strong>
+                      </div>
+                      <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #edf2f7", borderRadius: 8 }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                          <thead style={{ background: "#f7fafc" }}>
+                            <tr>
+                              <th style={{ textAlign: "left", padding: 6, borderBottom: "1px solid #edf2f7" }}>Client</th>
+                              <th style={{ textAlign: "right", padding: 6, borderBottom: "1px solid #edf2f7" }}>Unbilled</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {dashboardUnbilledByClient.rows.slice(0, 8).map((row) => (
+                              <tr key={`dash-unbilled-client-${row.client}`}>
+                                <td style={{ borderBottom: "1px solid #edf2f7", padding: 6 }}>{row.client}</td>
+                                <td style={{ borderBottom: "1px solid #edf2f7", padding: 6, textAlign: "right" }}><Currency value={row.amount} /></td>
+                              </tr>
+                            ))}
+                            {dashboardUnbilledByClient.rows.length === 0 && (
+                              <tr><td colSpan={2} style={{ padding: 8, color: "#4a6076" }}>No unbilled revenue by client in current data.</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
                   <div className="aq-dashboard-section" style={{ marginTop: 8 }}>
                     <h3 className="aq-dashboard-section-title">Revenue And Cost Trend</h3>
                     <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
