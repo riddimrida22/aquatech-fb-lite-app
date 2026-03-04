@@ -2294,6 +2294,25 @@ export default function Home() {
     setActiveView("dashboard");
     setDashboardSubView("overview");
   }
+  function openDataQualityIssue(issueLabel: string) {
+    if (issueLabel === "Users missing rates") {
+      openPayroll();
+      return;
+    }
+    if (issueLabel === "Missing timesheets") {
+      openTimesheetWorkspace();
+      return;
+    }
+    if (issueLabel === "Uncategorized bank rows") {
+      openSettingsBankTransactions();
+      return;
+    }
+    if (issueLabel === "Orphan references" || issueLabel === "Bad rate entries") {
+      setActiveView("reports");
+      setReportsWorkspaceTab("financial");
+      return;
+    }
+  }
 
   const dashboardMonthlyTrend = useMemo(() => {
     const rows = (overallReconciliationMonthly || []).slice(-dashboardTrendWindowMonths);
@@ -5775,6 +5794,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     healthLabel={dashboardDataQuality.healthLabel}
                     openCount={dashboardDataQuality.openCount}
                     issues={dashboardDataQuality.issues}
+                    onIssueClick={openDataQualityIssue}
                   />
                   <div className="aq-dashboard-section">
                     <h3 className="aq-dashboard-section-title">Project KPI Status</h3>
