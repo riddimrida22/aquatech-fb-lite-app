@@ -3943,7 +3943,7 @@ def ar_summary(
         return max(stored, derived)
 
     today = date.today()
-    candidate_invoices = db.scalars(select(Invoice).where(Invoice.status != "void")).all()
+    candidate_invoices = db.scalars(select(Invoice).where(Invoice.status.notin_(["void", "draft"]))).all()
     invoices = [i for i in candidate_invoices if _invoice_open_balance(i) > 0.0001]
     total_outstanding = float(sum(_invoice_open_balance(i) for i in invoices))
     overdue = [i for i in invoices if i.due_date and i.due_date < today]
@@ -4274,7 +4274,7 @@ def get_invoice_render_context(
             .where(
                 and_(
                     Invoice.project_id == inv.project_id,
-                    Invoice.status != "void",
+                    Invoice.status.notin_(["void", "draft"]),
                     InvoiceLine.task_id.is_not(None),
                     InvoiceLine.invoice_id != inv.id,
                 )
@@ -4607,6 +4607,14 @@ async def import_legacy_invoices(
             amount_paid = max(float(total_amount) - float(balance_due or 0.0), 0.0)
         if balance_due is None:
             balance_due = max(float(total_amount) - float(amount_paid or 0.0), 0.0)
+        amount_paid = max(float(amount_paid or 0.0), 0.0)
+        balance_due = max(float(balance_due or 0.0), 0.0)
+        status = _status_from_amounts(
+            status=status,
+            total_amount=float(total_amount),
+            amount_paid=amount_paid,
+            balance_due=balance_due,
+        )
 
         if not invoice_number:
             seed = f"{client_name}|{issue_date.isoformat()}|{due_date.isoformat()}|{row_index}|{float(total_amount):.2f}"
@@ -4643,8 +4651,8 @@ async def import_legacy_invoices(
                 status=status,
                 source="freshbooks_legacy",
                 subtotal_amount=float(total_amount),
-                amount_paid=float(amount_paid),
-                balance_due=float(balance_due),
+                amount_paid=amount_paid,
+                balance_due=balance_due,
                 total_cost=0.0,
                 total_profit=float(total_amount),
                 paid_date=issue_date if status == "paid" else None,
@@ -4676,9 +4684,9 @@ async def import_legacy_invoices(
             existing.status = status
             existing.source = "freshbooks_legacy"
             existing.subtotal_amount = float(total_amount)
-            existing.amount_paid = float(amount_paid)
-            existing.balance_due = float(balance_due)
-            existing.paid_date = issue_date if status == "paid" else existing.paid_date
+            existing.amount_paid = amount_paid
+            existing.balance_due = balance_due
+            existing.paid_date = issue_date if status == "paid" else None
             has_lines = db.scalar(select(func.count(InvoiceLine.id)).where(InvoiceLine.invoice_id == existing.id)) or 0
             if int(has_lines) == 0:
                 db.add(
@@ -4707,8 +4715,8 @@ async def import_legacy_invoices(
                 issue_date=issue_date.isoformat(),
                 due_date=due_date.isoformat(),
                 total_amount=float(total_amount),
-                amount_paid=float(amount_paid),
-                balance_due=float(balance_due),
+                amount_paid=amount_paid,
+                balance_due=balance_due,
                 status=operation,
                 reason=None,
             )
@@ -5007,7 +5015,7 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
     last_invoice_date_by_project: dict[int, date] = {}
     last_invoice_rows = db.execute(
         select(Invoice.project_id, func.max(Invoice.issue_date))
-        .where(and_(Invoice.project_id.is_not(None), Invoice.status != "void"))
+        .where(and_(Invoice.project_id.is_not(None), Invoice.status.notin_(["void", "draft"])))
         .group_by(Invoice.project_id)
     ).all()
     for project_id, last_issue in last_invoice_rows:
@@ -6038,6 +6046,19 @@ def _normalize_invoice_status(raw: str) -> str:
         return "draft"
     if val in {"sent", "open", "unpaid", "outstanding", ""}:
         return "sent"
+    return "sent"
+
+
+def _status_from_amounts(*, status: str, total_amount: float, amount_paid: float, balance_due: float) -> str:
+    normalized = (status or "").strip().lower()
+    if normalized == "void":
+        return "void"
+    if balance_due <= 0.0001 and total_amount > 0.0001:
+        return "paid"
+    if amount_paid > 0.0001:
+        return "partial"
+    if normalized == "draft":
+        return "draft"
     return "sent"
 
 

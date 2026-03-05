@@ -764,6 +764,11 @@ function effectiveInvoiceStatus(inv: Pick<InvoiceRecord, "status" | "subtotal_am
   return "sent";
 }
 
+function isFinancialInvoice(inv: Pick<InvoiceRecord, "status" | "subtotal_amount" | "amount_paid" | "balance_due" | "due_date">, todayYmd: string): boolean {
+  const status = effectiveInvoiceStatus(inv, todayYmd);
+  return status !== "void" && status !== "draft";
+}
+
 function isPlaceholderProjectName(name: string): boolean {
   const n = (name || "").trim().toLowerCase();
   if (!n) return true;
@@ -1523,11 +1528,12 @@ export default function Home() {
   const paidByProjectId = useMemo(() => {
     const map: Record<number, number> = {};
     for (const inv of savedInvoices) {
+      if (!isFinancialInvoice(inv, todayYmd)) continue;
       if (!inv.project_id) continue;
       map[inv.project_id] = (map[inv.project_id] || 0) + Number(inv.amount_paid || 0);
     }
     return map;
-  }, [savedInvoices]);
+  }, [savedInvoices, todayYmd]);
   const contractCostByProjectId = useMemo(() => {
     const map: Record<number, number> = {};
     for (const p of contractProjectPerformance) {
@@ -1823,6 +1829,7 @@ export default function Home() {
       { invoiced: number; paid: number; balance: number; openCount: number; overdueCount: number; overdueAmount: number }
     > = {};
     for (const inv of savedInvoices) {
+      if (!isFinancialInvoice(inv, todayYmd)) continue;
       if (!inv.project_id) continue;
       const row =
         map[inv.project_id] ||
@@ -1886,8 +1893,9 @@ export default function Home() {
     };
   }, [unbilledSinceLastInvoice]);
   const taxPrepReadiness = useMemo(() => {
-    const invoicePaid = savedInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
-    const invoiceOutstanding = savedInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0);
+    const financialInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd));
+    const invoicePaid = financialInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
+    const invoiceOutstanding = financialInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0);
     const uncategorizedBankRows = bankQueue.filter((q) => !q.category || String(q.category).trim() === "").length;
     const dataIssues = reconciliationMonthly.reduce(
       (acc, row) => {
@@ -1908,15 +1916,11 @@ export default function Home() {
       orphanRefs: dataIssues.orphanRefs,
       badRates: dataIssues.badRates,
     };
-  }, [savedInvoices, bankQueue, reconciliationMonthly]);
+  }, [savedInvoices, bankQueue, reconciliationMonthly, todayYmd]);
   const arSummaryFromInvoices = useMemo<ArSummary>(() => {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
-    const openInvoices = savedInvoices.filter((inv) => {
-      const status = String(inv.status || "").toLowerCase();
-      if (status === "void") return false;
-      return invoiceOutstandingBalance(inv) > 0.0001;
-    });
+    const openInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd) && invoiceOutstandingBalance(inv) > 0.0001);
 
     const aging = { current: 0, "1_30": 0, "31_60": 0, "61_90": 0, "90_plus": 0 };
     const byClient: Record<string, ArClientRow> = {};
@@ -1965,15 +1969,16 @@ export default function Home() {
   }, [savedInvoices, todayYmd]);
   const effectiveArSummary = arSummary ?? arSummaryFromInvoices;
   const paymentStatusTotals = useMemo(() => {
-    const open = savedInvoices.filter((inv) => invoiceOutstandingBalance(inv) > 0.0001 && String(inv.status || "").toLowerCase() !== "void");
+    const financialInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd));
+    const open = financialInvoices.filter((inv) => invoiceOutstandingBalance(inv) > 0.0001);
     const overdue = open.filter((inv) => isValidYmd(inv.due_date) && inv.due_date < todayYmd);
     return {
-      invoiceCount: savedInvoices.length,
+      invoiceCount: financialInvoices.length,
       openCount: open.length,
       overdueCount: overdue.length,
-      totalInvoiced: savedInvoices.reduce((sum, inv) => sum + Number(inv.subtotal_amount || 0), 0),
-      totalPaid: savedInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0),
-      totalOutstanding: savedInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0),
+      totalInvoiced: financialInvoices.reduce((sum, inv) => sum + Number(inv.subtotal_amount || 0), 0),
+      totalPaid: financialInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0),
+      totalOutstanding: financialInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0),
     };
   }, [savedInvoices, todayYmd]);
   const paymentClientOptions = useMemo(() => {
@@ -1996,6 +2001,7 @@ export default function Home() {
 
     return savedInvoices.filter((inv) => {
       const effectiveStatus = effectiveInvoiceStatus(inv, todayYmd);
+      if (paymentStatusFilter === "all" && (effectiveStatus === "draft" || effectiveStatus === "void")) return false;
       if (paymentStatusFilter !== "all" && effectiveStatus !== paymentStatusFilter) return false;
       if (paymentClientFilter !== "all" && (inv.client_name || "").trim() !== paymentClientFilter) return false;
       if (paymentPeriodFilter !== "all") {
