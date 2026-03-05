@@ -84,3 +84,145 @@ def test_freshbooks_invoice_import_and_ar_rollup() -> None:
         assert ar_after_json["invoice_count_open"] == 1
         assert ar_after_json["total_outstanding"] == 500
         assert ar_after_json["overdue_invoice_count"] == 0
+
+
+def test_import_uses_payment_amounts_and_ignores_drafts_for_ar() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.pay@aquatechpc.com", "full_name": "Payment Admin"},
+        )
+        assert bootstrap.status_code == 200
+
+        csv_content = "\n".join(
+            [
+                "Invoice #,Client,Invoice Date,Due Date,Status,Total,Paid,Balance",
+                "INV-2001,Client A,2026-01-05,2026-01-20,draft,1000,1000,0",
+                "INV-2002,Client B,2026-01-05,2026-01-20,draft,1000,200,800",
+                "INV-2003,Client C,2026-01-05,2026-01-20,draft,500,0,500",
+            ]
+        )
+        files = {"file": ("freshbooks_invoices.csv", csv_content, "text/csv")}
+        applied = client.post("/invoices/import/freshbooks?apply=true", files=files)
+        assert applied.status_code == 200
+        payload = applied.json()
+        assert payload["imported"] == 3
+        assert payload["errors"] == 0
+
+        invoices_res = client.get("/invoices")
+        assert invoices_res.status_code == 200
+        invoices = {inv["invoice_number"]: inv for inv in invoices_res.json()}
+        assert invoices["INV-2001"]["status"] == "paid"
+        assert invoices["INV-2001"]["balance_due"] == 0
+        assert invoices["INV-2002"]["status"] == "partial"
+        assert invoices["INV-2002"]["balance_due"] == 800
+        assert invoices["INV-2003"]["status"] == "draft"
+
+        ar = client.get("/reports/ar-summary")
+        assert ar.status_code == 200
+        ar_json = ar.json()
+        assert ar_json["invoice_count_open"] == 1
+        assert ar_json["total_outstanding"] == 800
+
+
+def test_unbilled_since_last_invoice_ignores_draft_invoices() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.unbilled@aquatechpc.com", "full_name": "Unbilled Admin"},
+        )
+        assert bootstrap.status_code == 200
+        admin_id = bootstrap.json()["id"]
+
+        project = client.post(
+            "/projects",
+            json={
+                "name": "Billing Project",
+                "client_name": "Billing Client",
+                "pm_user_id": admin_id,
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "overall_budget_fee": 10000,
+                "is_overhead": False,
+            },
+        )
+        assert project.status_code == 200
+        project_id = project.json()["id"]
+
+        task = client.post(f"/projects/{project_id}/tasks", json={"name": "Design"})
+        assert task.status_code == 200
+        task_id = task.json()["id"]
+
+        subtask = client.post(
+            f"/tasks/{task_id}/subtasks",
+            json={"code": "DES-01", "name": "Model", "budget_hours": 20, "budget_fee": 2000},
+        )
+        assert subtask.status_code == 200
+        subtask_id = subtask.json()["id"]
+
+        set_rate = client.post(
+            "/rates",
+            json={"user_id": admin_id, "effective_date": "2026-01-01", "bill_rate": 100, "cost_rate": 50},
+        )
+        assert set_rate.status_code == 200
+
+        entry_one = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-01-02",
+                "hours": 1,
+                "note": "phase 1",
+            },
+        )
+        assert entry_one.status_code == 200
+
+        create_invoice = client.post(
+            "/invoices",
+            json={
+                "start": "2026-01-01",
+                "end": "2026-01-03",
+                "project_id": project_id,
+                "approved_only": False,
+                "issue_date": "2026-01-05",
+                "due_date": "2026-01-20",
+                "notes": "draft invoice",
+            },
+        )
+        assert create_invoice.status_code == 200
+        invoice_id = create_invoice.json()["id"]
+        assert create_invoice.json()["status"] == "draft"
+
+        entry_two = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-01-10",
+                "hours": 2,
+                "note": "phase 2",
+            },
+        )
+        assert entry_two.status_code == 200
+
+        unbilled_before_sent = client.get("/reports/unbilled-since-last-invoice")
+        assert unbilled_before_sent.status_code == 200
+        rows_before = unbilled_before_sent.json()["by_client"]
+        assert rows_before and rows_before[0]["client_name"] == "Billing Client"
+        assert rows_before[0]["unbilled"] == 300
+
+        update_status = client.put(
+            f"/invoices/{invoice_id}/payment",
+            json={"amount_paid": 0, "status": "sent"},
+        )
+        assert update_status.status_code == 200
+        assert update_status.json()["status"] == "sent"
+
+        unbilled_after_sent = client.get("/reports/unbilled-since-last-invoice")
+        assert unbilled_after_sent.status_code == 200
+        rows_after = unbilled_after_sent.json()["by_client"]
+        assert rows_after and rows_after[0]["client_name"] == "Billing Client"
+        assert rows_after[0]["unbilled"] == 200
