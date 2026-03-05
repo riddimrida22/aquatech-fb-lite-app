@@ -5012,15 +5012,20 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
     tasks = db.scalars(select(Task)).all()
     tasks_by_id = {t.id: t for t in tasks}
 
-    last_invoice_date_by_project: dict[int, date] = {}
-    last_invoice_rows = db.execute(
-        select(Invoice.project_id, func.max(Invoice.issue_date))
-        .where(and_(Invoice.project_id.is_not(None), Invoice.status.notin_(["void", "draft"])))
-        .group_by(Invoice.project_id)
-    ).all()
-    for project_id, last_issue in last_invoice_rows:
-        if project_id is not None and isinstance(last_issue, date):
-            last_invoice_date_by_project[int(project_id)] = last_issue
+    invoiced_time_entry_ids = {
+        int(v)
+        for v in db.scalars(
+            select(InvoiceLine.source_time_entry_id)
+            .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+            .where(
+                and_(
+                    InvoiceLine.source_time_entry_id.is_not(None),
+                    Invoice.status.notin_(["void", "draft"]),
+                )
+            )
+        ).all()
+        if v is not None
+    }
 
     by_project_unbilled: dict[int, float] = defaultdict(float)
     for te in db.scalars(select(TimeEntry)).all():
@@ -5031,8 +5036,7 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         is_billable = bool(project_ref.is_billable) and bool(task_ref.is_billable if task_ref else False)
         if not is_billable:
             continue
-        last_invoice_date = last_invoice_date_by_project.get(te.project_id)
-        if last_invoice_date and te.work_date <= last_invoice_date:
+        if te.id in invoiced_time_entry_ids:
             continue
         by_project_unbilled[te.project_id] += float(te.hours * te.bill_rate_applied)
 
