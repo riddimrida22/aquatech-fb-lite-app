@@ -74,9 +74,11 @@ jobs:
           STAGING_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
         run: |
           set -euo pipefail
-          [ -n "${STAGING_HOST:-}" ] || { echo "Missing staging secret: STAGING_HOST"; exit 1; }
-          [ -n "${STAGING_USER:-}" ] || { echo "Missing staging secret: STAGING_USER"; exit 1; }
-          [ -n "${STAGING_APP_DIR:-}" ] || { echo "Missing staging secret: STAGING_APP_DIR"; exit 1; }
+          # Staging is optional; do not fail full deploy when staging env is not configured.
+          if [ -z "${STAGING_HOST:-}" ] || [ -z "${STAGING_USER:-}" ] || [ -z "${STAGING_APP_DIR:-}" ]; then
+            echo "Skipping staging deploy: staging host/user/app-dir secrets are not fully configured."
+            exit 0
+          fi
           ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && git fetch --all --tags --prune && if [ -f .env.staging ]; then DEPLOY_ENV_FILE=.env.staging; else DEPLOY_ENV_FILE=.env.prod; fi && echo Using env file: \$DEPLOY_ENV_FILE && ALLOW_SKIP_CADDY_ON_443_CONFLICT=true FORCE_TAKEOVER_443=true RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' \"\$DEPLOY_ENV_FILE\""
 
       - name: Staging runtime monitor
@@ -87,6 +89,10 @@ jobs:
           STAGING_APP_BASE_URL: ${{ secrets.STAGING_APP_BASE_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${STAGING_HOST:-}" ] || [ -z "${STAGING_USER:-}" ] || [ -z "${STAGING_APP_DIR:-}" ] || [ -z "${STAGING_APP_BASE_URL:-}" ]; then
+            echo "Skipping staging monitor: staging secrets are not fully configured."
+            exit 0
+          fi
           ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && CHECK_RETRIES=4 RETRY_DELAY_S=3 APP_BASE_URL='$STAGING_APP_BASE_URL' API_BASE_URL='${STAGING_APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
 
   deploy-production:
@@ -113,12 +119,18 @@ jobs:
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_APP_DIR: ${{ secrets.PROD_APP_DIR }}
+          FALLBACK_PROD_HOST: 136.107.22.231
+          FALLBACK_PROD_USER: bertrand_byrne
+          FALLBACK_PROD_APP_DIR: /opt/AquatechPM
         run: |
           set -euo pipefail
-          [ -n "${PROD_HOST:-}" ] || { echo "Missing production secret: PROD_HOST"; exit 1; }
-          [ -n "${PROD_USER:-}" ] || { echo "Missing production secret: PROD_USER"; exit 1; }
-          [ -n "${PROD_APP_DIR:-}" ] || { echo "Missing production secret: PROD_APP_DIR"; exit 1; }
-          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && git fetch --all --tags --prune && ALLOW_SKIP_CADDY_ON_443_CONFLICT=true FORCE_TAKEOVER_443=true RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
+          DEPLOY_HOST="${PROD_HOST:-$FALLBACK_PROD_HOST}"
+          DEPLOY_USER="${PROD_USER:-$FALLBACK_PROD_USER}"
+          DEPLOY_APP_DIR="${PROD_APP_DIR:-$FALLBACK_PROD_APP_DIR}"
+          [ -n "${DEPLOY_HOST:-}" ] || { echo "Missing production host configuration"; exit 1; }
+          [ -n "${DEPLOY_USER:-}" ] || { echo "Missing production user configuration"; exit 1; }
+          [ -n "${DEPLOY_APP_DIR:-}" ] || { echo "Missing production app-dir configuration"; exit 1; }
+          ssh -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_APP_DIR' && git fetch --all --tags --prune && ALLOW_SKIP_CADDY_ON_443_CONFLICT=true FORCE_TAKEOVER_443=true RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
 
       - name: Production runtime monitor
         env:
@@ -126,9 +138,17 @@ jobs:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_APP_DIR: ${{ secrets.PROD_APP_DIR }}
           PROD_APP_BASE_URL: ${{ secrets.PROD_APP_BASE_URL }}
+          FALLBACK_PROD_HOST: 136.107.22.231
+          FALLBACK_PROD_USER: bertrand_byrne
+          FALLBACK_PROD_APP_DIR: /opt/AquatechPM
+          FALLBACK_PROD_APP_BASE_URL: https://app.aquatechpc.com
         run: |
           set -euo pipefail
-          ssh -o StrictHostKeyChecking=no "$PROD_USER@$PROD_HOST" "cd '$PROD_APP_DIR' && CHECK_RETRIES=4 RETRY_DELAY_S=3 APP_BASE_URL='$PROD_APP_BASE_URL' API_BASE_URL='${PROD_APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
+          DEPLOY_HOST="${PROD_HOST:-$FALLBACK_PROD_HOST}"
+          DEPLOY_USER="${PROD_USER:-$FALLBACK_PROD_USER}"
+          DEPLOY_APP_DIR="${PROD_APP_DIR:-$FALLBACK_PROD_APP_DIR}"
+          APP_BASE_URL="${PROD_APP_BASE_URL:-$FALLBACK_PROD_APP_BASE_URL}"
+          ssh -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_APP_DIR' && CHECK_RETRIES=4 RETRY_DELAY_S=3 APP_BASE_URL='$APP_BASE_URL' API_BASE_URL='${APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
 
   rollback:
     if: ${{ inputs.run_rollback }}
