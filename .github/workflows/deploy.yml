@@ -90,8 +90,12 @@ jobs:
           ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && CHECK_RETRIES=4 RETRY_DELAY_S=3 APP_BASE_URL='$STAGING_APP_BASE_URL' API_BASE_URL='${STAGING_APP_BASE_URL}/api' ./scripts/ops_monitor.sh"
 
   deploy-production:
-    if: ${{ !inputs.run_rollback }}
-    needs: deploy-staging
+    needs:
+      - validate
+      - deploy-staging
+    # Keep staging as a best-practice gate, but still allow production deploy when
+    # staging is temporarily unavailable (for example, host/SSH issues).
+    if: ${{ !inputs.run_rollback && always() && needs.validate.result == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     steps:
