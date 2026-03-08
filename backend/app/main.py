@@ -507,6 +507,18 @@ class InvoicePaymentLinkCreateRequest(BaseModel):
     expires_in_days: int = Field(default=14, ge=1, le=120)
 
 
+class InvoiceClientReconcileRequest(BaseModel):
+    canonical_client_name: str = Field(min_length=1, max_length=255)
+    aliases: list[str] = Field(default_factory=lambda: ["Imported Client", "Legacy Client"])
+
+
+class InvoiceClientReconcileOut(BaseModel):
+    canonical_client_name: str
+    aliases: list[str]
+    invoices_updated: int
+    projects_updated: int
+
+
 class InvoicePaymentLinkOut(BaseModel):
     invoice_id: int
     invoice_number: str
@@ -4543,6 +4555,67 @@ def update_invoice_payment(
     db.commit()
     db.refresh(inv)
     return _invoice_out(db, inv, include_lines=True)
+
+
+@app.post("/invoices/reconcile-client-labels", response_model=InvoiceClientReconcileOut)
+def reconcile_invoice_client_labels(
+    payload: InvoiceClientReconcileRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> InvoiceClientReconcileOut:
+    canonical = (payload.canonical_client_name or "").strip()
+    if not canonical:
+        raise HTTPException(status_code=400, detail="canonical_client_name is required")
+
+    alias_values = []
+    alias_seen: set[str] = set()
+    for raw in payload.aliases:
+        clean = str(raw or "").strip()
+        if not clean:
+            continue
+        low = clean.lower()
+        if low == canonical.lower() or low in alias_seen:
+            continue
+        alias_seen.add(low)
+        alias_values.append(clean)
+    if len(alias_values) == 0:
+        raise HTTPException(status_code=400, detail="Provide at least one alias different from canonical_client_name")
+
+    aliases_lower = {v.lower() for v in alias_values}
+    invoices = db.scalars(
+        select(Invoice).where(func.lower(func.trim(Invoice.client_name)).in_(aliases_lower))
+    ).all()
+    projects = db.scalars(
+        select(Project).where(func.lower(func.trim(Project.client_name)).in_(aliases_lower))
+    ).all()
+
+    for inv in invoices:
+        inv.client_name = canonical
+    for proj in projects:
+        proj.client_name = canonical
+
+    event_entity_id = int(invoices[0].id) if invoices else (int(projects[0].id) if projects else 0)
+    _log_audit_event(
+        db=db,
+        entity_type="invoice",
+        entity_id=event_entity_id,
+        action="reconcile_invoice_client_labels",
+        actor_user_id=current_user.id,
+        payload={
+            "canonical_client_name": canonical,
+            "aliases": alias_values,
+            "invoices_updated": len(invoices),
+            "projects_updated": len(projects),
+        },
+    )
+    db.commit()
+
+    return InvoiceClientReconcileOut(
+        canonical_client_name=canonical,
+        aliases=alias_values,
+        invoices_updated=len(invoices),
+        projects_updated=len(projects),
+    )
 
 
 @app.post("/invoices/import/freshbooks")

@@ -335,3 +335,109 @@ def test_unbilled_since_last_invoice_excludes_pre_cutoff_uninvoiced_time() -> No
         rows = unbilled.json()["by_client"]
         assert rows and rows[0]["client_name"] == "Cutoff Client"
         assert rows[0]["unbilled"] == 300
+
+
+def test_reconcile_imported_and_legacy_client_labels() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.reconcile@aquatechpc.com", "full_name": "Reconcile Admin"},
+        )
+        assert bootstrap.status_code == 200
+        admin_id = bootstrap.json()["id"]
+
+        project = client.post(
+            "/projects",
+            json={
+                "name": "Legacy Billing Project",
+                "client_name": "Legacy Client",
+                "pm_user_id": admin_id,
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "overall_budget_fee": 10000,
+                "is_overhead": False,
+            },
+        )
+        assert project.status_code == 200
+        project_id = project.json()["id"]
+
+        task = client.post(f"/projects/{project_id}/tasks", json={"name": "Design"})
+        assert task.status_code == 200
+        task_id = task.json()["id"]
+
+        subtask = client.post(
+            f"/tasks/{task_id}/subtasks",
+            json={"code": "DES-01", "name": "Model", "budget_hours": 20, "budget_fee": 2000},
+        )
+        assert subtask.status_code == 200
+        subtask_id = subtask.json()["id"]
+
+        set_rate = client.post(
+            "/rates",
+            json={"user_id": admin_id, "effective_date": "2026-01-01", "bill_rate": 100, "cost_rate": 50},
+        )
+        assert set_rate.status_code == 200
+
+        entry = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-01-06",
+                "hours": 2,
+                "note": "legacy labeled client invoice",
+            },
+        )
+        assert entry.status_code == 200
+
+        create_invoice = client.post(
+            "/invoices",
+            json={
+                "start": "2026-01-05",
+                "end": "2026-01-07",
+                "project_id": project_id,
+                "approved_only": False,
+                "issue_date": "2026-01-08",
+                "due_date": "2026-01-22",
+                "notes": "legacy client invoice",
+            },
+        )
+        assert create_invoice.status_code == 200
+        assert create_invoice.json()["client_name"] == "Legacy Client"
+
+        imported_csv = "\n".join(
+            [
+                "Invoice #,Client,Invoice Date,Due Date,Status,Total,Paid,Balance",
+                "INV-LGC-1,Imported Client,2026-01-10,2026-01-20,Sent,500,0,500",
+            ]
+        )
+        files = {"file": ("freshbooks_invoices.csv", imported_csv, "text/csv")}
+        import_res = client.post("/invoices/import/freshbooks?apply=true", files=files)
+        assert import_res.status_code == 200
+
+        reconcile = client.post(
+            "/invoices/reconcile-client-labels",
+            json={
+                "canonical_client_name": "Actual Client LLC",
+                "aliases": ["Imported Client", "Legacy Client"],
+            },
+        )
+        assert reconcile.status_code == 200
+        payload = reconcile.json()
+        assert payload["canonical_client_name"] == "Actual Client LLC"
+        assert payload["invoices_updated"] >= 2
+        assert payload["projects_updated"] >= 1
+
+        invoices = client.get("/invoices")
+        assert invoices.status_code == 200
+        client_names = {inv["client_name"] for inv in invoices.json()}
+        assert "Imported Client" not in client_names
+        assert "Legacy Client" not in client_names
+        assert "Actual Client LLC" in client_names
+
+        projects = client.get("/projects")
+        assert projects.status_code == 200
+        project_clients = {p["client_name"] for p in projects.json()}
+        assert "Legacy Client" not in project_clients
+        assert "Actual Client LLC" in project_clients

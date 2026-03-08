@@ -491,6 +491,12 @@ type LegacyInvoiceImportResult = {
   errors: number;
   rows: LegacyInvoiceImportRow[];
 };
+type InvoiceClientReconcileResult = {
+  canonical_client_name: string;
+  aliases: string[];
+  invoices_updated: number;
+  projects_updated: number;
+};
 type ArClientRow = {
   client_name: string;
   invoice_count: number;
@@ -1253,6 +1259,7 @@ export default function Home() {
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
   const [paymentClientFilter, setPaymentClientFilter] = useState<string>("all");
   const [paymentPeriodFilter, setPaymentPeriodFilter] = useState<"all" | "last30" | "this_month" | "this_quarter" | "this_year">("all");
+  const [invoiceClientReconcileName, setInvoiceClientReconcileName] = useState("");
   const [paymentImportMappingJson, setPaymentImportMappingJson] = useState(
     '{\n  "invoice_number": ["Invoice #", "Invoice Number"],\n  "client_name": ["Client"],\n  "issue_date": ["Invoice Date"],\n  "due_date": ["Due Date"],\n  "status": ["Status"],\n  "total_amount": ["Total"],\n  "amount_paid": ["Paid"],\n  "balance_due": ["Balance"]\n}',
   );
@@ -1982,6 +1989,26 @@ export default function Home() {
       totalOutstanding: financialInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0),
     };
   }, [savedInvoices, todayYmd]);
+  const invoiceStatusOverview = useMemo(() => {
+    const financialInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd));
+    let sentUnpaidCount = 0;
+    let sentUnpaidAmount = 0;
+    for (const inv of financialInvoices) {
+      const effectiveStatus = effectiveInvoiceStatus(inv, todayYmd);
+      const balance = invoiceOutstandingBalance(inv);
+      if (balance <= 0.0001) continue;
+      if (effectiveStatus === "draft" || effectiveStatus === "void" || effectiveStatus === "paid") continue;
+      sentUnpaidCount += 1;
+      sentUnpaidAmount += balance;
+    }
+    const unbilledAmount = (unbilledSinceLastInvoice.by_client || []).reduce((sum, row) => sum + Number(row.unbilled || 0), 0);
+    return {
+      paidToDate: paymentStatusTotals.totalPaid,
+      sentUnpaidCount,
+      sentUnpaidAmount,
+      unbilledAmount,
+    };
+  }, [savedInvoices, todayYmd, unbilledSinceLastInvoice, paymentStatusTotals.totalPaid]);
   const paymentClientOptions = useMemo(() => {
     return Array.from(
       new Set(
@@ -1990,6 +2017,18 @@ export default function Home() {
           .filter((name) => name.length > 0),
       ),
     ).sort((a, b) => a.localeCompare(b));
+  }, [savedInvoices]);
+  const suggestedReconcileClient = useMemo(() => {
+    const skip = new Set(["imported client", "legacy client"]);
+    const tally: Record<string, { label: string; count: number }> = {};
+    for (const inv of savedInvoices) {
+      const name = (inv.client_name || "").trim();
+      if (!name) continue;
+      if (skip.has(name.toLowerCase())) continue;
+      if (!tally[name]) tally[name] = { label: name, count: 0 };
+      tally[name].count += 1;
+    }
+    return Object.values(tally).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))[0]?.label || "";
   }, [savedInvoices]);
   const paymentRows = useMemo(() => {
     const now = parseYmdUtc(todayYmd);
@@ -5318,6 +5357,34 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
       previewMessage: "Legacy invoice import preview ready.",
       setSummary: setLegacyInvoiceSummary,
     });
+  }
+
+  async function reconcileLegacyImportedClients() {
+    if (!canManageProjects) {
+      setMessage("You do not have permission to reconcile client labels.");
+      return;
+    }
+    const canonical = (invoiceClientReconcileName || suggestedReconcileClient || "").trim();
+    if (!canonical) {
+      setMessage("Enter the real client name to reconcile Imported/Legacy clients.");
+      return;
+    }
+    try {
+      const res = await apiPost<InvoiceClientReconcileResult>("/invoices/reconcile-client-labels", {
+        canonical_client_name: canonical,
+        aliases: ["Imported Client", "Legacy Client"],
+      });
+      setInvoiceClientReconcileName(res.canonical_client_name);
+      setMessage(
+        `Reconciled to \"${res.canonical_client_name}\". Invoices updated: ${res.invoices_updated}, projects updated: ${res.projects_updated}.`,
+      );
+      refreshInvoices();
+      refreshData();
+      refreshUnbilledSinceLastInvoice();
+      refreshArSummary();
+    } catch (err) {
+      setMessage(String(err));
+    }
   }
 
   async function runFreshbooksPaymentImport() {
@@ -9014,6 +9081,36 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                   {showSavedInvoices && (
                   <div style={{ borderTop: "1px solid #eee", paddingTop: 10 }}>
                     <h4 style={{ marginTop: 0 }}>Saved Invoices</h4>
+                    {activeView === "invoices" && (
+                      <div style={{ border: "1px solid #f0d9bf", background: "#fff9f2", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                        <div style={{ fontWeight: 700, marginBottom: 6 }}>Client Label Reconciliation</div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <input
+                            value={invoiceClientReconcileName}
+                            onChange={(e) => setInvoiceClientReconcileName(e.target.value)}
+                            placeholder={suggestedReconcileClient || "Enter real client name"}
+                            style={{ minWidth: 280 }}
+                          />
+                          <button onClick={reconcileLegacyImportedClients}>Reconcile Imported/Legacy Client</button>
+                          <span style={{ color: "#6f4f1b", fontSize: 12 }}>
+                            Replaces client labels `Imported Client` and `Legacy Client` in invoices and projects.
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(160px, 1fr))", gap: 8, marginBottom: 10 }}>
+                      <div style={{ border: "1px solid #dbe6d5", background: "#f6fbf4", padding: 8 }}>
+                        Paid to Date<br /><strong><Currency value={invoiceStatusOverview.paidToDate} /></strong>
+                      </div>
+                      <div style={{ border: "1px solid #f1dcc2", background: "#fff8ef", padding: 8 }}>
+                        Sent &amp; Unpaid<br /><strong><Currency value={invoiceStatusOverview.sentUnpaidAmount} /></strong>
+                        <div style={{ fontSize: 12, color: "#6c4b1f" }}>{invoiceStatusOverview.sentUnpaidCount} invoices</div>
+                      </div>
+                      <div style={{ border: "1px solid #d6e3f1", background: "#f3f8fe", padding: 8 }}>
+                        Unbilled<br /><strong><Currency value={invoiceStatusOverview.unbilledAmount} /></strong>
+                        <div style={{ fontSize: 12, color: "#35506e" }}>Since project last invoice date</div>
+                      </div>
+                    </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
                       <div style={{ border: "1px solid #eee", padding: 8 }}>Invoices<br /><strong>{paymentStatusTotals.invoiceCount}</strong></div>
                       <div style={{ border: "1px solid #eee", padding: 8 }}>Open<br /><strong>{paymentStatusTotals.openCount}</strong></div>
