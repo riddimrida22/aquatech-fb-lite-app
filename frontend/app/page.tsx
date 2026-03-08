@@ -786,6 +786,14 @@ function isHiddenProjectName(name: string): boolean {
   return n === "no project" || n === "imported project";
 }
 
+function normalizeDashboardClientLabel(name: string): string {
+  const clean = (name || "").trim();
+  const lower = clean.toLowerCase();
+  if (!clean) return "Unassigned Client";
+  if (lower === "imported client" || lower === "legacy client") return "Unmapped Imported Work";
+  return clean;
+}
+
 function formatWbsSubtaskLabel(subtask: WbsSubtask): string {
   if ((subtask.code || "").trim().toUpperCase() === NO_SUBTASK_CODE) return "No Sub-Task";
   return `${subtask.code} - ${subtask.name}`;
@@ -1906,9 +1914,15 @@ export default function Home() {
       });
   }, [projectCockpitRows, performanceByProjectId, invoiceFinanceByProjectId]);
   const dashboardUnbilledByClient = useMemo(() => {
-    const rows = (unbilledSinceLastInvoice.by_client || [])
-      .map((row) => ({ client: row.client_name, amount: Number(row.unbilled || 0) }))
-      .filter((row) => row.amount > 0.009)
+    const grouped: Record<string, number> = {};
+    for (const row of unbilledSinceLastInvoice.by_client || []) {
+      const client = normalizeDashboardClientLabel(row.client_name || "");
+      const amount = Number(row.unbilled || 0);
+      if (amount <= 0.009) continue;
+      grouped[client] = (grouped[client] || 0) + amount;
+    }
+    const rows = Object.entries(grouped)
+      .map(([client, amount]) => ({ client, amount }))
       .sort((a, b) => b.amount - a.amount);
     return {
       total: rows.reduce((sum, row) => sum + row.amount, 0),
@@ -1916,16 +1930,14 @@ export default function Home() {
     };
   }, [unbilledSinceLastInvoice]);
   const dashboardRevenueStatusTotals = useMemo(() => {
-    return dashboardProjectKpis.reduce(
-      (acc, p) => {
-        acc.earnedRevenueLife += Number(p.revenueLifeToDate || 0);
-        acc.earnedNotBilled += Number(p.earnedButUnbilled || 0);
-        acc.unearnedBudgetRemaining += Number(p.unearnedBudgetRemaining || 0);
-        return acc;
-      },
-      { earnedRevenueLife: 0, earnedNotBilled: 0, unearnedBudgetRemaining: 0 },
-    );
-  }, [dashboardProjectKpis]);
+    const earnedRevenueLife = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.revenueLifeToDate || 0), 0);
+    const unearnedBudgetRemaining = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.unearnedBudgetRemaining || 0), 0);
+    return {
+      earnedRevenueLife,
+      earnedNotBilled: dashboardUnbilledByClient.total,
+      unearnedBudgetRemaining,
+    };
+  }, [dashboardProjectKpis, dashboardUnbilledByClient.total]);
   const taxPrepReadiness = useMemo(() => {
     const financialInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd));
     const invoicePaid = financialInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
