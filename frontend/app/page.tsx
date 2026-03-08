@@ -2331,10 +2331,8 @@ export default function Home() {
   const isAccountingView =
     activeView === "accounting" || activeView === "invoices" || activeView === "payments" || activeView === "expenses";
   const showInvoiceStudio = activeView === "invoices" && invoiceWorkspaceTab === "studio";
-  const showSavedInvoices =
-    (activeView === "invoices" && invoiceWorkspaceTab === "saved") ||
-    (activeView === "payments" && paymentWorkspaceTab === "status");
-  const showPaymentsImport = activeView !== "invoices" && paymentWorkspaceTab === "status";
+  const showSavedInvoices = activeView === "invoices" && invoiceWorkspaceTab === "saved";
+  const showPaymentsImport = activeView === "payments" && paymentWorkspaceTab === "status";
   const showPaymentStatusWorkspace = activeView === "payments" && paymentWorkspaceTab === "status";
   const showRecurringSchedules = activeView === "invoices" && invoiceWorkspaceTab === "recurring";
   const showLegacyImport = activeView === "invoices" && invoiceWorkspaceTab === "legacy";
@@ -2421,6 +2419,24 @@ export default function Home() {
 
   function openInvoices() {
     setActiveView("invoices");
+  }
+
+  function openInvoiceStudio() {
+    setActiveView("invoices");
+    setAccountingSubView("workspace");
+    setInvoiceWorkspaceTab("studio");
+  }
+
+  function openPaymentsStatus() {
+    setActiveView("payments");
+    setAccountingSubView("workspace");
+    setPaymentWorkspaceTab("status");
+  }
+
+  function openPaymentsAging() {
+    setActiveView("payments");
+    setAccountingSubView("workspace");
+    setPaymentWorkspaceTab("ar");
   }
 
   function openExpenses() {
@@ -6190,42 +6206,62 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(140px, 1fr))", gap: 8, marginBottom: 8 }}>
                       <div style={{ border: "1px solid #d6e3f1", borderRadius: 8, padding: 10, background: "#f3f8fe" }}>
                         <div style={{ fontSize: 12, color: "#4a6076" }}>Earned Revenue (Life)</div>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: "#1f3f60" }}>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardSubView("controls")}
+                          style={{ fontSize: 18, fontWeight: 700, color: "#1f3f60", background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer" }}
+                          title="Open Project Control Board"
+                        >
                           <Currency value={dashboardRevenueStatusTotals.earnedRevenueLife} digits={0} />
-                        </div>
+                        </button>
                       </div>
                       <div style={{ border: "1px solid #f1dcc2", borderRadius: 8, padding: 10, background: "#fff8ef" }}>
                         <div style={{ fontSize: 12, color: "#4a6076" }}>Earned Not Billed</div>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: "#7a4a1f" }}>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardSubView("controls")}
+                          style={{ fontSize: 18, fontWeight: 700, color: "#7a4a1f", background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer" }}
+                          title="Open Project Control Board"
+                        >
                           <Currency value={dashboardRevenueStatusTotals.earnedNotBilled} digits={0} />
-                        </div>
+                        </button>
                       </div>
                       <div style={{ border: "1px solid #dbe6d5", borderRadius: 8, padding: 10, background: "#f6fbf4" }}>
                         <div style={{ fontSize: 12, color: "#4a6076" }}>Unearned Budget Remaining</div>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: "#2f5b2f" }}>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardSubView("controls")}
+                          style={{ fontSize: 18, fontWeight: 700, color: "#2f5b2f", background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer" }}
+                          title="Open Project Control Board"
+                        >
                           <Currency value={dashboardRevenueStatusTotals.unearnedBudgetRemaining} digits={0} />
-                        </div>
+                        </button>
                       </div>
                     </div>
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10, marginBottom: 8 }}>
                       <div style={{ fontSize: 12, color: "#4a6076" }}>Invoice Paid To Date</div>
-                      <div style={{ fontSize: 20, fontWeight: 700, color: "#1f3f60" }}>
+                      <button
+                        type="button"
+                        onClick={openPaymentsStatus}
+                        style={{ fontSize: 20, fontWeight: 700, color: "#1f3f60", background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer" }}
+                        title="Open Payments Status"
+                      >
                         <Currency value={paidToDateDisplay} digits={0} />
-                      </div>
+                      </button>
                     </div>
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10, marginBottom: 8 }}>
                       <div style={{ fontSize: 12, color: "#4a6076", marginBottom: 6 }}>Invoices Outstanding By Age</div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(80px, 1fr))", gap: 6, fontSize: 12 }}>
-                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>Current<br /><strong><Currency value={effectiveArSummary.aging.current} /></strong></div>
-                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>1-30<br /><strong><Currency value={effectiveArSummary.aging["1_30"]} /></strong></div>
-                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>31-60<br /><strong><Currency value={effectiveArSummary.aging["31_60"]} /></strong></div>
-                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>61-90<br /><strong><Currency value={effectiveArSummary.aging["61_90"]} /></strong></div>
-                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>90+<br /><strong><Currency value={effectiveArSummary.aging["90_plus"]} /></strong></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>Current<br /><button type="button" onClick={openPaymentsAging} style={{ background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer", fontWeight: 700 }}><Currency value={effectiveArSummary.aging.current} /></button></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>1-30<br /><button type="button" onClick={openPaymentsAging} style={{ background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer", fontWeight: 700 }}><Currency value={effectiveArSummary.aging["1_30"]} /></button></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>31-60<br /><button type="button" onClick={openPaymentsAging} style={{ background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer", fontWeight: 700 }}><Currency value={effectiveArSummary.aging["31_60"]} /></button></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>61-90<br /><button type="button" onClick={openPaymentsAging} style={{ background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer", fontWeight: 700 }}><Currency value={effectiveArSummary.aging["61_90"]} /></button></div>
+                        <div style={{ border: "1px solid #edf2f7", borderRadius: 8, padding: 6 }}>90+<br /><button type="button" onClick={openPaymentsAging} style={{ background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer", fontWeight: 700 }}><Currency value={effectiveArSummary.aging["90_plus"]} /></button></div>
                       </div>
                     </div>
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10 }}>
                       <div style={{ fontSize: 12, color: "#4a6076", marginBottom: 6 }}>
-                        Work Performed & Unbilled (Client / Project) <strong style={{ color: "#1f3f60" }}>(Total: <Currency value={dashboardUnbilledByClient.total} />)</strong>
+                        Work Performed & Unbilled (Client / Project) <strong style={{ color: "#1f3f60" }}>(Total: <button type="button" onClick={openInvoiceStudio} style={{ background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer", fontWeight: 700, color: "#1f3f60" }}><Currency value={dashboardUnbilledByClient.total} /></button>)</strong>
                       </div>
                       <div style={{ fontSize: 11, color: "#607689", marginBottom: 6 }}>
                         Billable work since each project's last invoice date, shown by client and project.
@@ -6246,7 +6282,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                                 <td style={{ borderBottom: "1px solid #edf2f7", padding: 6 }}>{row.client}</td>
                                 <td style={{ borderBottom: "1px solid #edf2f7", padding: 6 }}>{row.project}</td>
                                 <td style={{ borderBottom: "1px solid #edf2f7", padding: 6, textAlign: "right" }}>{row.hours.toFixed(2)}</td>
-                                <td style={{ borderBottom: "1px solid #edf2f7", padding: 6, textAlign: "right" }}><Currency value={row.amount} /></td>
+                                <td style={{ borderBottom: "1px solid #edf2f7", padding: 6, textAlign: "right" }}><button type="button" onClick={openInvoiceStudio} style={{ background: "transparent", border: "none", padding: 0, textDecoration: "underline", cursor: "pointer" }}><Currency value={row.amount} /></button></td>
                               </tr>
                             ))}
                             {dashboardUnbilledByClientProject.length === 0 && (
@@ -6292,14 +6328,15 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                           {dashboardMonthlyTrend.rows.map((row) => {
                             const revenueValue = dashboardChartScale === "amount" ? row.revenue : row.revenuePctBudget;
                             const costValue = dashboardChartScale === "amount" ? row.cost : row.costPctBudget;
+                            const valueLabel = (v: number) => (dashboardChartScale === "amount" ? `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : `${v.toFixed(1)}%`);
                             const periodYear = Number(row.period.slice(0, 4));
                             const periodMonth = Number(row.period.slice(5, 7));
                             const monthLabel = new Date(Date.UTC(periodYear, periodMonth - 1, 1)).toLocaleString("en-US", { month: "short", timeZone: "UTC" });
                             return (
                               <div key={`dash-over-month-${row.period}`} style={{ display: "grid", gap: 4, justifyItems: "center" }}>
                                 <div style={{ display: "flex", alignItems: "end", gap: 3, height: 128 }}>
-                                  <div title={`Revenue ${row.period}`} style={{ width: 13, height: `${Math.max(6, (revenueValue / dashboardMonthlyTrend.maxValue) * 120)}px`, borderRadius: 4, background: "#2f4f73" }} />
-                                  <div title={`Cost ${row.period}`} style={{ width: 13, height: `${Math.max(6, (costValue / dashboardMonthlyTrend.maxValue) * 120)}px`, borderRadius: 4, background: "#f3a35f" }} />
+                                  <div title={`Revenue ${row.period}: ${valueLabel(revenueValue)}`} style={{ width: 13, height: `${Math.max(6, (revenueValue / dashboardMonthlyTrend.maxValue) * 120)}px`, borderRadius: 4, background: "#2f4f73" }} />
+                                  <div title={`Cost ${row.period}: ${valueLabel(costValue)}`} style={{ width: 13, height: `${Math.max(6, (costValue / dashboardMonthlyTrend.maxValue) * 120)}px`, borderRadius: 4, background: "#f3a35f" }} />
                                 </div>
                                 <div style={{ fontSize: 11, color: "#607689" }}>{monthLabel}</div>
                               </div>
@@ -6313,29 +6350,40 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                             const chartWidth = Math.max(280, rows.length * 52);
                             const chartHeight = 140;
                             const max = Math.max(1, dashboardMonthlyTrend.maxValue);
-                            const pointsFor = (kind: "revenue" | "cost") =>
-                              rows
-                                .map((row, idx) => {
-                                  const value =
-                                    dashboardChartScale === "amount"
-                                      ? kind === "revenue"
-                                        ? row.revenue
-                                        : row.cost
-                                      : kind === "revenue"
-                                        ? row.revenuePctBudget
-                                        : row.costPctBudget;
-                                  const x = rows.length === 1 ? chartWidth / 2 : (idx * (chartWidth - 20)) / Math.max(1, rows.length - 1) + 10;
-                                  const y = chartHeight - (Math.max(0, value) / max) * (chartHeight - 16) - 8;
-                                  return `${x},${y}`;
-                                })
-                                .join(" ");
-                            const revenuePoints = pointsFor("revenue");
-                            const costPoints = pointsFor("cost");
+                            const valueLabel = (v: number) => (dashboardChartScale === "amount" ? `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : `${v.toFixed(1)}%`);
+                            const seriesFor = (kind: "revenue" | "cost") =>
+                              rows.map((row, idx) => {
+                                const value =
+                                  dashboardChartScale === "amount"
+                                    ? kind === "revenue"
+                                      ? row.revenue
+                                      : row.cost
+                                    : kind === "revenue"
+                                      ? row.revenuePctBudget
+                                      : row.costPctBudget;
+                                const x = rows.length === 1 ? chartWidth / 2 : (idx * (chartWidth - 20)) / Math.max(1, rows.length - 1) + 10;
+                                const y = chartHeight - (Math.max(0, value) / max) * (chartHeight - 16) - 8;
+                                return { row, value, x, y };
+                              });
+                            const revenueSeries = seriesFor("revenue");
+                            const costSeries = seriesFor("cost");
+                            const revenuePoints = revenueSeries.map((p) => `${p.x},${p.y}`).join(" ");
+                            const costPoints = costSeries.map((p) => `${p.x},${p.y}`).join(" ");
                             return (
                               <>
                                 <svg width="100%" height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label="Revenue and cost line trend">
                                   <polyline fill="none" stroke="#2f4f73" strokeWidth="2.5" points={revenuePoints} />
                                   <polyline fill="none" stroke="#f3a35f" strokeWidth="2.5" points={costPoints} />
+                                  {revenueSeries.map((p) => (
+                                    <circle key={`dash-line-revenue-point-${p.row.period}`} cx={p.x} cy={p.y} r={4} fill="#2f4f73">
+                                      <title>{`Revenue ${p.row.period}: ${valueLabel(p.value)}`}</title>
+                                    </circle>
+                                  ))}
+                                  {costSeries.map((p) => (
+                                    <circle key={`dash-line-cost-point-${p.row.period}`} cx={p.x} cy={p.y} r={4} fill="#f3a35f">
+                                      <title>{`Cost ${p.row.period}: ${valueLabel(p.value)}`}</title>
+                                    </circle>
+                                  ))}
                                 </svg>
                                 <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, rows.length)}, minmax(30px, 1fr))`, gap: 6, marginTop: 2 }}>
                                   {rows.map((row) => {
@@ -8900,7 +8948,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                   </div>
                 </div>
               )}
-              {canViewFinancials && isAccountingView && (
+              {canViewFinancials && showInvoiceStudio && (
                 <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
                   <h3 style={{ marginTop: 0 }}>Invoicing Studio</h3>
                   <p style={{ marginTop: 4, color: "#4a4a4a" }}>
