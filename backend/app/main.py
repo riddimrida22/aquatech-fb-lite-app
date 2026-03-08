@@ -775,6 +775,7 @@ INVOICE_TOTAL_COLUMNS = ["Total", "Amount", "Invoice Total", "Total Amount", "Gr
 INVOICE_PAID_COLUMNS = ["Paid", "Amount Paid", "Payments", "Paid Amount"]
 INVOICE_BALANCE_COLUMNS = ["Balance", "Balance Due", "Amount Due", "Due Amount"]
 APPROVED_STATUS_VALUES = {"approved", "yes", "true", "1", "locked", "billed", "closed"}
+COMPLETED_TIMESHEET_STATUS_VALUES = {"submitted", "approved", "locked", "billed", "closed"}
 NON_APPROVED_STATUS_VALUES = {
     "unapproved",
     "not approved",
@@ -5146,8 +5147,21 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         if cur is None or cutoff > cur:
             last_invoice_end_by_project[int(inv.project_id)] = cutoff
 
+    time_entries = db.scalars(select(TimeEntry)).all()
+    user_ids = sorted({te.user_id for te in time_entries})
+    week_starts = sorted({_week_start(te.work_date) for te in time_entries})
+    timesheet_status_by_week: dict[tuple[int, date], str] = {}
+    if user_ids and week_starts:
+        timesheets = db.scalars(
+            select(Timesheet).where(and_(Timesheet.user_id.in_(user_ids), Timesheet.week_start.in_(week_starts)))
+        ).all()
+        timesheet_status_by_week = {
+            (int(ts.user_id), ts.week_start): str(ts.status or "").strip().lower()
+            for ts in timesheets
+        }
+
     by_project_unbilled: dict[int, float] = defaultdict(float)
-    for te in db.scalars(select(TimeEntry)).all():
+    for te in time_entries:
         project_ref = projects_by_id.get(te.project_id)
         if not project_ref:
             continue
@@ -5159,6 +5173,9 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
             continue
         cutoff = last_invoice_end_by_project.get(int(te.project_id))
         if cutoff is not None and te.work_date <= cutoff:
+            continue
+        week_status = timesheet_status_by_week.get((int(te.user_id), _week_start(te.work_date)))
+        if week_status and week_status not in COMPLETED_TIMESHEET_STATUS_VALUES:
             continue
         by_project_unbilled[te.project_id] += float(te.hours * te.bill_rate_applied)
 
@@ -5182,8 +5199,8 @@ def _canonical_client_name(name: str | None) -> str:
     if not clean:
         return "Unassigned Client"
     lower = clean.lower()
-    if lower in {"imported client", "legacy client", "unmapped imported work"}:
-        return "Unmapped Imported Work"
+    if lower in {"imported client", "legacy client", "unmapped imported work", "historical legacy client"}:
+        return "Unassigned Client"
     if lower == "hdr":
         return "HDR"
     if lower == "woodard and curran":
