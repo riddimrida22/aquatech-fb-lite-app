@@ -1656,6 +1656,45 @@ export default function Home() {
     for (const p of projects) map[p.id] = p;
     return map;
   }, [projects]);
+  const dashboardUnbilledByClient = useMemo(() => {
+    const sourceRows = invoiceRevenueStatus?.unbilled_by_client || unbilledSinceLastInvoice.by_client || [];
+    const grouped: Record<string, number> = {};
+    for (const row of sourceRows) {
+      const client = normalizeDashboardClientLabel(row.client_name || "");
+      const amount = Number(row.unbilled || 0);
+      if (amount <= 0.009) continue;
+      grouped[client] = (grouped[client] || 0) + amount;
+    }
+    const rows = Object.entries(grouped)
+      .map(([client, amount]) => ({ client, amount }))
+      .sort((a, b) => b.amount - a.amount);
+    return {
+      total: rows.reduce((sum, row) => sum + row.amount, 0),
+      rows,
+    };
+  }, [invoiceRevenueStatus?.unbilled_by_client, unbilledSinceLastInvoice]);
+  const dashboardUnbilledByClientProject = useMemo(() => {
+    const sourceRows = invoiceRevenueStatus?.unbilled_by_client_project || unbilledSinceLastInvoice.by_client_project || [];
+    const rows = sourceRows
+      .map((row) => ({
+        projectId: Number(row.project_id || 0),
+        client: normalizeDashboardClientLabel(row.client_name || ""),
+        project: (row.project_name || "").trim() || `Project ${row.project_id}`,
+        hours: Number(row.work_hours || 0),
+        amount: Number(row.unbilled || 0),
+      }))
+      .filter((row) => row.amount > 0.009 || row.hours > 0.009)
+      .sort((a, b) => b.amount - a.amount);
+    return rows;
+  }, [invoiceRevenueStatus?.unbilled_by_client_project, unbilledSinceLastInvoice.by_client_project]);
+  const dashboardUnbilledByProjectId = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const row of dashboardUnbilledByClientProject) {
+      if (!row.projectId) continue;
+      map[row.projectId] = (map[row.projectId] || 0) + Number(row.amount || 0);
+    }
+    return map;
+  }, [dashboardUnbilledByClientProject]);
   const dashboardProjectKpis = useMemo(() => {
     const rows = dashboardProjectPerformance.map((p) => {
       const project = projectById[p.project_id];
@@ -1667,7 +1706,7 @@ export default function Home() {
       const contractBudgetRemaining = totalBudget - contractSpentToDate;
       const unearnedBudgetRemaining = totalBudget - revenueLifeToDate;
       const billedToDate = toNumber(billedByProjectId[p.project_id] || 0);
-      const earnedButUnbilled = Math.max(revenueLifeToDate - billedToDate, 0);
+      const earnedButUnbilled = toNumber(dashboardUnbilledByProjectId[p.project_id] || 0);
       const paidToDate = toNumber(paidByProjectId[p.project_id] || 0);
       const timeBudget = toNumber(p.budget_hours || 0);
       const timeSpent = toNumber(p.actual_hours || 0);
@@ -1763,7 +1802,7 @@ export default function Home() {
         scheduleForecast: estimatedScheduleForecast,
       };
     });
-  }, [billedByProjectId, contractCostByProjectId, contractRevenueByProjectId, dashboardProjectPerformance, paidByProjectId, projectById, todayYmd]);
+  }, [billedByProjectId, contractCostByProjectId, contractRevenueByProjectId, dashboardProjectPerformance, paidByProjectId, projectById, dashboardUnbilledByProjectId, todayYmd]);
   const dashboardOverallKpis = useMemo(() => {
     return dashboardProjectKpis.reduce(
       (acc, p) => {
@@ -1964,7 +2003,7 @@ export default function Home() {
         const invoice = invoiceFinanceByProjectId[p.id] || null;
         const recognizedRevenue = Number(perf?.actual_revenue || 0);
         const invoiceSubtotal = Number(invoice?.invoiced || 0);
-        const uninvoicedRevenue = Math.max(0, recognizedRevenue - invoiceSubtotal);
+        const uninvoicedRevenue = Number(dashboardUnbilledByProjectId[p.id] || Math.max(0, recognizedRevenue - invoiceSubtotal));
         const paid = Number(invoice?.paid || 0);
         const balance = Number(invoice?.balance || 0);
         const actualCost = Number(perf?.actual_cost || 0);
@@ -1988,37 +2027,7 @@ export default function Home() {
         if (riskB !== riskA) return riskB - riskA;
         return a.name.localeCompare(b.name);
       });
-  }, [projectCockpitRows, performanceByProjectId, invoiceFinanceByProjectId]);
-  const dashboardUnbilledByClient = useMemo(() => {
-    const sourceRows = invoiceRevenueStatus?.unbilled_by_client || unbilledSinceLastInvoice.by_client || [];
-    const grouped: Record<string, number> = {};
-    for (const row of sourceRows) {
-      const client = normalizeDashboardClientLabel(row.client_name || "");
-      const amount = Number(row.unbilled || 0);
-      if (amount <= 0.009) continue;
-      grouped[client] = (grouped[client] || 0) + amount;
-    }
-    const rows = Object.entries(grouped)
-      .map(([client, amount]) => ({ client, amount }))
-      .sort((a, b) => b.amount - a.amount);
-    return {
-      total: rows.reduce((sum, row) => sum + row.amount, 0),
-      rows,
-    };
-  }, [invoiceRevenueStatus?.unbilled_by_client, unbilledSinceLastInvoice]);
-  const dashboardUnbilledByClientProject = useMemo(() => {
-    const sourceRows = invoiceRevenueStatus?.unbilled_by_client_project || unbilledSinceLastInvoice.by_client_project || [];
-    const rows = sourceRows
-      .map((row) => ({
-        client: normalizeDashboardClientLabel(row.client_name || ""),
-        project: (row.project_name || "").trim() || `Project ${row.project_id}`,
-        hours: Number(row.work_hours || 0),
-        amount: Number(row.unbilled || 0),
-      }))
-      .filter((row) => row.amount > 0.009 || row.hours > 0.009)
-      .sort((a, b) => b.amount - a.amount);
-    return rows;
-  }, [invoiceRevenueStatus?.unbilled_by_client_project, unbilledSinceLastInvoice.by_client_project]);
+  }, [projectCockpitRows, performanceByProjectId, invoiceFinanceByProjectId, dashboardUnbilledByProjectId]);
   const dashboardRevenueStatusTotals = useMemo(() => {
     const earnedRevenueLife = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.revenueLifeToDate || 0), 0);
     const unearnedBudgetRemaining = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.unearnedBudgetRemaining || 0), 0);
