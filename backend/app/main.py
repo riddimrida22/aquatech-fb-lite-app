@@ -509,7 +509,7 @@ class InvoicePaymentLinkCreateRequest(BaseModel):
 
 class InvoiceClientReconcileRequest(BaseModel):
     canonical_client_name: str = Field(min_length=1, max_length=255)
-    aliases: list[str] = Field(default_factory=lambda: ["Imported Client", "Legacy Client"])
+    aliases: list[str] = Field(default_factory=lambda: ["Imported Client", "Historical Legacy Client", "Unmapped Imported Work"])
 
 
 class InvoiceClientReconcileOut(BaseModel):
@@ -4787,7 +4787,7 @@ async def import_legacy_invoices(
         status = _normalize_invoice_status(_first_value(row, status_cols))
         amount_paid = _parse_float(_first_value(row, paid_cols))
         balance_due = _parse_float(_first_value(row, balance_cols))
-        client_name = _normalize_import_client_name((_first_value(row, client_cols) or "Legacy Client").strip())
+        client_name = _normalize_import_client_name((_first_value(row, client_cols) or "Unassigned Client").strip())
 
         seed = f"{client_name}|{issue_date}|{due_date}|{row_index}"
         invoice_number = invoice_number_raw or f"LEG-{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:10].upper()}"
@@ -4809,7 +4809,7 @@ async def import_legacy_invoices(
             agg["issue_date"] = issue_date
         if due_date and (agg["due_date"] is None):
             agg["due_date"] = due_date
-        if str(agg.get("client_name") or "").strip() in {"", "Legacy Client"}:
+        if str(agg.get("client_name") or "").strip() in {"", "Unassigned Client"}:
             agg["client_name"] = client_name
         if status == "paid":
             agg["status"] = "paid"
@@ -4897,7 +4897,7 @@ async def import_legacy_invoices(
             amount_paid=amount_paid,
             balance_due=balance_due,
         )
-        client_name = _normalize_import_client_name(str(agg.get("client_name") or "Legacy Client"))
+        client_name = _normalize_import_client_name(str(agg.get("client_name") or "Unassigned Client"))
         project_id_inferred = _infer_project_id_for_client_name(db, client_name)
         paid_date_from_payments = payment_date_by_invoice.get(invoice_number)
 
@@ -4930,14 +4930,14 @@ async def import_legacy_invoices(
                 issue_date=issue_date,
                 due_date=due_date,
                 status=status,
-                source="freshbooks_legacy",
+                source="freshbooks",
                 subtotal_amount=float(total_amount),
                 amount_paid=amount_paid,
                 balance_due=balance_due,
                 total_cost=0.0,
                 total_profit=float(total_amount),
                 paid_date=(paid_date_from_payments or issue_date) if amount_paid > 0.0001 else None,
-                notes="Imported from FreshBooks legacy invoices",
+                notes="Imported from FreshBooks invoices",
             )
             db.add(existing)
             db.flush()
@@ -4951,7 +4951,7 @@ async def import_legacy_invoices(
                     task_id=None,
                     subtask_id=None,
                     description="Legacy imported invoice total",
-                    note="Imported from FreshBooks legacy invoices",
+                    note="Imported from FreshBooks invoices",
                     hours=1.0,
                     bill_rate=float(total_amount),
                     amount=float(total_amount),
@@ -4966,7 +4966,7 @@ async def import_legacy_invoices(
             existing.issue_date = issue_date
             existing.due_date = due_date
             existing.status = status
-            existing.source = "freshbooks_legacy"
+            existing.source = "freshbooks"
             existing.subtotal_amount = float(total_amount)
             existing.amount_paid = amount_paid
             existing.balance_due = balance_due
@@ -4983,7 +4983,7 @@ async def import_legacy_invoices(
                         task_id=None,
                         subtask_id=None,
                         description="Legacy imported invoice total",
-                        note="Imported from FreshBooks legacy invoices",
+                        note="Imported from FreshBooks invoices",
                         hours=1.0,
                         bill_rate=float(total_amount),
                         amount=float(total_amount),

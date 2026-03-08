@@ -5537,8 +5537,8 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
       file: legacyInvoiceFile,
       apply: legacyInvoiceApply,
       mappingJson: legacyInvoiceMappingJson,
-      successMessage: "Legacy invoices imported.",
-      previewMessage: "Legacy invoice import preview ready.",
+      successMessage: "FreshBooks invoices imported.",
+      previewMessage: "FreshBooks invoice import preview ready.",
       setSummary: setLegacyInvoiceSummary,
     });
   }
@@ -5550,13 +5550,13 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
     }
     const canonical = (invoiceClientReconcileName || suggestedReconcileClient || "").trim();
     if (!canonical) {
-      setMessage("Enter the real client name to reconcile Imported/Legacy clients.");
+      setMessage("Enter the real client name to reconcile placeholder client labels.");
       return;
     }
     try {
       const res = await apiPost<InvoiceClientReconcileResult>("/invoices/reconcile-client-labels", {
         canonical_client_name: canonical,
-        aliases: ["Imported Client", "Legacy Client"],
+        aliases: ["Imported Client", "Historical Legacy Client", "Unmapped Imported Work"],
       });
       setInvoiceClientReconcileName(res.canonical_client_name);
       setMessage(
@@ -5614,7 +5614,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
       setActiveView("invoices");
       setAccountingSubView("workspace");
       setInvoiceWorkspaceTab("legacy");
-      setMessage(`Invoice CSV selected: ${file.name}. Review mapping and run legacy preview/apply.`);
+      setMessage(`Invoice CSV selected: ${file.name}. Review mapping and run preview/apply.`);
     };
     picker.click();
   }
@@ -5876,7 +5876,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     <div className="aq-submenu">
                       <button className={`aq-sub-item ${invoiceWorkspaceTab === "studio" ? "active" : ""}`} onClick={() => setInvoiceWorkspaceTab("studio")}>Invoice Studio</button>
                       <button className={`aq-sub-item ${invoiceWorkspaceTab === "templates" ? "active" : ""}`} onClick={() => setInvoiceWorkspaceTab("templates")}>Invoice Templates</button>
-                      <button className={`aq-sub-item ${invoiceWorkspaceTab === "legacy" ? "active" : ""}`} onClick={() => setInvoiceWorkspaceTab("legacy")}>Legacy FreshBooks</button>
+                      <button className={`aq-sub-item ${invoiceWorkspaceTab === "legacy" ? "active" : ""}`} onClick={() => setInvoiceWorkspaceTab("legacy")}>FreshBooks Import</button>
                       <button className={`aq-sub-item ${invoiceWorkspaceTab === "ar" ? "active" : ""}`} onClick={() => setInvoiceWorkspaceTab("ar")}>Accounts Receivable</button>
                       <button className={`aq-sub-item ${invoiceWorkspaceTab === "saved" ? "active" : ""}`} onClick={() => setInvoiceWorkspaceTab("saved")}>Saved Invoices</button>
                       <button className={`aq-sub-item ${invoiceWorkspaceTab === "recurring" ? "active" : ""}`} onClick={() => setInvoiceWorkspaceTab("recurring")}>Recurring</button>
@@ -9323,9 +9323,9 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                             placeholder={suggestedReconcileClient || "Enter real client name"}
                             style={{ minWidth: 280 }}
                           />
-                          <button onClick={reconcileLegacyImportedClients}>Reconcile Imported/Legacy Client</button>
+                          <button onClick={reconcileLegacyImportedClients}>Reconcile Placeholder Clients</button>
                           <span style={{ color: "#6f4f1b", fontSize: 12 }}>
-                            Replaces client labels `Imported Client` and `Legacy Client` in invoices and projects.
+                            Replaces placeholder client labels in invoices and projects.
                           </span>
                         </div>
                       </div>
@@ -9653,7 +9653,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
 
                   {showLegacyImport && (
                   <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
-                    <h4 style={{ marginTop: 0 }}>Legacy FreshBooks Invoice Import</h4>
+                    <h4 style={{ marginTop: 0 }}>FreshBooks Invoice Import</h4>
                     <p style={{ marginTop: 4, color: "#4a4a4a" }}>
                       Import historical invoices for continuity and outstanding-payment tracking.
                     </p>
@@ -9663,10 +9663,10 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                         <input type="checkbox" checked={legacyInvoiceApply} onChange={(e) => setLegacyInvoiceApply(e.target.checked)} />
                         Apply import (unchecked = preview)
                       </label>
-                      <button onClick={runLegacyInvoiceImport}>{legacyInvoiceApply ? "Run Legacy Import" : "Run Legacy Preview"}</button>
+                      <button onClick={runLegacyInvoiceImport}>{legacyInvoiceApply ? "Run Import" : "Run Preview"}</button>
                     </div>
                     <div style={{ marginTop: 8 }}>
-                      <p style={{ marginBottom: 4 }}>Legacy mapping overrides (JSON):</p>
+                      <p style={{ marginBottom: 4 }}>Mapping overrides (JSON):</p>
                       <textarea
                         value={legacyInvoiceMappingJson}
                         onChange={(e) => setLegacyInvoiceMappingJson(e.target.value)}
@@ -9676,7 +9676,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     </div>
                     {legacyInvoiceSummary && <p style={{ marginTop: 8 }}>{legacyInvoiceSummary}</p>}
                     <div style={{ marginTop: 10, overflowX: "auto" }}>
-                      <div style={{ fontWeight: 700, marginBottom: 6 }}>Legacy Imported Invoices</div>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>Imported Invoices</div>
                       <table style={{ borderCollapse: "collapse", width: "100%" }}>
                         <thead>
                           <tr>
@@ -9694,13 +9694,13 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                           {savedInvoices
                             .filter((inv) => {
                               const src = String(inv.source || "").toLowerCase();
-                              return src.includes("legacy") || src.includes("freshbooks");
+                              return src.includes("freshbooks");
                             })
                             .slice(0, 200)
                             .map((inv) => {
                               const effectiveStatus = effectiveInvoiceStatus(inv, todayYmd);
                               return (
-                                <tr key={`legacy-inv-row-${inv.id}`}>
+                                <tr key={`imported-inv-row-${inv.id}`}>
                                   <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{inv.invoice_number}</td>
                                   <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{inv.client_name}</td>
                                   <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{inv.issue_date}</td>
