@@ -489,7 +489,18 @@ type LegacyInvoiceImportResult = {
   updated: number;
   skipped: number;
   errors: number;
+  line_item_mode?: boolean;
+  payment_rows?: number;
+  payments_matched_invoices?: number;
   rows: LegacyInvoiceImportRow[];
+};
+type LegacyPaymentImportResult = {
+  apply: boolean;
+  count: number;
+  updated: number;
+  matched: number;
+  unmatched: number;
+  errors: number;
 };
 type InvoiceClientReconcileResult = {
   canonical_client_name: string;
@@ -1298,7 +1309,7 @@ export default function Home() {
   const [paymentPeriodFilter, setPaymentPeriodFilter] = useState<"all" | "last30" | "this_month" | "this_quarter" | "this_year">("all");
   const [invoiceClientReconcileName, setInvoiceClientReconcileName] = useState("");
   const [paymentImportMappingJson, setPaymentImportMappingJson] = useState(
-    '{\n  "invoice_number": ["Invoice #", "Invoice Number"],\n  "client_name": ["Client"],\n  "issue_date": ["Invoice Date"],\n  "due_date": ["Due Date"],\n  "status": ["Status"],\n  "total_amount": ["Total"],\n  "amount_paid": ["Paid"],\n  "balance_due": ["Balance"]\n}',
+    '{\n  "payment_invoice_number": ["Number", "Invoice #", "Invoice Number"],\n  "payment_date": ["Date", "Payment Date"],\n  "payment_amount": ["Amount", "Payment Amount"]\n}',
   );
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [auditEntityFilter, setAuditEntityFilter] = useState("");
@@ -5419,8 +5430,12 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
       const text = await res.text();
       if (!res.ok) throw new Error(`${res.status} ${text}`);
       const payload = JSON.parse(text) as LegacyInvoiceImportResult;
+      const extras: string[] = [];
+      if (payload.line_item_mode) extras.push("line-item aggregation detected");
+      if ((payload.payment_rows || 0) > 0) extras.push(`payment rows: ${payload.payment_rows}`);
+      if ((payload.payments_matched_invoices || 0) > 0) extras.push(`payments matched invoices: ${payload.payments_matched_invoices}`);
       params.setSummary(
-        `Rows: ${payload.count} | Imported: ${payload.imported} | Updated: ${payload.updated} | Errors: ${payload.errors}`,
+        `Rows: ${payload.count} | Imported: ${payload.imported} | Updated: ${payload.updated} | Errors: ${payload.errors}${extras.length ? ` | ${extras.join(" | ")}` : ""}`,
       );
       setMessage(params.apply ? params.successMessage : params.previewMessage);
       if (params.apply) {
@@ -5477,17 +5492,33 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
 
   async function runFreshbooksPaymentImport() {
     if (!paymentImportFile) {
-      setMessage("Select a FreshBooks payment/invoice CSV file first.");
+      setMessage("Select a FreshBooks payments CSV file first.");
       return;
     }
-    await runFreshbooksInvoiceLikeImport({
-      file: paymentImportFile,
-      apply: paymentImportApply,
-      mappingJson: paymentImportMappingJson,
-      successMessage: "FreshBooks payment information imported.",
-      previewMessage: "FreshBooks payment import preview ready.",
-      setSummary: setPaymentImportSummary,
-    });
+    try {
+      const form = new FormData();
+      form.append("file", paymentImportFile);
+      form.append("mapping_overrides", paymentImportMappingJson);
+      const res = await fetch(`${API_BASE}/invoices/import/freshbooks-payments?apply=${paymentImportApply ? "true" : "false"}`, {
+        method: "POST",
+        body: form,
+        credentials: "include",
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`${res.status} ${text}`);
+      const payload = JSON.parse(text) as LegacyPaymentImportResult;
+      setPaymentImportSummary(
+        `Rows: ${payload.count} | Matched: ${payload.matched} | Updated: ${payload.updated} | Unmatched: ${payload.unmatched} | Errors: ${payload.errors}`,
+      );
+      setMessage(paymentImportApply ? "FreshBooks payments imported." : "FreshBooks payments preview ready.");
+      if (paymentImportApply) {
+        refreshInvoices();
+        refreshArSummary();
+        refreshInvoiceRevenueStatus();
+      }
+    } catch (err) {
+      setMessage(String(err));
+    }
   }
 
   function selectFreshbooksInvoiceCsvFromTopbar() {
@@ -9840,7 +9871,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                   )}
                   <FreshbooksCsvImportPanel
                     title="FreshBooks Payments CSV Import"
-                    description="Upload a FreshBooks payment/invoice export. Use preview first, then apply."
+                    description="Upload the FreshBooks payments_collected CSV. This updates paid-to-date and balances by invoice number."
                     onFileChange={setPaymentImportFile}
                     apply={paymentImportApply}
                     setApply={setPaymentImportApply}

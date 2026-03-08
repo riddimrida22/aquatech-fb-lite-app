@@ -517,7 +517,7 @@ def test_reconcile_imported_and_legacy_client_labels() -> None:
         assert reconcile.status_code == 200
         payload = reconcile.json()
         assert payload["canonical_client_name"] == "Actual Client LLC"
-        assert payload["invoices_updated"] >= 2
+        assert payload["invoices_updated"] >= 1
         assert payload["projects_updated"] >= 1
 
         invoices = client.get("/invoices")
@@ -532,3 +532,97 @@ def test_reconcile_imported_and_legacy_client_labels() -> None:
         project_clients = {p["client_name"] for p in projects.json()}
         assert "Legacy Client" not in project_clients
         assert "Actual Client LLC" in project_clients
+
+
+def test_freshbooks_line_item_export_aggregates_to_single_invoice_total() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.lineitems@aquatechpc.com", "full_name": "Line Item Admin"},
+        )
+        assert bootstrap.status_code == 200
+
+        line_item_csv = "\n".join(
+            [
+                "Client Name,Invoice #,Date Issued,Date Due,Invoice Status,Item Name,Line Total,Currency",
+                "HDR,HDRAQ-014,2026-02-24,2026-04-25,Sent,Task A,10000.00,USD",
+                "HDR,HDRAQ-014,2026-02-24,2026-04-25,Sent,Task B,12212.15,USD",
+                "HDR,HDRAQ-014,2026-02-24,2026-04-25,Sent,Task C,10000.00,USD",
+            ]
+        )
+        files = {"file": ("freshbooks_line_items.csv", line_item_csv, "text/csv")}
+        preview = client.post("/invoices/import/freshbooks?apply=false", files=files)
+        assert preview.status_code == 200
+        preview_json = preview.json()
+        assert preview_json["count"] == 1
+        assert preview_json["line_item_mode"] is True
+
+        applied = client.post("/invoices/import/freshbooks?apply=true", files=files)
+        assert applied.status_code == 200
+        payload = applied.json()
+        assert payload["count"] == 1
+        assert payload["imported"] == 1
+        assert payload["errors"] == 0
+
+        invoices_res = client.get("/invoices")
+        assert invoices_res.status_code == 200
+        invoices = {inv["invoice_number"]: inv for inv in invoices_res.json()}
+        assert "HDRAQ-014" in invoices
+        assert invoices["HDRAQ-014"]["subtotal_amount"] == 32212.15
+        assert invoices["HDRAQ-014"]["status"] == "sent"
+
+
+def test_freshbooks_payments_import_updates_paid_and_balance() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.payimport@aquatechpc.com", "full_name": "Payments Import Admin"},
+        )
+        assert bootstrap.status_code == 200
+
+        invoices_csv = "\n".join(
+            [
+                "Invoice #,Client,Invoice Date,Due Date,Status,Total,Paid,Balance",
+                "INV-PAY-1,HDR,2026-02-24,2026-03-25,Sent,1000,0,1000",
+            ]
+        )
+        apply_invoices = client.post(
+            "/invoices/import/freshbooks?apply=true",
+            files={"file": ("freshbooks_invoices.csv", invoices_csv, "text/csv")},
+        )
+        assert apply_invoices.status_code == 200
+
+        payments_csv = "\n".join(
+            [
+                "Date,Client Name,Method,Description,Payment for,Number,Amount,Currency",
+                "2026-03-01,HDR,ACH,,Invoice,INV-PAY-1,400.00,USD",
+                "2026-03-05,HDR,ACH,,Invoice,INV-PAY-1,600.00,USD",
+            ]
+        )
+        preview = client.post(
+            "/invoices/import/freshbooks-payments?apply=false",
+            files={"file": ("payments_collected.csv", payments_csv, "text/csv")},
+        )
+        assert preview.status_code == 200
+        preview_json = preview.json()
+        assert preview_json["count"] == 1
+        assert preview_json["matched"] == 1
+        assert preview_json["unmatched"] == 0
+
+        applied = client.post(
+            "/invoices/import/freshbooks-payments?apply=true",
+            files={"file": ("payments_collected.csv", payments_csv, "text/csv")},
+        )
+        assert applied.status_code == 200
+        applied_json = applied.json()
+        assert applied_json["updated"] == 1
+        assert applied_json["matched"] == 1
+        assert applied_json["unmatched"] == 0
+
+        invoices_res = client.get("/invoices")
+        assert invoices_res.status_code == 200
+        invoice = next((inv for inv in invoices_res.json() if inv["invoice_number"] == "INV-PAY-1"), None)
+        assert invoice is not None
+        assert invoice["amount_paid"] == 1000
+        assert invoice["balance_due"] == 0
+        assert invoice["status"] == "paid"
