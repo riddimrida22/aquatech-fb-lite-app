@@ -1542,6 +1542,17 @@ export default function Home() {
     }
     return map;
   }, [savedInvoices, todayYmd]);
+  const billedByProjectId = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const inv of savedInvoices) {
+      if (!isFinancialInvoice(inv, todayYmd)) continue;
+      if (!inv.project_id) continue;
+      const status = effectiveInvoiceStatus(inv, todayYmd);
+      if (status === "draft" || status === "void") continue;
+      map[inv.project_id] = (map[inv.project_id] || 0) + Number(inv.subtotal_amount || 0);
+    }
+    return map;
+  }, [savedInvoices, todayYmd]);
   const contractCostByProjectId = useMemo(() => {
     const map: Record<number, number> = {};
     for (const p of contractProjectPerformance) {
@@ -1570,7 +1581,9 @@ export default function Home() {
       const revenueSelectedPeriod = toNumber(p.actual_revenue || 0);
       const revenueLifeToDate = toNumber(contractRevenueByProjectId[p.project_id] ?? revenueSelectedPeriod);
       const contractBudgetRemaining = totalBudget - contractSpentToDate;
-      const revenueBudgetRemaining = totalBudget - revenueLifeToDate;
+      const unearnedBudgetRemaining = totalBudget - revenueLifeToDate;
+      const billedToDate = toNumber(billedByProjectId[p.project_id] || 0);
+      const earnedButUnbilled = Math.max(revenueLifeToDate - billedToDate, 0);
       const paidToDate = toNumber(paidByProjectId[p.project_id] || 0);
       const timeBudget = toNumber(p.budget_hours || 0);
       const timeSpent = toNumber(p.actual_hours || 0);
@@ -1623,7 +1636,9 @@ export default function Home() {
         contractSpentToDate,
         revenueSelectedPeriod,
         revenueLifeToDate,
-        revenueBudgetRemaining,
+        unearnedBudgetRemaining,
+        billedToDate,
+        earnedButUnbilled,
         contractBudgetRemaining,
         paidToDate,
         budgetRemaining,
@@ -1664,7 +1679,7 @@ export default function Home() {
         scheduleForecast: estimatedScheduleForecast,
       };
     });
-  }, [contractCostByProjectId, contractRevenueByProjectId, dashboardProjectPerformance, paidByProjectId, projectById, todayYmd]);
+  }, [billedByProjectId, contractCostByProjectId, contractRevenueByProjectId, dashboardProjectPerformance, paidByProjectId, projectById, todayYmd]);
   const dashboardOverallKpis = useMemo(() => {
     return dashboardProjectKpis.reduce(
       (acc, p) => {
@@ -5945,9 +5960,10 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                           <tr>
                             <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "left", padding: 8, fontWeight: 600 }}>Project</th>
                             <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Total Budget (Fixed)</th>
-                            <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Spent to Date (Selected)</th>
-                            <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Spent to Date (Life)</th>
-                            <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Budget Remaining</th>
+                            <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Earned Revenue (Selected)</th>
+                            <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Earned Revenue (Life)</th>
+                            <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Earned Not Billed</th>
+                            <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Unearned Budget Remaining</th>
                             <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8, fontWeight: 600 }}>Gross Margin</th>
                           </tr>
                         </thead>
@@ -5967,7 +5983,8 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                                 <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.totalBudget} digits={0} /></td>
                                 <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.revenueSelectedPeriod} digits={0} /></td>
                                 <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.revenueLifeToDate} digits={0} /></td>
-                                <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.revenueBudgetRemaining} digits={0} /></td>
+                                <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.earnedButUnbilled} digits={0} /></td>
+                                <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.unearnedBudgetRemaining} digits={0} /></td>
                                 <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right", fontWeight: 700 }}>
                                   {p.margin_pct.toFixed(1)}% / {p.target_gross_margin_pct.toFixed(1)}%
                                 </td>
@@ -5975,7 +5992,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                             );
                           })}
                           {dashboardOverviewRows.length === 0 && (
-                            <tr><td colSpan={6} style={{ padding: 10, color: "#4a6076" }}>No project KPI rows in this period.</td></tr>
+                            <tr><td colSpan={7} style={{ padding: 10, color: "#4a6076" }}>No project KPI rows in this period.</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -6307,9 +6324,10 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                             <tr>
                               <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "left", padding: 8 }}>Project</th>
                               <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Total Budget</th>
-                              <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Spent to Date (Selected)</th>
-                              <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Spent to Date (Life)</th>
-                              <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Budget Remaining</th>
+                              <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Earned Revenue (Selected)</th>
+                              <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Earned Revenue (Life)</th>
+                              <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Earned Not Billed</th>
+                              <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Unearned Budget Remaining</th>
                               <th style={{ borderBottom: "1px solid #d8e2ed", textAlign: "right", padding: 8 }}>Gross Margin</th>
                             </tr>
                           </thead>
@@ -6327,7 +6345,8 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                                   <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.totalBudget} digits={0} /></td>
                                   <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.revenueSelectedPeriod} digits={0} /></td>
                                   <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.revenueLifeToDate} digits={0} /></td>
-                                  <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.revenueBudgetRemaining} digits={0} /></td>
+                                  <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.earnedButUnbilled} digits={0} /></td>
+                                  <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}><Currency value={p.unearnedBudgetRemaining} digits={0} /></td>
                                   <td style={{ borderBottom: "1px solid #eef3f8", padding: 8, textAlign: "right" }}>
                                     {p.margin_pct.toFixed(1)}% / {p.target_gross_margin_pct.toFixed(1)}%
                                   </td>
@@ -6350,9 +6369,10 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(140px, 1fr))", gap: 8, marginBottom: 10, fontSize: 12 }}>
                             <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Target Margin<br /><strong>{dashboardSelectedProject.target_gross_margin_pct.toFixed(1)}%</strong></div>
                             <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Actual Margin<br /><strong>{dashboardSelectedProject.margin_pct.toFixed(1)}%</strong></div>
-                            <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Spent to Date (Selected)<br /><strong><Currency value={dashboardSelectedProject.revenueSelectedPeriod} digits={0} /></strong></div>
-                            <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Spent to Date (Life)<br /><strong><Currency value={dashboardSelectedProject.revenueLifeToDate} digits={0} /></strong></div>
-                            <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Budget Remaining<br /><strong><Currency value={dashboardSelectedProject.revenueBudgetRemaining} digits={0} /></strong></div>
+                            <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Earned Revenue (Selected)<br /><strong><Currency value={dashboardSelectedProject.revenueSelectedPeriod} digits={0} /></strong></div>
+                            <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Earned Revenue (Life)<br /><strong><Currency value={dashboardSelectedProject.revenueLifeToDate} digits={0} /></strong></div>
+                            <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Earned Not Billed<br /><strong><Currency value={dashboardSelectedProject.earnedButUnbilled} digits={0} /></strong></div>
+                            <div style={{ border: "1px solid #eef3f8", padding: 8, borderRadius: 8 }}>Unearned Budget Remaining<br /><strong><Currency value={dashboardSelectedProject.unearnedBudgetRemaining} digits={0} /></strong></div>
                           </div>
                         </div>
                       )}
