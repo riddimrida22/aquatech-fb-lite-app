@@ -3752,7 +3752,8 @@ def unbilled_since_last_invoice(
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
     rows = _unbilled_since_last_invoice_by_client(db)
-    return {"as_of": date.today().isoformat(), "by_client": rows}
+    by_project_rows = _unbilled_since_last_invoice_by_client_project(db)
+    return {"as_of": date.today().isoformat(), "by_client": rows, "by_client_project": by_project_rows}
 
 
 @app.get("/reports/project-performance.csv")
@@ -4024,6 +4025,7 @@ def invoice_revenue_status(
 ) -> dict[str, object]:
     summary = ar_summary(db=db, _=_)
     unbilled_rows = _unbilled_since_last_invoice_by_client(db)
+    unbilled_project_rows = _unbilled_since_last_invoice_by_client_project(db)
     unbilled_total = float(sum(float(r.get("unbilled", 0.0)) for r in unbilled_rows))
     return {
         "as_of": date.today().isoformat(),
@@ -4037,6 +4039,7 @@ def invoice_revenue_status(
         "aging": summary.get("aging", {"current": 0.0, "1_30": 0.0, "31_60": 0.0, "61_90": 0.0, "90_plus": 0.0}),
         "earned_not_billed_total": unbilled_total,
         "unbilled_by_client": unbilled_rows,
+        "unbilled_by_client_project": unbilled_project_rows,
         "top_clients": summary.get("top_clients", []),
     }
 
@@ -5352,7 +5355,7 @@ def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[
     return rows
 
 
-def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object]]:
+def _unbilled_since_last_invoice_by_client_project(db: Session) -> list[dict[str, object]]:
     projects = [p for p in db.scalars(select(Project).order_by(Project.id.asc())).all() if not _is_hidden_project_name(p.name)]
     projects_by_id = {p.id: p for p in projects}
     tasks = db.scalars(select(Task)).all()
@@ -5404,6 +5407,7 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         }
 
     by_project_unbilled: dict[int, float] = defaultdict(float)
+    by_project_hours: dict[int, float] = defaultdict(float)
     for te in time_entries:
         project_ref = projects_by_id.get(te.project_id)
         if not project_ref:
@@ -5421,8 +5425,9 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         if week_status and week_status not in COMPLETED_TIMESHEET_STATUS_VALUES:
             continue
         by_project_unbilled[te.project_id] += float(te.hours * te.bill_rate_applied)
+        by_project_hours[te.project_id] += float(te.hours)
 
-    by_client: dict[str, dict[str, object]] = {}
+    rows: list[dict[str, object]] = []
     for project_id, amount in by_project_unbilled.items():
         if amount <= 0.0001:
             continue
@@ -5430,10 +5435,27 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         if not project_ref:
             continue
         client_name = _canonical_client_name(project_ref.client_name)
-        row = by_client.setdefault(client_name, {"client_name": client_name, "unbilled": 0.0, "project_count": 0})
-        row["unbilled"] = float(row["unbilled"]) + float(amount)
-        row["project_count"] = int(row["project_count"]) + 1
+        rows.append(
+            {
+                "client_name": client_name,
+                "project_id": int(project_ref.id),
+                "project_name": project_ref.name,
+                "work_hours": float(by_project_hours.get(project_id, 0.0)),
+                "unbilled": float(amount),
+            }
+        )
+    return sorted(rows, key=lambda r: float(r["unbilled"]), reverse=True)
 
+
+def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object]]:
+    by_project_rows = _unbilled_since_last_invoice_by_client_project(db)
+    by_client: dict[str, dict[str, object]] = {}
+    for row in by_project_rows:
+        client_name = str(row.get("client_name") or "Unassigned Client")
+        agg = by_client.setdefault(client_name, {"client_name": client_name, "unbilled": 0.0, "project_count": 0, "work_hours": 0.0})
+        agg["unbilled"] = float(agg["unbilled"]) + float(row.get("unbilled", 0.0))
+        agg["project_count"] = int(agg["project_count"]) + 1
+        agg["work_hours"] = float(agg["work_hours"]) + float(row.get("work_hours", 0.0))
     return sorted(by_client.values(), key=lambda r: float(r["unbilled"]), reverse=True)
 
 
