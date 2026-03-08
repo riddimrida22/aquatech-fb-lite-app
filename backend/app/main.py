@@ -613,6 +613,15 @@ class LegacyInvoiceImportRowOut(BaseModel):
     reason: str | None = None
 
 
+class LegacyPaymentImportRowOut(BaseModel):
+    row_number: int
+    invoice_number: str
+    payment_date: str | None
+    amount: float | None
+    status: str
+    reason: str | None = None
+
+
 class InvoiceLineOut(BaseModel):
     id: int
     user_id: int | None = None
@@ -772,8 +781,12 @@ INVOICE_ISSUE_DATE_COLUMNS = ["Invoice Date", "Issued Date", "Date"]
 INVOICE_DUE_DATE_COLUMNS = ["Due Date", "Due"]
 INVOICE_STATUS_COLUMNS = ["Status", "Invoice Status", "Payment Status"]
 INVOICE_TOTAL_COLUMNS = ["Total", "Amount", "Invoice Total", "Total Amount", "Grand Total"]
+INVOICE_LINE_TOTAL_COLUMNS = ["Line Total", "Line Subtotal"]
 INVOICE_PAID_COLUMNS = ["Paid", "Amount Paid", "Payments", "Paid Amount"]
 INVOICE_BALANCE_COLUMNS = ["Balance", "Balance Due", "Amount Due", "Due Amount"]
+PAYMENT_DATE_COLUMNS = ["Date", "Payment Date", "Received Date"]
+PAYMENT_INVOICE_NO_COLUMNS = ["Number", "Invoice #", "Invoice Number", "Payment for"]
+PAYMENT_AMOUNT_COLUMNS = ["Amount", "Payment Amount", "Paid Amount"]
 APPROVED_STATUS_VALUES = {"approved", "yes", "true", "1", "locked", "billed", "closed"}
 COMPLETED_TIMESHEET_STATUS_VALUES = {"submitted", "approved", "locked", "billed", "closed"}
 NON_APPROVED_STATUS_VALUES = {
@@ -4652,6 +4665,7 @@ def reconcile_invoice_client_labels(
 async def import_legacy_invoices(
     apply: bool = False,
     file: UploadFile = File(...),
+    payments_file: UploadFile | None = File(default=None),
     mapping_overrides: str | None = Form(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("MANAGE_PROJECTS")),
@@ -4668,6 +4682,7 @@ async def import_legacy_invoices(
     due_cols = _time_cols("due_date", INVOICE_DUE_DATE_COLUMNS, overrides)
     status_cols = _time_cols("status", INVOICE_STATUS_COLUMNS, overrides)
     total_cols = _time_cols("total_amount", INVOICE_TOTAL_COLUMNS, overrides)
+    line_total_cols = _time_cols("line_total", INVOICE_LINE_TOTAL_COLUMNS, overrides)
     paid_cols = _time_cols("amount_paid", INVOICE_PAID_COLUMNS, overrides)
     balance_cols = _time_cols("balance_due", INVOICE_BALANCE_COLUMNS, overrides)
 
@@ -4677,59 +4692,143 @@ async def import_legacy_invoices(
     errors = 0
     rows_out: list[LegacyInvoiceImportRowOut] = []
 
+    # Aggregate line-item exports to invoice-level rows.
+    agg_by_invoice: dict[str, dict[str, object]] = {}
+    line_item_mode = False
     for row_index, row in enumerate(reader, start=2):
-        invoice_number = (_first_value(row, no_cols) or "").strip()
-        client_name = (_first_value(row, client_cols) or "Legacy Client").strip()
-        issue_date = _parse_flexible_date(_first_value(row, issue_cols)) or date.today()
-        due_date = _parse_flexible_date(_first_value(row, due_cols)) or (issue_date + timedelta(days=30))
-        status = _normalize_invoice_status(_first_value(row, status_cols))
+        invoice_number_raw = (_first_value(row, no_cols) or "").strip()
+        line_total = _parse_float(_first_value(row, line_total_cols))
         total_amount = _parse_float(_first_value(row, total_cols))
+        row_amount = line_total if line_total is not None else total_amount
+        if line_total is not None:
+            line_item_mode = True
+
+        issue_date = _parse_flexible_date(_first_value(row, issue_cols))
+        due_date = _parse_flexible_date(_first_value(row, due_cols))
+        status = _normalize_invoice_status(_first_value(row, status_cols))
         amount_paid = _parse_float(_first_value(row, paid_cols))
         balance_due = _parse_float(_first_value(row, balance_cols))
+        client_name = _normalize_import_client_name((_first_value(row, client_cols) or "Legacy Client").strip())
 
-        if total_amount is None and balance_due is None and amount_paid is None:
-            rows_out.append(
-                LegacyInvoiceImportRowOut(
-                    row_number=row_index,
-                    invoice_number=invoice_number or "",
-                    client_name=client_name,
-                    issue_date=issue_date.isoformat() if issue_date else None,
-                    due_date=due_date.isoformat() if due_date else None,
-                    total_amount=None,
-                    amount_paid=None,
-                    balance_due=None,
-                    status="error",
-                    reason="Missing amount fields (total/paid/balance)",
-                )
-            )
-            errors += 1
-            continue
+        seed = f"{client_name}|{issue_date}|{due_date}|{row_index}"
+        invoice_number = invoice_number_raw or f"LEG-{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:10].upper()}"
+        agg = agg_by_invoice.setdefault(
+            invoice_number,
+            {
+                "row_number": row_index,
+                "invoice_number": invoice_number,
+                "client_name": client_name,
+                "issue_date": issue_date,
+                "due_date": due_date,
+                "status": status,
+                "total_amount": 0.0 if row_amount is not None else None,
+                "amount_paid": amount_paid,
+                "balance_due": balance_due,
+            },
+        )
+        if issue_date and (agg["issue_date"] is None):
+            agg["issue_date"] = issue_date
+        if due_date and (agg["due_date"] is None):
+            agg["due_date"] = due_date
+        if str(agg.get("client_name") or "").strip() in {"", "Legacy Client"}:
+            agg["client_name"] = client_name
+        if status == "paid":
+            agg["status"] = "paid"
+        elif str(agg.get("status") or "") not in {"paid", "partial"} and status:
+            agg["status"] = status
+        if row_amount is not None:
+            base_total = float(agg["total_amount"] or 0.0)
+            agg["total_amount"] = base_total + float(row_amount)
+        if amount_paid is not None:
+            prev_paid = agg.get("amount_paid")
+            agg["amount_paid"] = max(float(prev_paid or 0.0), float(amount_paid))
+        if balance_due is not None:
+            prev_balance = agg.get("balance_due")
+            agg["balance_due"] = max(float(prev_balance or 0.0), float(balance_due))
+
+    # Optional payments sidecar file (exported payments_collected CSV).
+    payment_amount_by_invoice: dict[str, float] = {}
+    payment_date_by_invoice: dict[str, date] = {}
+    payment_rows_count = 0
+    if payments_file is not None:
+        raw_payments = await payments_file.read()
+        if raw_payments:
+            payment_reader = csv.DictReader(io.StringIO(raw_payments.decode("utf-8-sig")))
+            payment_date_cols = _time_cols("payment_date", PAYMENT_DATE_COLUMNS, overrides)
+            payment_no_cols = _time_cols("payment_invoice_number", PAYMENT_INVOICE_NO_COLUMNS, overrides)
+            payment_amount_cols = _time_cols("payment_amount", PAYMENT_AMOUNT_COLUMNS, overrides)
+            for prow in payment_reader:
+                payment_rows_count += 1
+                inv_no = (_first_value(prow, payment_no_cols) or "").strip()
+                if not inv_no:
+                    continue
+                pay_amount = _parse_float(_first_value(prow, payment_amount_cols))
+                pay_date = _parse_flexible_date(_first_value(prow, payment_date_cols))
+                if pay_amount is None or pay_amount <= 0:
+                    continue
+                payment_amount_by_invoice[inv_no] = float(payment_amount_by_invoice.get(inv_no, 0.0)) + float(pay_amount)
+                if pay_date:
+                    cur = payment_date_by_invoice.get(inv_no)
+                    if cur is None or pay_date > cur:
+                        payment_date_by_invoice[inv_no] = pay_date
+
+    payments_matched_invoices = 0
+    for invoice_number, agg in agg_by_invoice.items():
+        issue_date = agg.get("issue_date") or date.today()
+        due_date = agg.get("due_date") or (issue_date + timedelta(days=30))
+        total_amount = agg.get("total_amount")
+        amount_paid = agg.get("amount_paid")
+        balance_due = agg.get("balance_due")
+
         if total_amount is None:
+            if amount_paid is None and balance_due is None:
+                rows_out.append(
+                    LegacyInvoiceImportRowOut(
+                        row_number=int(agg["row_number"]),
+                        invoice_number=str(invoice_number),
+                        client_name=str(agg["client_name"]),
+                        issue_date=issue_date.isoformat() if issue_date else None,
+                        due_date=due_date.isoformat() if due_date else None,
+                        total_amount=None,
+                        amount_paid=None,
+                        balance_due=None,
+                        status="error",
+                        reason="Missing amount fields (total/line total/paid/balance)",
+                    )
+                )
+                errors += 1
+                continue
             total_amount = float((amount_paid or 0.0) + (balance_due or 0.0))
-        if amount_paid is None:
+
+        if invoice_number in payment_amount_by_invoice:
+            amount_paid = float(payment_amount_by_invoice[invoice_number])
+            payments_matched_invoices += 1
+        if amount_paid is None and balance_due is None:
+            amount_paid = 0.0
+        elif amount_paid is None:
             amount_paid = max(float(total_amount) - float(balance_due or 0.0), 0.0)
         if balance_due is None:
             balance_due = max(float(total_amount) - float(amount_paid or 0.0), 0.0)
+
         amount_paid = max(float(amount_paid or 0.0), 0.0)
         balance_due = max(float(balance_due or 0.0), 0.0)
         status = _status_from_amounts(
-            status=status,
+            status=str(agg.get("status") or "sent"),
             total_amount=float(total_amount),
             amount_paid=amount_paid,
             balance_due=balance_due,
         )
-
-        if not invoice_number:
-            seed = f"{client_name}|{issue_date.isoformat()}|{due_date.isoformat()}|{row_index}|{float(total_amount):.2f}"
-            invoice_number = f"LEG-{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:10].upper()}"
+        client_name = _normalize_import_client_name(str(agg.get("client_name") or "Legacy Client"))
+        project_id_inferred = _infer_project_id_for_client_name(db, client_name)
+        paid_date_from_payments = payment_date_by_invoice.get(invoice_number)
 
         existing = db.scalar(select(Invoice).where(Invoice.invoice_number == invoice_number))
         operation = "updated" if existing else "imported"
         if not apply:
             rows_out.append(
                 LegacyInvoiceImportRowOut(
-                    row_number=row_index,
-                    invoice_number=invoice_number,
+                    row_number=int(agg["row_number"]),
+                    invoice_number=str(invoice_number),
                     client_name=client_name,
                     issue_date=issue_date.isoformat(),
                     due_date=due_date.isoformat(),
@@ -4744,8 +4843,8 @@ async def import_legacy_invoices(
 
         if not existing:
             existing = Invoice(
-                invoice_number=invoice_number,
-                project_id=None,
+                invoice_number=str(invoice_number),
+                project_id=project_id_inferred,
                 client_name=client_name,
                 start_date=issue_date,
                 end_date=issue_date,
@@ -4758,7 +4857,7 @@ async def import_legacy_invoices(
                 balance_due=balance_due,
                 total_cost=0.0,
                 total_profit=float(total_amount),
-                paid_date=issue_date if status == "paid" else None,
+                paid_date=(paid_date_from_payments or issue_date) if amount_paid > 0.0001 else None,
                 notes="Imported from FreshBooks legacy invoices",
             )
             db.add(existing)
@@ -4769,7 +4868,7 @@ async def import_legacy_invoices(
                     source_time_entry_id=None,
                     work_date=issue_date,
                     user_id=None,
-                    project_id=None,
+                    project_id=existing.project_id,
                     task_id=None,
                     subtask_id=None,
                     description="Legacy imported invoice total",
@@ -4781,7 +4880,10 @@ async def import_legacy_invoices(
             )
             imported += 1
         else:
+            existing.project_id = existing.project_id if existing.project_id is not None else project_id_inferred
             existing.client_name = client_name
+            existing.start_date = issue_date
+            existing.end_date = issue_date
             existing.issue_date = issue_date
             existing.due_date = due_date
             existing.status = status
@@ -4789,7 +4891,7 @@ async def import_legacy_invoices(
             existing.subtotal_amount = float(total_amount)
             existing.amount_paid = amount_paid
             existing.balance_due = balance_due
-            existing.paid_date = issue_date if status == "paid" else None
+            existing.paid_date = (paid_date_from_payments or existing.paid_date or issue_date) if amount_paid > 0.0001 else None
             has_lines = db.scalar(select(func.count(InvoiceLine.id)).where(InvoiceLine.invoice_id == existing.id)) or 0
             if int(has_lines) == 0:
                 db.add(
@@ -4798,7 +4900,7 @@ async def import_legacy_invoices(
                         source_time_entry_id=None,
                         work_date=issue_date,
                         user_id=None,
-                        project_id=None,
+                        project_id=existing.project_id,
                         task_id=None,
                         subtask_id=None,
                         description="Legacy imported invoice total",
@@ -4812,8 +4914,8 @@ async def import_legacy_invoices(
 
         rows_out.append(
             LegacyInvoiceImportRowOut(
-                row_number=row_index,
-                invoice_number=invoice_number,
+                row_number=int(agg["row_number"]),
+                invoice_number=str(invoice_number),
                 client_name=client_name,
                 issue_date=issue_date.isoformat(),
                 due_date=due_date.isoformat(),
@@ -4832,7 +4934,14 @@ async def import_legacy_invoices(
             entity_id=0,
             action="import_legacy_invoices",
             actor_user_id=current_user.id,
-            payload={"imported": imported, "updated": updated, "errors": errors},
+            payload={
+                "imported": imported,
+                "updated": updated,
+                "errors": errors,
+                "line_item_mode": line_item_mode,
+                "payment_rows": payment_rows_count,
+                "payments_matched_invoices": payments_matched_invoices,
+            },
         )
         db.commit()
 
@@ -4843,6 +4952,140 @@ async def import_legacy_invoices(
         "updated": updated,
         "skipped": skipped,
         "errors": errors,
+        "line_item_mode": line_item_mode,
+        "payment_rows": payment_rows_count,
+        "payments_matched_invoices": payments_matched_invoices,
+        "rows": [r.model_dump() for r in rows_out],
+    }
+
+
+@app.post("/invoices/import/freshbooks-payments")
+async def import_legacy_payments(
+    apply: bool = False,
+    file: UploadFile = File(...),
+    mapping_overrides: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV file is empty")
+    text = raw.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    overrides = _parse_mapping_overrides(mapping_overrides)
+    payment_date_cols = _time_cols("payment_date", PAYMENT_DATE_COLUMNS, overrides)
+    payment_no_cols = _time_cols("payment_invoice_number", PAYMENT_INVOICE_NO_COLUMNS, overrides)
+    payment_amount_cols = _time_cols("payment_amount", PAYMENT_AMOUNT_COLUMNS, overrides)
+
+    aggregated: dict[str, dict[str, object]] = {}
+    rows_out: list[LegacyPaymentImportRowOut] = []
+    row_errors = 0
+    for row_index, row in enumerate(reader, start=2):
+        invoice_number = (_first_value(row, payment_no_cols) or "").strip()
+        amount = _parse_float(_first_value(row, payment_amount_cols))
+        payment_date = _parse_flexible_date(_first_value(row, payment_date_cols))
+        if not invoice_number:
+            rows_out.append(
+                LegacyPaymentImportRowOut(
+                    row_number=row_index,
+                    invoice_number="",
+                    payment_date=payment_date.isoformat() if payment_date else None,
+                    amount=amount,
+                    status="error",
+                    reason="Missing invoice number",
+                )
+            )
+            row_errors += 1
+            continue
+        if amount is None or amount <= 0:
+            rows_out.append(
+                LegacyPaymentImportRowOut(
+                    row_number=row_index,
+                    invoice_number=invoice_number,
+                    payment_date=payment_date.isoformat() if payment_date else None,
+                    amount=amount,
+                    status="error",
+                    reason="Missing or non-positive payment amount",
+                )
+            )
+            row_errors += 1
+            continue
+        agg = aggregated.setdefault(invoice_number, {"amount": 0.0, "payment_date": payment_date, "row_number": row_index})
+        agg["amount"] = float(agg["amount"]) + float(amount)
+        if payment_date:
+            cur = agg.get("payment_date")
+            if cur is None or payment_date > cur:
+                agg["payment_date"] = payment_date
+
+    matched = 0
+    unmatched = 0
+    updated = 0
+    for invoice_number, agg in aggregated.items():
+        amount = float(agg["amount"])
+        payment_date = agg.get("payment_date")
+        inv = db.scalar(select(Invoice).where(Invoice.invoice_number == invoice_number))
+        if not inv:
+            unmatched += 1
+            rows_out.append(
+                LegacyPaymentImportRowOut(
+                    row_number=int(agg["row_number"]),
+                    invoice_number=invoice_number,
+                    payment_date=payment_date.isoformat() if payment_date else None,
+                    amount=amount,
+                    status="unmatched",
+                    reason="Invoice not found",
+                )
+            )
+            continue
+        matched += 1
+        new_paid = max(0.0, amount)
+        new_balance = max(float(inv.subtotal_amount or 0.0) - new_paid, 0.0)
+        new_status = _status_from_amounts(
+            status=str(inv.status or "sent"),
+            total_amount=float(inv.subtotal_amount or 0.0),
+            amount_paid=new_paid,
+            balance_due=new_balance,
+        )
+        if apply:
+            inv.amount_paid = new_paid
+            inv.balance_due = new_balance
+            inv.status = new_status
+            inv.paid_date = payment_date if new_paid > 0.0001 else None
+            updated += 1
+        rows_out.append(
+            LegacyPaymentImportRowOut(
+                row_number=int(agg["row_number"]),
+                invoice_number=invoice_number,
+                payment_date=payment_date.isoformat() if payment_date else None,
+                amount=amount,
+                status="ready" if not apply else "updated",
+                reason=None,
+            )
+        )
+
+    if apply:
+        _log_audit_event(
+            db=db,
+            entity_type="invoice",
+            entity_id=0,
+            action="import_legacy_payments",
+            actor_user_id=current_user.id,
+            payload={
+                "updated": updated,
+                "matched": matched,
+                "unmatched": unmatched,
+                "row_errors": row_errors,
+            },
+        )
+        db.commit()
+
+    return {
+        "apply": apply,
+        "count": len(aggregated),
+        "updated": updated,
+        "matched": matched,
+        "unmatched": unmatched,
+        "errors": row_errors,
         "rows": [r.model_dump() for r in rows_out],
     }
 
@@ -5208,7 +5451,7 @@ def _canonical_client_name(name: str | None) -> str:
     if lower == "nycdep-bepa":
         return "NYCDEP-BEPA"
     if lower == "stantecjv":
-        return "StantecJV"
+        return "Stantec + Brown & Caldwell"
     return clean
 
 
@@ -6208,6 +6451,34 @@ def _normalize_invoice_status(raw: str) -> str:
     if val in {"sent", "open", "unpaid", "outstanding", ""}:
         return "sent"
     return "sent"
+
+
+def _normalize_import_client_name(raw: str) -> str:
+    clean = (raw or "").strip()
+    lower = clean.lower()
+    alias_map = {
+        "woodard and curran": "Woodard & Curran",
+        "bepa": "NYCDEP-BEPA",
+        "stantecjv": "Stantec + Brown & Caldwell",
+        "hdr": "HDR",
+        "imported client": "Unassigned Client",
+        "legacy client": "Unassigned Client",
+        "historical legacy client": "Unassigned Client",
+        "unmapped imported work": "Unassigned Client",
+    }
+    if lower in alias_map:
+        return alias_map[lower]
+    return clean or "Unassigned Client"
+
+
+def _infer_project_id_for_client_name(db: Session, client_name: str) -> int | None:
+    normalized = _normalize_import_client_name(client_name)
+    projects = db.scalars(
+        select(Project).where(and_(func.lower(Project.client_name) == normalized.lower(), Project.is_active.is_(True)))
+    ).all()
+    if len(projects) == 1:
+        return int(projects[0].id)
+    return None
 
 
 def _status_from_amounts(*, status: str, total_amount: float, amount_paid: float, balance_due: float) -> str:
