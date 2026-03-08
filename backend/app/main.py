@@ -3981,7 +3981,7 @@ def ar_summary(
                 aging["61_90"] += bal
             else:
                 aging["90_plus"] += bal
-        key = (i.client_name or "Unknown Client").strip() or "Unknown Client"
+        key = _canonical_client_name(i.client_name)
         row = by_client.setdefault(key, {"client_name": key, "invoice_count": 0, "outstanding": 0.0, "overdue": 0.0})
         row["invoice_count"] = int(row["invoice_count"]) + 1
         row["outstanding"] = float(row["outstanding"]) + bal
@@ -4000,6 +4000,30 @@ def ar_summary(
         "overdue_total": overdue_total,
         "aging": aging,
         "top_clients": top_clients,
+    }
+
+
+@app.get("/reports/invoice-revenue-status")
+def invoice_revenue_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    summary = ar_summary(db=db, _=_)
+    unbilled_rows = _unbilled_since_last_invoice_by_client(db)
+    unbilled_total = float(sum(float(r.get("unbilled", 0.0)) for r in unbilled_rows))
+    return {
+        "as_of": date.today().isoformat(),
+        "invoice_count_total": int(summary.get("invoice_count_total", 0)),
+        "invoice_count_open": int(summary.get("invoice_count_open", 0)),
+        "total_invoiced": float(summary.get("total_invoiced", 0.0)),
+        "total_paid_to_date": float(summary.get("total_paid_to_date", 0.0)),
+        "total_outstanding": float(summary.get("total_outstanding", 0.0)),
+        "overdue_invoice_count": int(summary.get("overdue_invoice_count", 0)),
+        "overdue_total": float(summary.get("overdue_total", 0.0)),
+        "aging": summary.get("aging", {"current": 0.0, "1_30": 0.0, "31_60": 0.0, "61_90": 0.0, "90_plus": 0.0}),
+        "earned_not_billed_total": unbilled_total,
+        "unbilled_by_client": unbilled_rows,
+        "top_clients": summary.get("top_clients", []),
     }
 
 
@@ -5145,12 +5169,30 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         project_ref = projects_by_id.get(project_id)
         if not project_ref:
             continue
-        client_name = (project_ref.client_name or "Unassigned Client").strip() or "Unassigned Client"
+        client_name = _canonical_client_name(project_ref.client_name)
         row = by_client.setdefault(client_name, {"client_name": client_name, "unbilled": 0.0, "project_count": 0})
         row["unbilled"] = float(row["unbilled"]) + float(amount)
         row["project_count"] = int(row["project_count"]) + 1
 
     return sorted(by_client.values(), key=lambda r: float(r["unbilled"]), reverse=True)
+
+
+def _canonical_client_name(name: str | None) -> str:
+    clean = str(name or "").strip()
+    if not clean:
+        return "Unassigned Client"
+    lower = clean.lower()
+    if lower in {"imported client", "legacy client", "unmapped imported work"}:
+        return "Unmapped Imported Work"
+    if lower == "hdr":
+        return "HDR"
+    if lower == "woodard and curran":
+        return "Woodard & Curran"
+    if lower == "nycdep-bepa":
+        return "NYCDEP-BEPA"
+    if lower == "stantecjv":
+        return "StantecJV"
+    return clean
 
 
 @app.post("/accounting/import-preview")

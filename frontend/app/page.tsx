@@ -530,6 +530,25 @@ type UnbilledSinceLastInvoice = {
   as_of: string;
   by_client: UnbilledSinceLastInvoiceClientRow[];
 };
+type InvoiceRevenueStatus = {
+  as_of: string;
+  invoice_count_total: number;
+  invoice_count_open: number;
+  total_invoiced: number;
+  total_paid_to_date: number;
+  total_outstanding: number;
+  overdue_invoice_count: number;
+  overdue_total: number;
+  aging: {
+    current: number;
+    "1_30": number;
+    "31_60": number;
+    "61_90": number;
+    "90_plus": number;
+  };
+  earned_not_billed_total: number;
+  unbilled_by_client: UnbilledSinceLastInvoiceClientRow[];
+};
 type RecurringInvoiceSchedule = {
   id: number;
   name: string;
@@ -1236,6 +1255,7 @@ export default function Home() {
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [savedInvoices, setSavedInvoices] = useState<InvoiceRecord[]>([]);
   const [unbilledSinceLastInvoice, setUnbilledSinceLastInvoice] = useState<UnbilledSinceLastInvoice>({ as_of: todayYmd, by_client: [] });
+  const [invoiceRevenueStatus, setInvoiceRevenueStatus] = useState<InvoiceRevenueStatus | null>(null);
   const [invoiceDetail, setInvoiceDetail] = useState<InvoiceRecord | null>(null);
   const [invoiceRenderContext, setInvoiceRenderContext] = useState<InvoiceRenderContext | null>(null);
   const [invoiceSelectedId, setInvoiceSelectedId] = useState<number | null>(null);
@@ -1921,8 +1941,9 @@ export default function Home() {
       });
   }, [projectCockpitRows, performanceByProjectId, invoiceFinanceByProjectId]);
   const dashboardUnbilledByClient = useMemo(() => {
+    const sourceRows = invoiceRevenueStatus?.unbilled_by_client || unbilledSinceLastInvoice.by_client || [];
     const grouped: Record<string, number> = {};
-    for (const row of unbilledSinceLastInvoice.by_client || []) {
+    for (const row of sourceRows) {
       const client = normalizeDashboardClientLabel(row.client_name || "");
       const amount = Number(row.unbilled || 0);
       if (amount <= 0.009) continue;
@@ -1935,7 +1956,7 @@ export default function Home() {
       total: rows.reduce((sum, row) => sum + row.amount, 0),
       rows,
     };
-  }, [unbilledSinceLastInvoice]);
+  }, [invoiceRevenueStatus?.unbilled_by_client, unbilledSinceLastInvoice]);
   const dashboardRevenueStatusTotals = useMemo(() => {
     const earnedRevenueLife = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.revenueLifeToDate || 0), 0);
     const unearnedBudgetRemaining = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.unearnedBudgetRemaining || 0), 0);
@@ -2034,7 +2055,7 @@ export default function Home() {
       totalOutstanding: financialInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0),
     };
   }, [savedInvoices, todayYmd]);
-  const paidToDateDisplay = Number(effectiveArSummary.total_paid_to_date ?? paymentStatusTotals.totalPaid ?? 0);
+  const paidToDateDisplay = Number(invoiceRevenueStatus?.total_paid_to_date ?? effectiveArSummary.total_paid_to_date ?? paymentStatusTotals.totalPaid ?? 0);
   const invoiceStatusOverview = useMemo(() => {
     const financialInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd));
     let sentUnpaidCount = 0;
@@ -2047,14 +2068,14 @@ export default function Home() {
       sentUnpaidCount += 1;
       sentUnpaidAmount += balance;
     }
-    const unbilledAmount = (unbilledSinceLastInvoice.by_client || []).reduce((sum, row) => sum + Number(row.unbilled || 0), 0);
+    const unbilledAmount = Number(invoiceRevenueStatus?.earned_not_billed_total ?? dashboardUnbilledByClient.total ?? 0);
     return {
       paidToDate: paymentStatusTotals.totalPaid,
       sentUnpaidCount,
       sentUnpaidAmount,
       unbilledAmount,
     };
-  }, [savedInvoices, todayYmd, unbilledSinceLastInvoice, paymentStatusTotals.totalPaid]);
+  }, [savedInvoices, todayYmd, invoiceRevenueStatus?.earned_not_billed_total, dashboardUnbilledByClient.total, paymentStatusTotals.totalPaid]);
   const paymentClientOptions = useMemo(() => {
     return Array.from(
       new Set(
@@ -2773,7 +2794,7 @@ export default function Home() {
   }
 
   async function refreshBillingWorkspaceData() {
-    await Promise.all([refreshInvoicePreview(), refreshInvoices(), refreshArSummary(), refreshRecurringSchedules()]);
+    await Promise.all([refreshInvoicePreview(), refreshInvoices(), refreshArSummary(), refreshInvoiceRevenueStatus(), refreshRecurringSchedules()]);
   }
 
   async function refreshCurrentWorkspace() {
@@ -3157,6 +3178,20 @@ export default function Home() {
     try {
       const payload = await apiGet<ArSummary>("/reports/ar-summary");
       setArSummary(payload);
+      markSyncNow();
+    } catch (err) {
+      setMessage(String(err));
+    }
+  }
+
+  async function refreshInvoiceRevenueStatus() {
+    if (!canViewFinancials) {
+      setInvoiceRevenueStatus(null);
+      return;
+    }
+    try {
+      const payload = await apiGet<InvoiceRevenueStatus>("/reports/invoice-revenue-status");
+      setInvoiceRevenueStatus(payload);
       markSyncNow();
     } catch (err) {
       setMessage(String(err));
@@ -3770,6 +3805,11 @@ export default function Home() {
   useEffect(() => {
     if (!shouldLoadBillingData) return;
     refreshArSummary();
+  }, [me?.id, shouldLoadBillingData]);
+
+  useEffect(() => {
+    if (!shouldLoadBillingData) return;
+    refreshInvoiceRevenueStatus();
   }, [me?.id, shouldLoadBillingData]);
 
   useEffect(() => {
