@@ -5027,6 +5027,23 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         if v is not None
     }
 
+    last_invoice_end_by_project: dict[int, date] = {}
+    invoiced_projects = db.scalars(
+        select(Invoice).where(
+            and_(
+                Invoice.project_id.is_not(None),
+                Invoice.status.notin_(["void", "draft"]),
+            )
+        )
+    ).all()
+    for inv in invoiced_projects:
+        if inv.project_id is None:
+            continue
+        cur = last_invoice_end_by_project.get(int(inv.project_id))
+        cutoff = inv.end_date
+        if cur is None or cutoff > cur:
+            last_invoice_end_by_project[int(inv.project_id)] = cutoff
+
     by_project_unbilled: dict[int, float] = defaultdict(float)
     for te in db.scalars(select(TimeEntry)).all():
         project_ref = projects_by_id.get(te.project_id)
@@ -5037,6 +5054,9 @@ def _unbilled_since_last_invoice_by_client(db: Session) -> list[dict[str, object
         if not is_billable:
             continue
         if te.id in invoiced_time_entry_ids:
+            continue
+        cutoff = last_invoice_end_by_project.get(int(te.project_id))
+        if cutoff is not None and te.work_date <= cutoff:
             continue
         by_project_unbilled[te.project_id] += float(te.hours * te.bill_rate_applied)
 
