@@ -536,10 +536,19 @@ type UnbilledSinceLastInvoiceClientRow = {
   client_name: string;
   unbilled: number;
   project_count: number;
+  work_hours?: number;
+};
+type UnbilledSinceLastInvoiceProjectRow = {
+  client_name: string;
+  project_id: number;
+  project_name: string;
+  work_hours: number;
+  unbilled: number;
 };
 type UnbilledSinceLastInvoice = {
   as_of: string;
   by_client: UnbilledSinceLastInvoiceClientRow[];
+  by_client_project?: UnbilledSinceLastInvoiceProjectRow[];
 };
 type InvoiceRevenueStatus = {
   as_of: string;
@@ -559,6 +568,7 @@ type InvoiceRevenueStatus = {
   };
   earned_not_billed_total: number;
   unbilled_by_client: UnbilledSinceLastInvoiceClientRow[];
+  unbilled_by_client_project?: UnbilledSinceLastInvoiceProjectRow[];
 };
 type RecurringInvoiceSchedule = {
   id: number;
@@ -829,7 +839,7 @@ function normalizeDashboardClientLabel(name: string): string {
   if (lower === "hdr") return "HDR";
   if (lower === "woodard and curran") return "Woodard & Curran";
   if (lower === "nycdep-bepa") return "NYCDEP-BEPA";
-  if (lower === "stantecjv") return "StantecJV";
+  if (lower === "stantecjv") return "Stantec + Brown & Caldwell";
   return clean;
 }
 
@@ -1970,6 +1980,19 @@ export default function Home() {
       rows,
     };
   }, [invoiceRevenueStatus?.unbilled_by_client, unbilledSinceLastInvoice]);
+  const dashboardUnbilledByClientProject = useMemo(() => {
+    const sourceRows = invoiceRevenueStatus?.unbilled_by_client_project || unbilledSinceLastInvoice.by_client_project || [];
+    const rows = sourceRows
+      .map((row) => ({
+        client: normalizeDashboardClientLabel(row.client_name || ""),
+        project: (row.project_name || "").trim() || `Project ${row.project_id}`,
+        hours: Number(row.work_hours || 0),
+        amount: Number(row.unbilled || 0),
+      }))
+      .filter((row) => row.amount > 0.009 || row.hours > 0.009)
+      .sort((a, b) => b.amount - a.amount);
+    return rows;
+  }, [invoiceRevenueStatus?.unbilled_by_client_project, unbilledSinceLastInvoice.by_client_project]);
   const dashboardRevenueStatusTotals = useMemo(() => {
     const earnedRevenueLife = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.revenueLifeToDate || 0), 0);
     const unearnedBudgetRemaining = dashboardProjectKpis.reduce((sum, p) => sum + Number(p.unearnedBudgetRemaining || 0), 0);
@@ -6144,28 +6167,32 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     </div>
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10 }}>
                       <div style={{ fontSize: 12, color: "#4a6076", marginBottom: 6 }}>
-                        Unbilled By Client <strong style={{ color: "#1f3f60" }}>(Total: <Currency value={dashboardUnbilledByClient.total} />)</strong>
+                        Work Performed & Unbilled (Client / Project) <strong style={{ color: "#1f3f60" }}>(Total: <Currency value={dashboardUnbilledByClient.total} />)</strong>
                       </div>
                       <div style={{ fontSize: 11, color: "#607689", marginBottom: 6 }}>
-                        Completed billable work since each project's last invoice date using submitted/approved timesheet weeks.
+                        Billable work since each project's last invoice date, shown by client and project.
                       </div>
                       <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #edf2f7", borderRadius: 8 }}>
                         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
                           <thead style={{ background: "#f7fafc" }}>
                             <tr>
                               <th style={{ textAlign: "left", padding: 6, borderBottom: "1px solid #edf2f7" }}>Client</th>
+                              <th style={{ textAlign: "left", padding: 6, borderBottom: "1px solid #edf2f7" }}>Project</th>
+                              <th style={{ textAlign: "right", padding: 6, borderBottom: "1px solid #edf2f7" }}>Work Hours</th>
                               <th style={{ textAlign: "right", padding: 6, borderBottom: "1px solid #edf2f7" }}>Unbilled</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {dashboardUnbilledByClient.rows.slice(0, 8).map((row) => (
-                              <tr key={`dash-unbilled-client-${row.client}`}>
+                            {dashboardUnbilledByClientProject.slice(0, 14).map((row) => (
+                              <tr key={`dash-unbilled-project-${row.client}-${row.project}`}>
                                 <td style={{ borderBottom: "1px solid #edf2f7", padding: 6 }}>{row.client}</td>
+                                <td style={{ borderBottom: "1px solid #edf2f7", padding: 6 }}>{row.project}</td>
+                                <td style={{ borderBottom: "1px solid #edf2f7", padding: 6, textAlign: "right" }}>{row.hours.toFixed(2)}</td>
                                 <td style={{ borderBottom: "1px solid #edf2f7", padding: 6, textAlign: "right" }}><Currency value={row.amount} /></td>
                               </tr>
                             ))}
-                            {dashboardUnbilledByClient.rows.length === 0 && (
-                              <tr><td colSpan={2} style={{ padding: 8, color: "#4a6076" }}>No unbilled revenue by client in current data.</td></tr>
+                            {dashboardUnbilledByClientProject.length === 0 && (
+                              <tr><td colSpan={4} style={{ padding: 8, color: "#4a6076" }}>No unbilled project rows in current data.</td></tr>
                             )}
                           </tbody>
                         </table>
