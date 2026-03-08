@@ -226,3 +226,112 @@ def test_unbilled_since_last_invoice_ignores_draft_invoices() -> None:
         rows_after = unbilled_after_sent.json()["by_client"]
         assert rows_after and rows_after[0]["client_name"] == "Billing Client"
         assert rows_after[0]["unbilled"] == 200
+
+
+def test_unbilled_since_last_invoice_excludes_pre_cutoff_uninvoiced_time() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.cutoff@aquatechpc.com", "full_name": "Cutoff Admin"},
+        )
+        assert bootstrap.status_code == 200
+        admin_id = bootstrap.json()["id"]
+
+        project = client.post(
+            "/projects",
+            json={
+                "name": "Cutoff Project",
+                "client_name": "Cutoff Client",
+                "pm_user_id": admin_id,
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "overall_budget_fee": 10000,
+                "is_overhead": False,
+            },
+        )
+        assert project.status_code == 200
+        project_id = project.json()["id"]
+
+        task = client.post(f"/projects/{project_id}/tasks", json={"name": "Design"})
+        assert task.status_code == 200
+        task_id = task.json()["id"]
+
+        subtask = client.post(
+            f"/tasks/{task_id}/subtasks",
+            json={"code": "DES-01", "name": "Model", "budget_hours": 20, "budget_fee": 2000},
+        )
+        assert subtask.status_code == 200
+        subtask_id = subtask.json()["id"]
+
+        set_rate = client.post(
+            "/rates",
+            json={"user_id": admin_id, "effective_date": "2026-01-01", "bill_rate": 100, "cost_rate": 50},
+        )
+        assert set_rate.status_code == 200
+
+        pre_cutoff_uninvoiced = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-01-04",
+                "hours": 1,
+                "note": "before cutoff but uninvoiced",
+            },
+        )
+        assert pre_cutoff_uninvoiced.status_code == 200
+
+        invoiced_entry = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-01-06",
+                "hours": 2,
+                "note": "to be invoiced",
+            },
+        )
+        assert invoiced_entry.status_code == 200
+
+        post_cutoff_uninvoiced = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-01-10",
+                "hours": 3,
+                "note": "after cutoff and uninvoiced",
+            },
+        )
+        assert post_cutoff_uninvoiced.status_code == 200
+
+        create_invoice = client.post(
+            "/invoices",
+            json={
+                "start": "2026-01-05",
+                "end": "2026-01-07",
+                "project_id": project_id,
+                "approved_only": False,
+                "issue_date": "2026-01-08",
+                "due_date": "2026-01-22",
+                "notes": "cutoff invoice",
+            },
+        )
+        assert create_invoice.status_code == 200
+        invoice_id = create_invoice.json()["id"]
+
+        mark_sent = client.put(
+            f"/invoices/{invoice_id}/payment",
+            json={"amount_paid": 0, "status": "sent"},
+        )
+        assert mark_sent.status_code == 200
+        assert mark_sent.json()["status"] == "sent"
+
+        unbilled = client.get("/reports/unbilled-since-last-invoice")
+        assert unbilled.status_code == 200
+        rows = unbilled.json()["by_client"]
+        assert rows and rows[0]["client_name"] == "Cutoff Client"
+        assert rows[0]["unbilled"] == 300
