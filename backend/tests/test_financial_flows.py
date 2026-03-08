@@ -626,3 +626,80 @@ def test_freshbooks_payments_import_updates_paid_and_balance() -> None:
         assert invoice["amount_paid"] == 1000
         assert invoice["balance_due"] == 0
         assert invoice["status"] == "paid"
+
+
+def test_payroll_hours_report_biweekly_period() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.payrollhours@aquatechpc.com", "full_name": "Payroll Hours Admin"},
+        )
+        assert bootstrap.status_code == 200
+        admin_id = bootstrap.json()["id"]
+
+        project = client.post(
+            "/projects",
+            json={
+                "name": "Payroll Project",
+                "client_name": "Payroll Client",
+                "pm_user_id": admin_id,
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "overall_budget_fee": 10000,
+                "is_overhead": False,
+            },
+        )
+        assert project.status_code == 200
+        project_id = project.json()["id"]
+
+        task = client.post(f"/projects/{project_id}/tasks", json={"name": "Execution"})
+        assert task.status_code == 200
+        task_id = task.json()["id"]
+
+        subtask = client.post(
+            f"/tasks/{task_id}/subtasks",
+            json={"code": "PAY-01", "name": "Payroll Task", "budget_hours": 20, "budget_fee": 2000},
+        )
+        assert subtask.status_code == 200
+        subtask_id = subtask.json()["id"]
+
+        rate = client.post(
+            "/rates",
+            json={"user_id": admin_id, "effective_date": "2026-01-01", "bill_rate": 120, "cost_rate": 60},
+        )
+        assert rate.status_code == 200
+
+        # Period ending 2026-03-15
+        entry_one = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-03-03",
+                "hours": 5,
+                "note": "payroll hours 1",
+            },
+        )
+        assert entry_one.status_code == 200
+        entry_two = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-03-10",
+                "hours": 3,
+                "note": "payroll hours 2",
+            },
+        )
+        assert entry_two.status_code == 200
+
+        payroll = client.get("/reports/payroll-hours?period_end=2026-03-15")
+        assert payroll.status_code == 200
+        payload = payroll.json()
+        assert payload["selected_period_end"] == "2026-03-15"
+        rows = payload["rows"]
+        my_row = next((r for r in rows if r["user_id"] == admin_id), None)
+        assert my_row is not None
+        assert my_row["hours"] == 8

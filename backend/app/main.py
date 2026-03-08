@@ -4044,6 +4044,82 @@ def invoice_revenue_status(
     }
 
 
+@app.get("/reports/payroll-hours")
+def payroll_hours_report(
+    start_from: date = Query(default=date(2024, 1, 1)),
+    period_end: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    today = date.today()
+    _, current_end = pay_period_for(today)
+    selected_end = period_end or current_end
+    selected_start = selected_end - timedelta(days=13)
+
+    first_start, first_end = pay_period_for(start_from)
+    if first_start < start_from:
+        first_start = first_start + timedelta(days=14)
+        first_end = first_end + timedelta(days=14)
+
+    entries = db.scalars(
+        select(TimeEntry).where(and_(TimeEntry.work_date >= first_start, TimeEntry.work_date <= current_end))
+    ).all()
+    active_users = db.scalars(select(User).where(User.is_active.is_(True)).order_by(User.full_name.asc(), User.email.asc())).all()
+    rates = db.scalars(select(UserRate).order_by(UserRate.user_id.asc(), UserRate.effective_date.asc())).all()
+    rates_by_user: dict[int, list[UserRate]] = defaultdict(list)
+    for rate in rates:
+        rates_by_user[int(rate.user_id)].append(rate)
+
+    period_hours_total: dict[date, float] = defaultdict(float)
+    period_hours_by_user: dict[tuple[date, int], float] = defaultdict(float)
+    for te in entries:
+        _, pend = pay_period_for(te.work_date)
+        period_hours_total[pend] += float(te.hours)
+        period_hours_by_user[(pend, int(te.user_id))] += float(te.hours)
+
+    periods: list[dict[str, object]] = []
+    pend = first_end
+    while pend <= current_end:
+        pstart = pend - timedelta(days=13)
+        periods.append(
+            {
+                "period_start": pstart.isoformat(),
+                "period_end": pend.isoformat(),
+                "label": f"{pstart.isoformat()} to {pend.isoformat()}",
+                "total_hours": float(period_hours_total.get(pend, 0.0)),
+                "employee_count": int(
+                    len({uid for (period_key, uid), hrs in period_hours_by_user.items() if period_key == pend and hrs > 0.0001})
+                ),
+            }
+        )
+        pend += timedelta(days=14)
+
+    rows: list[dict[str, object]] = []
+    for user in active_users:
+        latest_rate = _latest_rate_for_date(rates_by_user.get(int(user.id), []), selected_end)
+        rows.append(
+            {
+                "user_id": int(user.id),
+                "employee": user.full_name or user.email,
+                "email": user.email,
+                "hours": float(period_hours_by_user.get((selected_end, int(user.id)), 0.0)),
+                "cost_rate": float(latest_rate.cost_rate) if latest_rate else None,
+                "bill_rate": float(latest_rate.bill_rate) if latest_rate else None,
+            }
+        )
+    rows.sort(key=lambda r: str(r["employee"]).lower())
+
+    return {
+        "as_of": today.isoformat(),
+        "current_period_start": (current_end - timedelta(days=13)).isoformat(),
+        "current_period_end": current_end.isoformat(),
+        "selected_period_start": selected_start.isoformat(),
+        "selected_period_end": selected_end.isoformat(),
+        "periods": periods,
+        "rows": rows,
+    }
+
+
 @app.get("/invoices/recurring/schedules", response_model=list[RecurringInvoiceScheduleOut])
 def list_recurring_invoice_schedules(
     db: Session = Depends(get_db),
@@ -6437,6 +6513,13 @@ def _import_row_fingerprint(
         ]
     )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _latest_rate_for_date(rates: list[UserRate], as_of: date) -> UserRate | None:
+    for r in reversed(rates):
+        if r.effective_date <= as_of:
+            return r
+    return rates[-1] if rates else None
 
 
 def _normalize_rate_4dp(value: float, field_name: str) -> float:
