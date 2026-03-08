@@ -1915,6 +1915,17 @@ export default function Home() {
       rows,
     };
   }, [unbilledSinceLastInvoice]);
+  const dashboardRevenueStatusTotals = useMemo(() => {
+    return dashboardProjectKpis.reduce(
+      (acc, p) => {
+        acc.earnedRevenueLife += Number(p.revenueLifeToDate || 0);
+        acc.earnedNotBilled += Number(p.earnedButUnbilled || 0);
+        acc.unearnedBudgetRemaining += Number(p.unearnedBudgetRemaining || 0);
+        return acc;
+      },
+      { earnedRevenueLife: 0, earnedNotBilled: 0, unearnedBudgetRemaining: 0 },
+    );
+  }, [dashboardProjectKpis]);
   const taxPrepReadiness = useMemo(() => {
     const financialInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd));
     const invoicePaid = financialInvoices.reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
@@ -6002,6 +6013,26 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                 <div style={{ display: "grid", gap: 12 }}>
                   <div className="aq-dashboard-section" style={{ marginTop: 8 }}>
                     <h3 className="aq-dashboard-section-title">Invoice & Revenue Status</h3>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(140px, 1fr))", gap: 8, marginBottom: 8 }}>
+                      <div style={{ border: "1px solid #d6e3f1", borderRadius: 8, padding: 10, background: "#f3f8fe" }}>
+                        <div style={{ fontSize: 12, color: "#4a6076" }}>Earned Revenue (Life)</div>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: "#1f3f60" }}>
+                          <Currency value={dashboardRevenueStatusTotals.earnedRevenueLife} digits={0} />
+                        </div>
+                      </div>
+                      <div style={{ border: "1px solid #f1dcc2", borderRadius: 8, padding: 10, background: "#fff8ef" }}>
+                        <div style={{ fontSize: 12, color: "#4a6076" }}>Earned Not Billed</div>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: "#7a4a1f" }}>
+                          <Currency value={dashboardRevenueStatusTotals.earnedNotBilled} digits={0} />
+                        </div>
+                      </div>
+                      <div style={{ border: "1px solid #dbe6d5", borderRadius: 8, padding: 10, background: "#f6fbf4" }}>
+                        <div style={{ fontSize: 12, color: "#4a6076" }}>Unearned Budget Remaining</div>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: "#2f5b2f" }}>
+                          <Currency value={dashboardRevenueStatusTotals.unearnedBudgetRemaining} digits={0} />
+                        </div>
+                      </div>
+                    </div>
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10, marginBottom: 8 }}>
                       <div style={{ fontSize: 12, color: "#4a6076" }}>Invoice Paid To Date</div>
                       <div style={{ fontSize: 20, fontWeight: 700, color: "#1f3f60" }}>
