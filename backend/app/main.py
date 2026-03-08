@@ -3957,6 +3957,8 @@ def ar_summary(
     today = date.today()
     candidate_invoices = db.scalars(select(Invoice).where(Invoice.status.notin_(["void", "draft"]))).all()
     invoices = [i for i in candidate_invoices if _invoice_open_balance(i) > 0.0001]
+    total_invoiced = float(sum(float(i.subtotal_amount or 0.0) for i in candidate_invoices))
+    total_paid_to_date = float(sum(float(i.amount_paid or 0.0) for i in candidate_invoices))
     total_outstanding = float(sum(_invoice_open_balance(i) for i in invoices))
     overdue = [i for i in invoices if i.due_date and i.due_date < today]
     overdue_total = float(sum(_invoice_open_balance(i) for i in overdue))
@@ -3989,6 +3991,9 @@ def ar_summary(
     top_clients = sorted(by_client.values(), key=lambda r: float(r["outstanding"]), reverse=True)[:10]
     return {
         "as_of": today.isoformat(),
+        "invoice_count_total": len(candidate_invoices),
+        "total_invoiced": total_invoiced,
+        "total_paid_to_date": total_paid_to_date,
         "invoice_count_open": len(invoices),
         "total_outstanding": total_outstanding,
         "overdue_invoice_count": len(overdue),

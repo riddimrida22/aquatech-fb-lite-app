@@ -505,6 +505,9 @@ type ArClientRow = {
 };
 type ArSummary = {
   as_of: string;
+  invoice_count_total?: number;
+  total_invoiced?: number;
+  total_paid_to_date?: number;
   invoice_count_open: number;
   total_outstanding: number;
   overdue_invoice_count: number;
@@ -791,6 +794,10 @@ function normalizeDashboardClientLabel(name: string): string {
   const lower = clean.toLowerCase();
   if (!clean) return "Unassigned Client";
   if (lower === "imported client" || lower === "legacy client") return "Unmapped Imported Work";
+  if (lower === "hdr") return "HDR";
+  if (lower === "woodard and curran") return "Woodard & Curran";
+  if (lower === "nycdep-bepa") return "NYCDEP-BEPA";
+  if (lower === "stantecjv") return "StantecJV";
   return clean;
 }
 
@@ -2027,6 +2034,7 @@ export default function Home() {
       totalOutstanding: financialInvoices.reduce((sum, inv) => sum + invoiceOutstandingBalance(inv), 0),
     };
   }, [savedInvoices, todayYmd]);
+  const paidToDateDisplay = Number(effectiveArSummary.total_paid_to_date ?? paymentStatusTotals.totalPaid ?? 0);
   const invoiceStatusOverview = useMemo(() => {
     const financialInvoices = savedInvoices.filter((inv) => isFinancialInvoice(inv, todayYmd));
     let sentUnpaidCount = 0;
@@ -6048,7 +6056,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10, marginBottom: 8 }}>
                       <div style={{ fontSize: 12, color: "#4a6076" }}>Invoice Paid To Date</div>
                       <div style={{ fontSize: 20, fontWeight: 700, color: "#1f3f60" }}>
-                        <Currency value={paymentStatusTotals.totalPaid} digits={0} />
+                        <Currency value={paidToDateDisplay} digits={0} />
                       </div>
                     </div>
                     <div style={{ border: "1px solid #e3ebf4", borderRadius: 8, padding: 10, marginBottom: 8 }}>
