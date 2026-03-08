@@ -337,6 +337,97 @@ def test_unbilled_since_last_invoice_excludes_pre_cutoff_uninvoiced_time() -> No
         assert rows[0]["unbilled"] == 300
 
 
+def test_unbilled_since_last_invoice_uses_completed_timesheet_weeks() -> None:
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            "/auth/dev/bootstrap-admin",
+            json={"email": "admin.workflow@aquatechpc.com", "full_name": "Workflow Admin"},
+        )
+        assert bootstrap.status_code == 200
+        admin_id = bootstrap.json()["id"]
+
+        project = client.post(
+            "/projects",
+            json={
+                "name": "Workflow Project",
+                "client_name": "Workflow Client",
+                "pm_user_id": admin_id,
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "overall_budget_fee": 10000,
+                "is_overhead": False,
+            },
+        )
+        assert project.status_code == 200
+        project_id = project.json()["id"]
+
+        task = client.post(f"/projects/{project_id}/tasks", json={"name": "Execution"})
+        assert task.status_code == 200
+        task_id = task.json()["id"]
+
+        subtask = client.post(
+            f"/tasks/{task_id}/subtasks",
+            json={"code": "EX-01", "name": "Field Work", "budget_hours": 20, "budget_fee": 2000},
+        )
+        assert subtask.status_code == 200
+        subtask_id = subtask.json()["id"]
+
+        set_rate = client.post(
+            "/rates",
+            json={"user_id": admin_id, "effective_date": "2026-01-01", "bill_rate": 100, "cost_rate": 50},
+        )
+        assert set_rate.status_code == 200
+
+        approved_week_entry = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-02-03",
+                "hours": 2,
+                "note": "approved week entry",
+            },
+        )
+        assert approved_week_entry.status_code == 200
+
+        draft_week_entry = client.post(
+            "/time-entries",
+            json={
+                "project_id": project_id,
+                "task_id": task_id,
+                "subtask_id": subtask_id,
+                "work_date": "2026-02-10",
+                "hours": 3,
+                "note": "draft week entry",
+            },
+        )
+        assert draft_week_entry.status_code == 200
+
+        ts_approved_week = client.post("/timesheets/generate?week_start=2026-02-02")
+        assert ts_approved_week.status_code == 200
+        ts_approved_week_id = ts_approved_week.json()["id"]
+
+        submit = client.post(f"/timesheets/{ts_approved_week_id}/submit")
+        assert submit.status_code == 200
+        approve = client.post(f"/timesheets/{ts_approved_week_id}/approve")
+        assert approve.status_code == 200
+
+        ts_draft_week = client.post("/timesheets/generate?week_start=2026-02-09")
+        assert ts_draft_week.status_code == 200
+        ts_draft_week_id = ts_draft_week.json()["id"]
+        if ts_draft_week.json()["status"] in {"submitted", "approved"}:
+            returned = client.post(f"/timesheets/{ts_draft_week_id}/return")
+            assert returned.status_code == 200
+            assert returned.json()["status"] == "rejected"
+
+        unbilled = client.get("/reports/unbilled-since-last-invoice")
+        assert unbilled.status_code == 200
+        rows = unbilled.json()["by_client"]
+        assert rows and rows[0]["client_name"] == "Workflow Client"
+        assert rows[0]["unbilled"] == 200
+
+
 def test_reconcile_imported_and_legacy_client_labels() -> None:
     with TestClient(app) as client:
         bootstrap = client.post(

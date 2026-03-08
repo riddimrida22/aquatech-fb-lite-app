@@ -812,7 +812,9 @@ function normalizeDashboardClientLabel(name: string): string {
   const clean = (name || "").trim();
   const lower = clean.toLowerCase();
   if (!clean) return "Unassigned Client";
-  if (lower === "imported client" || lower === "legacy client") return "Unmapped Imported Work";
+  if (lower === "imported client" || lower === "legacy client" || lower === "historical legacy client" || lower === "unmapped imported work") {
+    return "Unassigned Client";
+  }
   if (lower === "hdr") return "HDR";
   if (lower === "woodard and curran") return "Woodard & Curran";
   if (lower === "nycdep-bepa") return "NYCDEP-BEPA";
@@ -2278,7 +2280,7 @@ export default function Home() {
   const shouldLoadFinancialKpis =
     canViewFinancials &&
     (activeView === "dashboard" || activeView === "projects" || activeView === "estimates" || activeView === "reports" || isAccountingView);
-  const shouldLoadBillingData = canViewFinancials && (isAccountingView || activeView === "reports");
+  const shouldLoadBillingData = canViewFinancials && (activeView === "dashboard" || isAccountingView || activeView === "reports");
   const shouldLoadBankData = canViewFinancials && (activeView === "dashboard" || isAccountingView || activeView === "reports" || activeView === "settings");
   const messageIsError = /(error|failed|exception|invalid|not found|unauthorized|forbidden|expired|denied)/i.test(message);
   const workspaceTitle = useMemo(() => {
@@ -6114,7 +6116,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                         Unbilled By Client <strong style={{ color: "#1f3f60" }}>(Total: <Currency value={dashboardUnbilledByClient.total} />)</strong>
                       </div>
                       <div style={{ fontSize: 11, color: "#607689", marginBottom: 6 }}>
-                        Completed billable work since each project's last invoice date; all timesheet work is treated as approved.
+                        Completed billable work since each project's last invoice date using submitted/approved timesheet weeks.
                       </div>
                       <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #edf2f7", borderRadius: 8 }}>
                         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
