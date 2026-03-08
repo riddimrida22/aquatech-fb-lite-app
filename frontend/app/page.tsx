@@ -570,6 +570,30 @@ type InvoiceRevenueStatus = {
   unbilled_by_client: UnbilledSinceLastInvoiceClientRow[];
   unbilled_by_client_project?: UnbilledSinceLastInvoiceProjectRow[];
 };
+type PayrollHoursPeriod = {
+  period_start: string;
+  period_end: string;
+  label: string;
+  total_hours: number;
+  employee_count: number;
+};
+type PayrollHoursRow = {
+  user_id: number;
+  employee: string;
+  email: string;
+  hours: number;
+  cost_rate: number | null;
+  bill_rate: number | null;
+};
+type PayrollHoursReport = {
+  as_of: string;
+  current_period_start: string;
+  current_period_end: string;
+  selected_period_start: string;
+  selected_period_end: string;
+  periods: PayrollHoursPeriod[];
+  rows: PayrollHoursRow[];
+};
 type RecurringInvoiceSchedule = {
   id: number;
   name: string;
@@ -1321,6 +1345,8 @@ export default function Home() {
   const [paymentImportMappingJson, setPaymentImportMappingJson] = useState(
     '{\n  "payment_invoice_number": ["Number", "Invoice #", "Invoice Number"],\n  "payment_date": ["Date", "Payment Date"],\n  "payment_amount": ["Amount", "Payment Amount"]\n}',
   );
+  const [payrollHoursReport, setPayrollHoursReport] = useState<PayrollHoursReport | null>(null);
+  const [payrollPeriodEnd, setPayrollPeriodEnd] = useState<string>("");
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [auditEntityFilter, setAuditEntityFilter] = useState("");
   const [auditActionFilter, setAuditActionFilter] = useState("");
@@ -3234,6 +3260,24 @@ export default function Home() {
     }
   }
 
+  async function refreshPayrollHours() {
+    if (!canViewFinancials) {
+      setPayrollHoursReport(null);
+      return;
+    }
+    try {
+      const q = payrollPeriodEnd ? `?period_end=${encodeURIComponent(payrollPeriodEnd)}` : "";
+      const payload = await apiGet<PayrollHoursReport>(`/reports/payroll-hours${q}`);
+      setPayrollHoursReport(payload);
+      if (!payrollPeriodEnd) {
+        setPayrollPeriodEnd(payload.current_period_end);
+      }
+      markSyncNow();
+    } catch (err) {
+      setMessage(String(err));
+    }
+  }
+
   async function refreshRecurringSchedules() {
     if (!canViewFinancials) {
       setRecurringSchedules([]);
@@ -3852,6 +3896,11 @@ export default function Home() {
     if (!shouldLoadBillingData) return;
     refreshRecurringSchedules();
   }, [me?.id, shouldLoadBillingData]);
+
+  useEffect(() => {
+    if (!canViewFinancials || activeView !== "payroll") return;
+    refreshPayrollHours();
+  }, [me?.id, canViewFinancials, activeView, payrollPeriodEnd]);
 
   useEffect(() => {
     if (!shouldLoadBankData) return;
@@ -6757,6 +6806,9 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
               latestRates={latestRates}
               formatCurrency={formatCurrency}
               onManageRates={openTeamSettings}
+              payrollHoursReport={payrollHoursReport}
+              payrollPeriodEnd={payrollPeriodEnd}
+              onSelectPayrollPeriodEnd={setPayrollPeriodEnd}
             />
           )}
 
