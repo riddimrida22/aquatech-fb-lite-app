@@ -142,7 +142,7 @@ type DashboardView =
   | "reports"
   | "accounting"
   | "settings";
-type TimesheetSubView = "mine" | "team" | "analysis";
+type TimesheetSubView = "mine" | "team" | "pending" | "analysis";
 type ProjectSubView = "cockpit" | "editor" | "setup" | "performance";
 type PeopleSubView = "profiles" | "pending";
 type DashboardSubView = "overview" | "controls";
@@ -1157,6 +1157,7 @@ export default function Home() {
   const [myTimesheetPeriodFilter, setMyTimesheetPeriodFilter] = useState("");
   const [timesheetUserFilter, setTimesheetUserFilter] = useState<number | null>(null);
   const [timesheetPeriodFilter, setTimesheetPeriodFilter] = useState("");
+  const [selectedPendingTimesheetId, setSelectedPendingTimesheetId] = useState<number | null>(null);
   const [isNarrowViewport, setIsNarrowViewport] = useState(false);
   const todayYmd = new Date().toISOString().slice(0, 10);
   const [reapplyRateStart, setReapplyRateStart] = useState(`${todayYmd.slice(0, 4)}-01-01`);
@@ -2563,6 +2564,18 @@ export default function Home() {
       (t) => t.user_id === timesheetUserFilter && `${t.week_start} to ${t.week_end}` === timesheetPeriodFilter,
     );
   }, [adminTimesheets, timesheetUserFilter, timesheetPeriodFilter]);
+  const pendingAdminTimesheets = useMemo(
+    () => adminTimesheets.filter((t) => t.status === "submitted"),
+    [adminTimesheets],
+  );
+  const selectedPendingTimesheet = useMemo(() => {
+    if (pendingAdminTimesheets.length === 0) return null;
+    if (selectedPendingTimesheetId) {
+      const found = pendingAdminTimesheets.find((t) => t.id === selectedPendingTimesheetId);
+      if (found) return found;
+    }
+    return pendingAdminTimesheets[0] || null;
+  }, [pendingAdminTimesheets, selectedPendingTimesheetId]);
   const availableMyTimesheetPeriods = useMemo(() => {
     const vals = new Set<string>();
     for (const t of timesheets) vals.add(`${t.week_start} to ${t.week_end}`);
@@ -2594,16 +2607,21 @@ export default function Home() {
   }, [allUsers]);
   const selectedReviewTimesheet = useMemo(() => {
     if (timesheetSubView === "team") return selectedAdminTimesheets[0] || null;
+    if (timesheetSubView === "pending") return selectedPendingTimesheet;
     return selectedMyTimesheets[0] || null;
-  }, [timesheetSubView, selectedAdminTimesheets, selectedMyTimesheets]);
+  }, [timesheetSubView, selectedAdminTimesheets, selectedMyTimesheets, selectedPendingTimesheet]);
   const selectedReviewUserLabel = useMemo(() => {
     if (timesheetSubView === "team") {
       if (!timesheetUserFilter) return "Select employee";
       const found = availableTimesheetUsers.find((u) => u.id === timesheetUserFilter);
       return found?.full_name || found?.email || `User ${timesheetUserFilter}`;
     }
+    if (timesheetSubView === "pending") {
+      if (!selectedPendingTimesheet) return "Select submitted timesheet";
+      return selectedPendingTimesheet.user_full_name || selectedPendingTimesheet.user_email || `User ${selectedPendingTimesheet.user_id}`;
+    }
     return me?.full_name || me?.email || "My timesheet";
-  }, [timesheetSubView, timesheetUserFilter, availableTimesheetUsers, me]);
+  }, [timesheetSubView, timesheetUserFilter, availableTimesheetUsers, me, selectedPendingTimesheet]);
   const timesheetAnalysisRows = useMemo(() => {
     const grouped: Record<string, { label: string; hours: number; entries: number }> = {};
     for (const entry of timeEntries) {
@@ -2866,8 +2884,12 @@ export default function Home() {
     const end = lockToMyTimesheet ? currentWeek.end : reportEnd;
     if (!isValidYmd(start) || !isValidYmd(end)) return;
     const params = new URLSearchParams({ start, end });
-    if (!lockToMyTimesheet && timesheetStatusFilter) params.set("status_filter", timesheetStatusFilter);
-    if (timesheetUserFilter) params.set("user_id", String(timesheetUserFilter));
+    if (timesheetSubView === "pending") {
+      params.set("status_filter", "submitted");
+    } else if (!lockToMyTimesheet && timesheetStatusFilter) {
+      params.set("status_filter", timesheetStatusFilter);
+    }
+    if (timesheetSubView !== "pending" && timesheetUserFilter) params.set("user_id", String(timesheetUserFilter));
     try {
       const rows = await apiGet<AdminTimesheet[]>(`/timesheets/all?${params.toString()}`);
       setAdminTimesheets(rows);
@@ -3622,7 +3644,7 @@ export default function Home() {
 
   useEffect(() => {
     refreshAdminTimesheets();
-  }, [me?.id, canApproveTimesheets, lockToMyTimesheet, todayYmd, reportStart, reportEnd, timesheetStatusFilter, timesheetUserFilter]);
+  }, [me?.id, canApproveTimesheets, lockToMyTimesheet, todayYmd, reportStart, reportEnd, timesheetStatusFilter, timesheetUserFilter, timesheetSubView]);
 
   useEffect(() => {
     if (!shouldLoadFinancialKpis) return;
@@ -3734,10 +3756,21 @@ export default function Home() {
   }, [activeView, canManageUsers, refreshAuditEvents]);
 
   useEffect(() => {
-    if (!canApproveTimesheets && timesheetSubView === "team") {
+    if (!canApproveTimesheets && (timesheetSubView === "team" || timesheetSubView === "pending")) {
       setTimesheetSubView("mine");
     }
   }, [canApproveTimesheets, timesheetSubView]);
+
+  useEffect(() => {
+    if (timesheetSubView !== "pending") return;
+    if (pendingAdminTimesheets.length === 0) {
+      setSelectedPendingTimesheetId(null);
+      return;
+    }
+    if (!selectedPendingTimesheetId || !pendingAdminTimesheets.some((t) => t.id === selectedPendingTimesheetId)) {
+      setSelectedPendingTimesheetId(pendingAdminTimesheets[0].id);
+    }
+  }, [timesheetSubView, pendingAdminTimesheets, selectedPendingTimesheetId]);
 
   useEffect(() => {
     if (!canViewFinancials && reportsWorkspaceTab === "tax") {
@@ -5665,6 +5698,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                 <div className="aq-submenu">
                   <button className={`aq-sub-item ${timesheetSubView === "mine" ? "active" : ""}`} onClick={() => setTimesheetSubView("mine")}>My Timesheet</button>
                   {canApproveTimesheets && <button className={`aq-sub-item ${timesheetSubView === "team" ? "active" : ""}`} onClick={() => setTimesheetSubView("team")}>Team Review</button>}
+                  {canApproveTimesheets && <button className={`aq-sub-item ${timesheetSubView === "pending" ? "active" : ""}`} onClick={() => setTimesheetSubView("pending")}>Pending Queue</button>}
                   <button className={`aq-sub-item ${timesheetSubView === "analysis" ? "active" : ""}`} onClick={() => setTimesheetSubView("analysis")}>Analysis</button>
                 </div>
               )}
@@ -7791,7 +7825,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
 
           {activeView === "timesheets" && timesheetSubView !== "analysis" && (
             <section style={{ border: "1px solid #ddd", padding: 16, marginBottom: 16 }}>
-              <h2 style={{ marginTop: 0 }}>{timesheetSubView === "team" ? "Team Timesheet Review" : "My Timesheet Review"}</h2>
+              <h2 style={{ marginTop: 0 }}>{timesheetSubView === "team" ? "Team Timesheet Review" : timesheetSubView === "pending" ? "Pending Timesheet Queue" : "My Timesheet Review"}</h2>
               <p style={{ marginTop: 4, color: "#4a4a4a" }}>
                 Review uses the same calendar grid as time entry. Select period, confirm hours, then approve or return.
               </p>
@@ -7842,6 +7876,21 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
                     <button onClick={generateTimesheetsForRange}>Generate In Range</button>
                   </>
                 )}
+                {timesheetSubView === "pending" && canApproveTimesheets && (
+                  <>
+                    <select
+                      value={selectedPendingTimesheetId ?? ""}
+                      onChange={(e) => setSelectedPendingTimesheetId(e.target.value ? Number(e.target.value) : null)}
+                    >
+                      <option value="">{pendingAdminTimesheets.length > 0 ? "Select submitted timesheet" : "No submitted timesheets"}</option>
+                      {pendingAdminTimesheets.map((t) => (
+                        <option key={`ts-pending-${t.id}`} value={t.id}>
+                          {(t.user_full_name || t.user_email || `User ${t.user_id}`) + ` - ${t.week_start} to ${t.week_end}`}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <strong>{selectedReviewUserLabel}</strong>
                       {selectedReviewTimesheet ? (
@@ -7885,6 +7934,7 @@ ${appendixHtml || `<div class="meta">No appendix rows available.</div>`}
               </div>
               {timesheetSubView === "team" && !timesheetUserFilter && <p>Select an employee to begin.</p>}
               {timesheetSubView === "team" && timesheetUserFilter && !timesheetPeriodFilter && <p>Select a period for the chosen employee.</p>}
+              {timesheetSubView === "pending" && pendingAdminTimesheets.length === 0 && <p>No submitted timesheets are waiting for review.</p>}
               <div style={{ marginTop: 12, overflowX: "auto", border: "1px solid #c4cfdb", borderRadius: 6 }}>
                 <table data-disable-table-sort="true" style={{ borderCollapse: "collapse", width: "100%", minWidth: Math.max(860, 360 + displayedGridDates.length * 84) }}>
                   <thead>
