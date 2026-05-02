@@ -2762,19 +2762,112 @@ def accounting_pl(
     # OPEX from bank/CC outflows in period
     # Exclude transactions linked to a LoanPayment (those are debt servicing not expense)
     linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
+    # Sources retagged as superseded (by reconciliation engine) are archived,
+    # not live — exclude from P&L. API sources are canonical (per user directive).
+    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
+    # Build name-keyword exclusions from active loans' description_match patterns.
+    # This catches loan payments that aren't yet linked via LoanPayment.bank_transaction_id
+    # (e.g. when LoanPayments are modeled as monthly aggregates while Plaid pulls dailies).
+    loan_keywords: list[str] = []
+    for ln in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+        for pat in (ln.description_match or "").split("|"):
+            pat = pat.strip().upper()
+            if pat:
+                loan_keywords.append(pat)
     opex = 0.0
     interest_in_loans = 0.0
     cc_payments = 0.0
-    cc_transfers_keywords = ("PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER")
-    for tx in db.scalars(
+    # Internal-transfer + CC-payment keywords. These move money between user-owned
+    # accounts (or personal account 0273) — they are NOT operating expenses.
+    cc_transfers_keywords = (
+        "PAYMENT THANK YOU",
+        "INTERNAL TRANSFER",
+        "EQUITY TRANSFER",
+        "INVESTMENT TRANSFER",
+        "ONLINE TRANSFER TO CHK",        # business → personal/other-checking transfers
+        "ONLINE TRANSFER FROM CHK",
+        "PAYMENT TO CHASE CARD",          # business → CC 0434 payment (CC charges hit OPEX separately)
+        "AUTOMATIC PAYMENT",              # auto CC pay
+    )
+    # Payroll-related keywords. These are already counted via Gusto journal in COGS.
+    # Plaid categorizes Gusto wires as TRANSFER_OUT_ACCOUNT_TRANSFER (not "payroll"),
+    # so the existing category-based filter doesn't catch them.
+    payroll_keywords = (
+        "GUSTO",            # all Gusto wires (gross, taxes, 401k, fees)
+        "MATRIX TRUST",     # 401(k) custodian — employer match
+    )
+    # Zelle-to-staff: per user directive, sometimes salaries are paid via Zelle even
+    # though payroll is processed in Gusto. Those Zelle outflows duplicate the
+    # Gusto journal already in COGS, so exclude when the memo contains a staff
+    # member's first or last name. We collect the name tokens up front for fast
+    # substring matching.
+    staff_name_tokens: set[str] = set()
+    for u in db.scalars(select(User).where(User.is_active.is_(True))).all():
+        for tok in (u.full_name or "").upper().split():
+            tok = tok.strip()
+            if len(tok) >= 3:  # ignore single-letter middle initials
+                staff_name_tokens.add(tok)
+    # Personal-account items that are actually business (per user directive: computer
+    # hardware purchases at major electronics retailers are legit business expense
+    # even when charged to the personal account 0273). Tightened to specific
+    # purchase-channel patterns to avoid catching subscriptions (APPLE.COM/BILL =
+    # iCloud) or peer-to-peer transfers (APPLE CASH).
+    personal_to_business_keywords = (
+        "BEST BUY",
+        "BESTBUY",
+        "BBY*",
+        "HP STORE",
+        "HP.COM",
+        "HEWLETT",
+        "APPLE STORE",
+        "APPLE.COM/US",       # purchases (apple.com retail), NOT /BILL subscriptions
+        "APPLE INC",
+        "MICRO CENTER",
+        "MICROCENTER",
+    )
+    # Patterns that look like "personal_to_business" but should NOT promote (carve-out)
+    personal_to_business_exclude = (
+        "APPLE CASH",          # Apple's peer-to-peer payments
+        "APPLE.COM/BILL",      # iCloud/Music/etc subscriptions
+    )
+    # Outflows that LOOK like business but are actually personal (Alpaca trading,
+    # Robinhood transfers, owner draws, etc) — exclude even on business accounts.
+    personal_overrides = (
+        "ALPACADB",                  # Alpaca brokerage (trading)
+        "MOOMOO FINANCIAL",
+        "FUTUINC",
+        "RH BROKERAGE",              # Robinhood brokerage deposit
+        "RHS BROKERAGE",             # Robinhood securities
+        "ROBINHOOD",
+        "MANUAL DB-BKRG",            # Manual brokerage debit (per user pattern)
+        "MANUAL CR-BKRG",            # Manual brokerage credit
+        "BERTRAND LOAN REPAYMENT",   # Owner loan repayment (debt servicing, not OPEX)
+    )
+    # Two-pass query:
+    #   Pass 1: business-tagged outflows (the normal OPEX universe)
+    #   Pass 2: personal-tagged outflows that match business-hardware keywords
+    #           (Best Buy, HP, Apple, etc) — promote to OPEX per user directive
+    business_outflows = db.scalars(
         select(BankTransaction).where(
             BankTransaction.posted_date.isnot(None),
             BankTransaction.posted_date >= s,
             BankTransaction.posted_date <= e,
             BankTransaction.is_business.is_(True),
-            BankTransaction.amount < 0,  # outflows only
+            BankTransaction.amount < 0,
+            ~BankTransaction.source.in_(superseded_sources),
         )
-    ).all():
+    ).all()
+    personal_outflows = db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(False),
+            BankTransaction.amount < 0,
+            ~BankTransaction.source.in_(superseded_sources),
+        )
+    ).all()
+    for tx in business_outflows:
         if tx.id in linked_tx_ids:
             continue  # already accounted for as loan payment, not expense
         try:
@@ -2785,10 +2878,25 @@ def accounting_pl(
         nm_upper = (tx.name or "").upper()
         if any(k in nm_upper for k in cc_transfers_keywords):
             continue  # internal transfers are not expenses
-        # If it's a chase-CC double of payroll skip (Gusto canonical handles payroll)
+        if any(k in nm_upper for k in payroll_keywords):
+            continue  # payroll-related (Gusto, 401k custodian) — already in COGS
+        if any(k in nm_upper for k in loan_keywords):
+            continue  # loan principal/interest — already counted via LoanPayment lines
+        if any(k in nm_upper for k in personal_overrides):
+            continue  # personal trading/transfers misposted to business account
+        # Zelle-to-staff salary detection
+        if "ZELLE" in nm_upper and any(tok in nm_upper for tok in staff_name_tokens):
+            continue
         if "payroll" in cat_lower and "tax" not in cat_lower:
             continue
         opex += -float(tx.amount or 0)
+    # Pass 2: hardware purchases on personal account that are actually business
+    for tx in personal_outflows:
+        nm_upper = (tx.name or "").upper()
+        if any(k in nm_upper for k in personal_to_business_exclude):
+            continue  # carved-out: not a computer purchase
+        if any(k in nm_upper for k in personal_to_business_keywords):
+            opex += -float(tx.amount or 0)
 
     # Interest expense from LoanPayment
     interest_expense = float(db.scalar(
@@ -2847,19 +2955,50 @@ def accounting_cashflow(
     # Operating OUT — re-use PL helpers (call accounting_pl logic inline-light)
     # For simplicity: sum negative bank transactions in business accounts, excluding loan-mapped + transfers.
     linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
+    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
+    # Loan keyword exclusions (in case some loan txs aren't yet linked via LoanPayment.bank_transaction_id)
+    loan_keywords_cf: list[str] = []
+    for ln in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+        for pat in (ln.description_match or "").split("|"):
+            pat = pat.strip().upper()
+            if pat:
+                loan_keywords_cf.append(pat)
+    payroll_keywords_cf = ("GUSTO", "MATRIX TRUST")
+    personal_overrides_cf = (
+        "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
+        "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
+        "MANUAL DB-BKRG", "MANUAL CR-BKRG",
+        "BERTRAND LOAN REPAYMENT",
+    )
     cash_out_opex = 0.0
-    cc_transfers_keywords = ("PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER")
+    cc_transfers_keywords = (
+        "PAYMENT THANK YOU",
+        "INTERNAL TRANSFER",
+        "EQUITY TRANSFER",
+        "INVESTMENT TRANSFER",
+        "ONLINE TRANSFER TO CHK",
+        "ONLINE TRANSFER FROM CHK",
+        "PAYMENT TO CHASE CARD",
+        "AUTOMATIC PAYMENT",
+    )
     for tx in db.scalars(
         select(BankTransaction).where(
             BankTransaction.posted_date.isnot(None),
             BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
             BankTransaction.is_business.is_(True), BankTransaction.amount < 0,
+            ~BankTransaction.source.in_(superseded_sources),
         )
     ).all():
         if tx.id in linked_tx_ids:
             continue
         nm_upper = (tx.name or "").upper()
         if any(k in nm_upper for k in cc_transfers_keywords):
+            continue
+        if any(k in nm_upper for k in payroll_keywords_cf):
+            continue
+        if any(k in nm_upper for k in loan_keywords_cf):
+            continue
+        if any(k in nm_upper for k in personal_overrides_cf):
             continue
         cash_out_opex += -float(tx.amount or 0)
 
@@ -9565,6 +9704,60 @@ def reconcile_preview(
         out["bank_transactions"]["plaid_in_overlap"] = int(plaid_in_overlap or 0)
 
     return out
+
+
+@app.post("/admin/reconcile/dedupe-fb-vs-bank")
+def reconcile_dedupe_fb_vs_bank(
+    apply: bool = False,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    """Cross-source dedupe: csv_fb_expenses (FB's manual ledger, signs flipped to
+    positive expense values) vs canonical bank rows (csv_chase / plaid_api,
+    signed amounts). Match strategy: same posted_date + same ABS(amount).
+
+    Per user directive: when FB disagrees with the bank, the bank wins.
+    Matched FB rows get retagged 'csv_fb_expenses_superseded' so they stop
+    contributing to OPEX without being deleted.
+
+    Pass `?apply=true` to retag. Default is dry-run.
+    """
+    bank_rows = db.execute(
+        select(BankTransaction.id, BankTransaction.posted_date, BankTransaction.amount)
+        .where(BankTransaction.source.in_(["csv_chase", "plaid_api"]))
+    ).all()
+    bank_keys: dict[tuple, int] = {}
+    for _id, d, a in bank_rows:
+        key = (d, round(abs(float(a or 0.0)), 2))
+        bank_keys[key] = bank_keys.get(key, 0) + 1
+
+    fb_rows = db.execute(
+        select(BankTransaction)
+        .where(BankTransaction.source == "csv_fb_expenses")
+    ).scalars().all()
+    retagged = 0
+    sample: list[dict[str, object]] = []
+    for r in fb_rows:
+        key = (r.posted_date, round(abs(float(r.amount or 0.0)), 2))
+        if bank_keys.get(key, 0) > 0:
+            bank_keys[key] -= 1
+            if apply:
+                r.source = "csv_fb_expenses_superseded"
+            retagged += 1
+            if len(sample) < 8:
+                sample.append({
+                    "fb_id": int(r.id),
+                    "date": str(r.posted_date),
+                    "amount": float(r.amount or 0.0),
+                    "name": (r.name or "")[:60],
+                })
+    if apply:
+        db.commit()
+    return {
+        "status": "applied" if apply else "preview",
+        "retagged": retagged,
+        "sample_first_8": sample,
+    }
 
 
 @app.post("/admin/reconcile/dedupe-bank")
