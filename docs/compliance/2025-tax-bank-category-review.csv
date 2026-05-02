@@ -1,0 +1,28 @@
+Category,Expense Group,Provider,Transaction Count,Total Absolute Amount,Review Class,Review Note
+Transfer,Other,expense_cat_import,253,394500.95,balance_sheet_or_cashflow,"Looks like a transfer, receipt movement, refund, or financing inflow/outflow rather than a direct deduction."
+Payroll Taxes And Processing,OH,expense_cat_import,51,80850.38,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Cost of Goods Sold_Employee Benefits and Retirement,Unassigned,expense_cat_import,25,56420.75,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Loan Payment,Unassigned,expense_cat_import,122,37621.35,split_principal_interest,Loan payments usually need principal and interest split before tax treatment is finalized.
+Cost of Goods Sold_Healthcare,Unassigned,expense_cat_import,13,15010.40,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Office Rent,Unassigned,expense_cat_import,10,7809.21,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Investment Transfer,Unassigned,expense_cat_import,4,5300.00,balance_sheet_or_cashflow,"Looks like a transfer, receipt movement, refund, or financing inflow/outflow rather than a direct deduction."
+Office Equipment,Unassigned,expense_cat_import,5,4677.04,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Insurance,OH,expense_cat_import,23,4638.47,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Software & Subscriptions,Unassigned,expense_cat_import,68,3888.09,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Taxes,Unassigned,expense_cat_import,6,3135.99,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Travel,OH,expense_cat_import,33,2676.34,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Business Lodging,Unassigned,expense_cat_import,3,2486.79,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Business Meals,Unassigned,expense_cat_import,19,2388.96,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Double_Check_Manual,Unassigned,expense_cat_import,32,2040.05,manual_review,Source category is not reliable enough to file from without a manual pass.
+Business Travel & Lodging,Unassigned,expense_cat_import,26,1075.01,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Interest Expense,OH,expense_cat_import,13,1070.51,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Cost of Goods Sold_Labor Insurance,Unassigned,expense_cat_import,6,678.38,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Software And Subscriptions,OH,expense_cat_import,14,445.50,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Bank Fees,OH,expense_cat_import,16,227.15,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Personal meals,Unassigned,expense_cat_import,2,181.91,exclude_personal,Marked personal in source data; keep out of the business return unless reclassified with documentation.
+Needs manual split,Unassigned,expense_cat_import,1,150.00,manual_review,Source category is not reliable enough to file from without a manual pass.
+Owner Draw,Other,expense_cat_import,1,100.00,equity_owner_activity,Owner/distribution activity should be reviewed outside the ordinary expense bucket.
+Business operations expense,Unassigned,expense_cat_import,2,90.00,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Bank Fees,Unassigned,expense_cat_import,32,82.84,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.
+Personal medical,Unassigned,expense_cat_import,1,58.51,exclude_personal,Marked personal in source data; keep out of the business return unless reclassified with documentation.
+Office Supplies,OH,expense_cat_import,1,2.43,expense_candidate,Appears expense-like from the bookkeeping label; match it to receipts and the P&L before filing.

@@ -1,0 +1,359 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { apiGet, apiPost, API_BASE } from "../../lib/api";
+
+type CloudStatus = {
+  connected: boolean;
+  account_id?: string | null;
+  business_id?: string | null;
+  expires_at?: string | null;
+  last_synced_at?: string | null;
+  last_sync_status?: string | null;
+  last_sync_summary?: Record<string, unknown>;
+  notes?: string | null;
+};
+
+type OAuthProvider = {
+  key: "freshbooks" | "gusto";
+  label: string;
+  description: string;
+  redirectNote: string;
+};
+
+const OAUTH_PROVIDERS: OAuthProvider[] = [
+  {
+    key: "freshbooks",
+    label: "FreshBooks API",
+    description:
+      "Read-only sync of clients, invoices, expenses, payments, projects, and time entries from your live FreshBooks account.",
+    redirectNote:
+      "When FreshBooks redirects back, the URL starts with https://localhost:8000/... which won't load. Manually flip https → http in the URL bar and press enter.",
+  },
+  {
+    key: "gusto",
+    label: "Gusto API",
+    description:
+      "Read-only sync of company, employees, and payrolls from Gusto. Demo stage uses gusto-demo.com — flip GUSTO_API_BASE to api.gusto.com once your app is approved by Gusto for Production.",
+    redirectNote:
+      "Same drill: when Gusto redirects back, manually flip https → http in the URL bar.",
+  },
+];
+
+declare global {
+  interface Window {
+    Plaid?: {
+      create: (config: {
+        token: string;
+        onSuccess: (publicToken: string, metadata: unknown) => void;
+        onExit?: (err: unknown, metadata: unknown) => void;
+      }) => { open: () => void; exit: () => void };
+    };
+  }
+}
+
+export function CloudConnectionsPanel() {
+  // Lazy-load Plaid Link JS once
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.Plaid) return;
+    const existing = document.querySelector('script[data-plaid-link="1"]');
+    if (existing) return;
+    const s = document.createElement("script");
+    s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+    s.async = true;
+    s.dataset.plaidLink = "1";
+    document.head.appendChild(s);
+  }, []);
+
+  return (
+    <section className="aq-lite-panel">
+      <div className="aq-lite-panel-head">
+        <div>
+          <p className="aq-lite-eyebrow">Cloud connections</p>
+          <h3>Direct API integrations</h3>
+        </div>
+      </div>
+      <div className="aq-lite-stack" style={{ gap: 16 }}>
+        {OAUTH_PROVIDERS.map((p) => <OAuthProviderCard key={p.key} provider={p} />)}
+        <PlaidProviderCard />
+      </div>
+    </section>
+  );
+}
+
+
+function OAuthProviderCard({ provider }: { provider: OAuthProvider }) {
+  const [status, setStatus] = useState<CloudStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    try {
+      const s = await apiGet<CloudStatus>(`/admin/${provider.key}/status`);
+      setStatus(s);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to load");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function connect() {
+    window.location.href = `${API_BASE}/auth/${provider.key}/start`;
+  }
+
+  async function syncNow() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiPost(`/admin/${provider.key}/sync`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!confirm(`Disconnect ${provider.label}? You'll need to re-authorize.`)) return;
+    setBusy(true);
+    try {
+      await apiPost(`/admin/${provider.key}/disconnect`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Disconnect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <ProviderCardShell
+      label={provider.label}
+      status={status}
+      err={err}
+      busy={busy}
+      onConnect={connect}
+      onSync={syncNow}
+      onDisconnect={disconnect}
+      description={provider.description}
+      connectNote={provider.redirectNote}
+      connectLabel="Connect"
+    />
+  );
+}
+
+
+function PlaidProviderCard() {
+  const [status, setStatus] = useState<CloudStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    try {
+      const s = await apiGet<CloudStatus>("/admin/plaid/status");
+      setStatus(s);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to load");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function connect() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const { link_token } = await apiPost<{ link_token: string }>("/admin/plaid/link-token");
+      if (typeof window === "undefined" || !window.Plaid) {
+        throw new Error("Plaid Link JS not loaded yet — refresh the page and try again.");
+      }
+      const handler = window.Plaid.create({
+        token: link_token,
+        onSuccess: async (public_token: string) => {
+          try {
+            await apiPost("/admin/plaid/exchange", { public_token });
+            await load();
+          } catch (e) {
+            setErr(e instanceof Error ? e.message : "Exchange failed");
+          }
+        },
+        onExit: (err) => {
+          if (err) console.warn("Plaid Link exit:", err);
+        },
+      });
+      handler.open();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Connect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function syncNow() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiPost("/admin/plaid/sync");
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!confirm("Disconnect Plaid bank link? You'll need to re-link.")) return;
+    setBusy(true);
+    try {
+      await apiPost("/admin/plaid/disconnect");
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Disconnect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <ProviderCardShell
+      label="Plaid bank feed"
+      status={status}
+      err={err}
+      busy={busy}
+      onConnect={connect}
+      onSync={syncNow}
+      onDisconnect={disconnect}
+      description="Live transactions from your real bank — replaces the manual Chase CSV import. Sandbox lets you test with simulated banks; promotes to Production at dashboard.plaid.com without certification gating."
+      connectNote="Click Connect to launch Plaid Link. You'll pick your bank and authenticate. On success, Plaid sends a public_token that we exchange server-side for a long-lived access_token."
+      connectLabel="Connect bank via Plaid Link"
+    />
+  );
+}
+
+
+function ProviderCardShell({
+  label,
+  status,
+  err,
+  busy,
+  onConnect,
+  onSync,
+  onDisconnect,
+  description,
+  connectNote,
+  connectLabel,
+}: {
+  label: string;
+  status: CloudStatus | null;
+  err: string | null;
+  busy: boolean;
+  onConnect: () => void;
+  onSync: () => void;
+  onDisconnect: () => void;
+  description: string;
+  connectNote: string;
+  connectLabel: string;
+}) {
+  return (
+    <div
+      style={{
+        border: "1px solid var(--aq-border)",
+        borderRadius: 10,
+        padding: 14,
+        background: "#fff",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <h4 style={{ margin: 0 }}>{label}</h4>
+          {status?.connected ? (
+            <span style={{ color: "var(--aq-green)", fontSize: 12, fontWeight: 600 }}>● Connected</span>
+          ) : (
+            <span style={{ color: "var(--aq-muted)", fontSize: 12 }}>○ Not connected</span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {!status?.connected ? (
+            <button type="button" onClick={onConnect} disabled={busy}>
+              {busy ? "Connecting…" : connectLabel}
+            </button>
+          ) : (
+            <>
+              <button type="button" onClick={onSync} disabled={busy} style={{ padding: "6px 12px", fontSize: 13 }}>
+                {busy ? "Syncing…" : "Sync now"}
+              </button>
+              <button
+                type="button"
+                onClick={onDisconnect}
+                disabled={busy}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 13,
+                  background: "transparent",
+                  color: "var(--aq-red)",
+                  border: "1px solid var(--aq-border)",
+                  boxShadow: "none",
+                }}
+              >
+                Disconnect
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {err ? <p style={{ color: "var(--aq-red)", fontSize: 12, marginTop: 8 }}>{err}</p> : null}
+
+      <p className="aq-lite-muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+        {description}
+      </p>
+
+      {!status?.connected ? (
+        <p className="aq-lite-muted" style={{ fontSize: 11, marginTop: 6, fontStyle: "italic" }}>
+          {connectNote}
+        </p>
+      ) : null}
+
+      {status?.connected ? (
+        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, fontSize: 11 }}>
+          <div>
+            <span style={{ color: "var(--aq-muted)" }}>Account / item</span>
+            <div style={{ fontFamily: "monospace", fontSize: 11 }}>
+              {status.account_id || status.business_id || "(not set)"}
+            </div>
+          </div>
+          <div>
+            <span style={{ color: "var(--aq-muted)" }}>Token expires</span>
+            <div>{status.expires_at ? new Date(status.expires_at).toLocaleString() : status.expires_at === null ? "Never" : "—"}</div>
+          </div>
+          <div>
+            <span style={{ color: "var(--aq-muted)" }}>Last synced</span>
+            <div>{status.last_synced_at ? new Date(status.last_synced_at).toLocaleString() : "Never"}</div>
+          </div>
+        </div>
+      ) : null}
+
+      {status?.connected && status.last_synced_at ? (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ fontSize: 11, color: "var(--aq-muted)", cursor: "pointer" }}>
+            Last sync details · {status.last_sync_status}
+          </summary>
+          <pre style={{ fontSize: 10, marginTop: 4, background: "#fafcfd", padding: 8, borderRadius: 6, color: "var(--aq-muted)", maxHeight: 240, overflow: "auto" }}>
+            {JSON.stringify(status.last_sync_summary, null, 2)}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}

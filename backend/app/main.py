@@ -8,6 +8,7 @@ import secrets
 import smtplib
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -19,6 +20,7 @@ import requests
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
+import httpx
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, Field
@@ -38,8 +40,12 @@ from .models import (
     BankTransactionMatch,
     Invoice,
     InvoiceLine,
+    IntegrationToken,
+    Loan,
+    LoanPayment,
     Project,
     ProjectExpense,
+    ProjectMember,
     RecurringInvoiceSchedule,
     Subtask,
     Task,
@@ -50,6 +56,9 @@ from .models import (
 )
 from .settings import get_settings
 from .timeframes import pay_period_for
+from . import freshbooks as fb_integration
+from . import gusto as gusto_integration
+from . import plaid_integration
 
 
 settings = get_settings()
@@ -82,6 +91,514 @@ NO_SUBTASK_NAME = "No Sub-Task"
 def _is_hidden_project_name(name: str | None) -> bool:
     normalized = (name or "").strip().lower()
     return normalized in HIDDEN_PROJECT_NAMES
+
+
+def _freshbooks_inbox_category(name: str) -> str:
+    lowered = name.lower()
+    if "revenue_by_client" in lowered or "item_sales" in lowered:
+        return "reports"
+    if "invoice" in lowered:
+        return "invoices"
+    if "payment" in lowered:
+        return "payments"
+    if "expense" in lowered:
+        return "expenses"
+    if "time" in lowered:
+        return "time_entries"
+    if "client" in lowered:
+        return "clients"
+    if "payroll" in lowered:
+        return "payroll"
+    if "aging" in lowered:
+        return "aging"
+    if "profit" in lowered or "loss" in lowered:
+        return "profit_loss"
+    return "other"
+
+
+def _freshbooks_inbox_preference_score(path: Path) -> tuple[int, int, float]:
+    """Pick the best file when several match the same FreshBooks export category.
+
+    Scoring (later items break ties):
+      1. Date-range span: wider is better (parsed from filename ``YYYY-MM-DD - YYYY-MM-DD``).
+         Falls back to 0 if no parseable date range is in the name.
+      2. CSV preferred over XLSX, with a small penalty for ``(1)`` duplicate downloads.
+      3. File mtime (most recently modified wins as final tiebreaker).
+    """
+    name = path.name.lower()
+    ext_score = 2 if path.suffix.lower() == ".csv" else 1
+    duplicate_name_penalty = -1 if " (1)" in name else 0
+
+    # Parse "YYYY-MM-DD - YYYY-MM-DD" date range from filename if present.
+    range_days = 0
+    match = re.search(r"(\d{4}-\d{2}-\d{2})\s*-\s*(\d{4}-\d{2}-\d{2})", name)
+    if match:
+        try:
+            start_dt = datetime.strptime(match.group(1), "%Y-%m-%d")
+            end_dt = datetime.strptime(match.group(2), "%Y-%m-%d")
+            if end_dt > start_dt:
+                range_days = (end_dt - start_dt).days
+        except ValueError:
+            range_days = 0
+
+    freshness = path.stat().st_mtime
+    return (range_days, ext_score + duplicate_name_penalty, freshness)
+
+
+def _freshbooks_inbox_files() -> "FreshBooksInboxOut":
+    root = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+    if not root.exists():
+        return FreshBooksInboxOut(root_path=str(root), exists=False, file_count=0, files=[])
+
+    files = [p for p in sorted(root.iterdir()) if p.is_file() and p.suffix.lower() in {".csv", ".xlsx"}]
+    sha_groups: dict[str, list[Path]] = defaultdict(list)
+    category_buckets: dict[str, list[Path]] = defaultdict(list)
+    hashes: dict[Path, str] = {}
+    for path in files:
+        digest = hashlib.sha1(path.read_bytes()).hexdigest()
+        hashes[path] = digest
+        category_buckets[_freshbooks_inbox_category(path.name)].append(path)
+        sha_groups[digest].append(path)
+
+    sha_to_primary: dict[str, Path] = {
+        digest: max(bucket, key=_freshbooks_inbox_preference_score) for digest, bucket in sha_groups.items()
+    }
+
+    preferred_by_category: dict[str, Path] = {}
+    for category, bucket in category_buckets.items():
+        preferred_by_category[category] = max(bucket, key=_freshbooks_inbox_preference_score)
+
+    out: list[FreshBooksInboxFileOut] = []
+    for path in files:
+        stat = path.stat()
+        digest = hashes[path]
+        category = _freshbooks_inbox_category(path.name)
+        duplicate_primary = sha_to_primary[digest]
+        duplicate_of = duplicate_primary.name if duplicate_primary != path else None
+        if category == "payroll":
+            recommended_use = duplicate_of is None
+        else:
+            recommended_use = preferred_by_category.get(category) == path and duplicate_of is None
+        reason_parts: list[str] = []
+        if duplicate_of:
+            reason_parts.append(f"Duplicate of {duplicate_of}")
+        elif category == "payroll":
+            reason_parts.append("Use alongside other payroll year files for tax-cost transition import")
+        elif preferred_by_category.get(category) != path:
+            chosen = preferred_by_category.get(category)
+            if chosen is not None:
+                reason_parts.append(f"Superseded by preferred {category} file: {chosen.name}")
+        else:
+            reason_parts.append(f"Use for {category} transition import")
+        out.append(
+            FreshBooksInboxFileOut(
+                name=path.name,
+                path=str(path),
+                category=category,
+                size_bytes=int(stat.st_size),
+                modified_at=datetime.fromtimestamp(stat.st_mtime),
+                sha1_prefix=digest[:12],
+                duplicate_of=duplicate_of,
+                recommended_use=recommended_use,
+                reason="; ".join(reason_parts),
+            )
+        )
+
+    return FreshBooksInboxOut(root_path=str(root), exists=True, file_count=len(out), files=out)
+
+
+def _freshbooks_inbox_recommended_paths() -> tuple[Path, dict[str, list[Path]]]:
+    root = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+    inbox = _freshbooks_inbox_files()
+    recommended: dict[str, list[Path]] = defaultdict(list)
+    for file in inbox.files:
+        if not file.recommended_use:
+            continue
+        recommended[file.category].append(Path(file.path))
+    return root, recommended
+
+
+def _freshbooks_inbox_find_exact(name: str) -> Path | None:
+    root = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+    candidate = root / name
+    return candidate if candidate.exists() and candidate.is_file() else None
+
+
+def _freshbooks_upload_from_path(path: Path) -> UploadFile:
+    return UploadFile(filename=path.name, file=io.BytesIO(path.read_bytes()))
+
+
+def _normalize_person_name(raw: str | None) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    if "@" in value:
+        return value.split("@", 1)[0].replace(".", " ").replace("_", " ").title()
+    parts = [part for part in re.split(r"\s+", value) if part]
+    return " ".join(part.capitalize() for part in parts)
+
+
+def _is_internal_project_or_client(project_name: str | None, client_name: str | None) -> bool:
+    combined = " ".join([str(project_name or ""), str(client_name or "")]).strip().lower()
+    internal_markers = [
+        "aquatech engineering",
+        "internal",
+        "operations",
+        "business development",
+        "administration",
+        "overhead",
+    ]
+    return any(marker in combined for marker in internal_markers)
+
+
+def _expense_group_for_import(parent_category: str | None, subcategory: str | None, description: str | None) -> str:
+    combined = " ".join([str(parent_category or ""), str(subcategory or ""), str(description or "")]).strip().lower()
+    if "cost of goods sold" in combined or "subconsult" in combined or "materials" in combined:
+        return "COGS"
+    if "owner draw" in combined or "loan" in combined or "transfer" in combined:
+        return "Other"
+    return "OH"
+
+
+def _ensure_project_stub(
+    db: Session,
+    *,
+    project_name: str,
+    client_name: str | None,
+    current_user: User,
+) -> Project:
+    clean_project_name = (project_name or "").strip() or "Imported Project"
+    clean_client_name = _normalize_import_client_name(client_name or "Imported Client")
+    project = db.scalar(select(Project).where(func.lower(Project.name) == clean_project_name.lower()))
+    if not project:
+        is_internal = _is_internal_project_or_client(clean_project_name, clean_client_name)
+        project = Project(
+            name=clean_project_name,
+            client_name=clean_client_name,
+            pm_user_id=current_user.id,
+            is_overhead=is_internal,
+            is_billable=not is_internal,
+            is_active=True,
+        )
+        db.add(project)
+        db.flush()
+    else:
+        if (not project.client_name or project.client_name.lower() in {"imported client", "unassigned client"}) and clean_client_name:
+            project.client_name = clean_client_name
+        if _is_internal_project_or_client(clean_project_name, clean_client_name):
+            project.is_overhead = True
+            project.is_billable = False
+    return project
+
+
+def _ensure_timesheets_approved_for_range(
+    db: Session,
+    *,
+    current_user: User,
+    start: date,
+    end: date,
+) -> dict[str, int]:
+    entries = db.scalars(
+        select(TimeEntry).where(and_(TimeEntry.work_date >= start, TimeEntry.work_date <= end))
+    ).all()
+    wanted_pairs = {(int(entry.user_id), _week_start(entry.work_date)) for entry in entries}
+    created = 0
+    updated = 0
+    now = datetime.utcnow()
+    for user_id, week_start in sorted(wanted_pairs, key=lambda value: (value[0], value[1])):
+        week_end = week_start + timedelta(days=6)
+        sheet = db.scalar(select(Timesheet).where(and_(Timesheet.user_id == user_id, Timesheet.week_start == week_start)))
+        if not sheet:
+            sheet = Timesheet(
+                user_id=user_id,
+                week_start=week_start,
+                week_end=week_end,
+                status="approved",
+                employee_signed_at=now,
+                supervisor_signed_at=now,
+                approved_by_user_id=current_user.id,
+            )
+            db.add(sheet)
+            created += 1
+            continue
+        if str(sheet.status or "").strip().lower() != "approved":
+            sheet.status = "approved"
+            sheet.employee_signed_at = sheet.employee_signed_at or now
+            sheet.supervisor_signed_at = now
+            sheet.approved_by_user_id = current_user.id
+            updated += 1
+    return {"created": created, "updated": updated, "weeks_found": len(wanted_pairs)}
+
+
+async def _import_freshbooks_expenses_to_bank(
+    *,
+    path: Path,
+    apply: bool,
+    db: Session,
+    current_user: User,
+) -> dict[str, object]:
+    text = path.read_text(encoding="utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    out_buffer = io.StringIO()
+    fieldnames = [
+        "date",
+        "description",
+        "amount",
+        "account",
+        "transaction_id",
+        "merchant_key",
+        "category",
+        "final_category",
+        "expense_group",
+        "category_source",
+        "source_file",
+        "currency",
+        "notes",
+    ]
+    writer = csv.DictWriter(out_buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    rows_total = 0
+    rows_prepared = 0
+    for idx, row in enumerate(reader, start=2):
+        rows_total += 1
+        posted_date = _parse_flexible_date(str(row.get("Date") or "").strip())
+        amount = _parse_float(str(row.get("Amount") or "").strip())
+        if posted_date is None or amount is None or abs(float(amount)) <= 0.0001:
+            continue
+        parent_category = str(row.get("Parent Category") or "").strip()
+        subcategory = str(row.get("Subcategory") or row.get("Account Sub Type") or "").strip()
+        merchant = str(row.get("Merchant") or "").strip()
+        description = str(row.get("Description") or "").strip()
+        notes = str(row.get("Client") or "").strip()
+        # Stable hash — exclude filename + row index so re-imports of newer FB
+        # exports don't create duplicate rows for the same logical expense.
+        transaction_id = hashlib.sha256(
+            f"fb|{posted_date.isoformat()}|{amount:.2f}|{merchant}|{description}".encode("utf-8")
+        ).hexdigest()[:40]
+        writer.writerow(
+            {
+                "date": posted_date.isoformat(),
+                "description": " | ".join(part for part in [merchant, description] if part),
+                "amount": f"{abs(float(amount)):.2f}",
+                "account": parent_category or "FreshBooks Expenses",
+                "transaction_id": transaction_id,
+                "merchant_key": merchant,
+                "category": subcategory or parent_category or "Uncategorized",
+                "final_category": subcategory or parent_category or "Uncategorized",
+                "expense_group": _expense_group_for_import(parent_category, subcategory, description),
+                "category_source": "freshbooks",
+                "source_file": path.name,
+                "currency": str(row.get("Currency") or "USD").strip() or "USD",
+                "notes": notes,
+            }
+        )
+        rows_prepared += 1
+
+    if not apply:
+        return {
+            "ok": True,
+            "connection_name": "FreshBooks Expenses",
+            "accounts_created": 0,
+            "transactions_created": rows_prepared,
+            "transactions_updated": 0,
+            "rows_total": rows_prepared,
+            "rows_skipped": rows_total - rows_prepared,
+            "rows_prepared": rows_prepared,
+            "rows_total_source": rows_total,
+        }
+
+    result = await import_expense_cat_categorized_csv(
+        file=UploadFile(filename=path.name, file=io.BytesIO(out_buffer.getvalue().encode("utf-8"))),
+        connection_name="FreshBooks Expenses",
+        default_is_business=True,
+        db=db,
+        current_user=current_user,
+    )
+    payload = result.model_dump()
+    payload["rows_prepared"] = rows_prepared
+    payload["rows_total_source"] = rows_total
+    return payload
+
+
+def _import_freshbooks_project_expenses(
+    *,
+    path: Path,
+    apply: bool,
+    db: Session,
+    current_user: User,
+) -> dict[str, object]:
+    text = path.read_text(encoding="utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    imported = 0
+    skipped = 0
+    for row in reader:
+        project_name = str(row.get("Project") or "").strip()
+        client_name = str(row.get("Client") or "").strip()
+        if not project_name and not client_name:
+            skipped += 1
+            continue
+        expense_date = _parse_flexible_date(str(row.get("Date") or "").strip())
+        amount = _parse_float(str(row.get("Amount") or "").strip())
+        if expense_date is None or amount is None or abs(float(amount)) <= 0.0001:
+            skipped += 1
+            continue
+        project = _ensure_project_stub(
+            db,
+            project_name=project_name or client_name or "Imported Project",
+            client_name=client_name or "Imported Client",
+            current_user=current_user,
+        )
+        category = str(row.get("Subcategory") or row.get("Parent Category") or "General").strip() or "General"
+        description = str(row.get("Description") or row.get("Merchant") or "").strip()
+        existing = db.scalar(
+            select(ProjectExpense).where(
+                and_(
+                    ProjectExpense.project_id == project.id,
+                    ProjectExpense.expense_date == expense_date,
+                    ProjectExpense.category == category,
+                    ProjectExpense.description == description,
+                    ProjectExpense.amount == float(amount),
+                )
+            )
+        )
+        if existing:
+            skipped += 1
+            continue
+        if apply:
+            db.add(
+                ProjectExpense(
+                    project_id=project.id,
+                    expense_date=expense_date,
+                    category=category,
+                    description=description,
+                    amount=float(amount),
+                )
+            )
+        imported += 1
+    if apply:
+        db.flush()
+    return {"imported": imported, "skipped": skipped, "errors": 0}
+
+
+async def _import_freshbooks_payroll_to_bank(
+    *,
+    paths: list[Path],
+    apply: bool,
+    db: Session,
+    current_user: User,
+) -> dict[str, object]:
+    out_buffer = io.StringIO()
+    fieldnames = [
+        "date",
+        "description",
+        "amount",
+        "account",
+        "transaction_id",
+        "merchant_key",
+        "category",
+        "final_category",
+        "expense_group",
+        "category_source",
+        "source_file",
+        "currency",
+        "notes",
+    ]
+    writer = csv.DictWriter(out_buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    rows_total = 0
+    rows_prepared = 0
+    users_touched: set[str] = set()
+    seen_transaction_ids: set[str] = set()
+
+    for path in paths:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.reader(handle))
+        current_pay_day: date | None = None
+        header: list[str] | None = None
+        for row in rows:
+            if len(row) >= 2 and str(row[0]).strip() == "Pay day":
+                current_pay_day = _parse_flexible_date(str(row[1]).strip())
+                header = None
+                continue
+            if row and row[0] == "Last Name":
+                header = row
+                continue
+            if not header or current_pay_day is None or not row or len(row) != len(header):
+                continue
+            record = dict(zip(header, row))
+            last_name = str(record.get("Last Name") or "").strip()
+            first_name = str(record.get("First Name") or "").strip()
+            if not last_name or last_name.lower() in {"totals", "payroll totals"}:
+                continue
+            employer_cost = _parse_float(str(record.get("Employer Cost") or "").strip())
+            gross_earnings = _parse_float(str(record.get("Gross Earnings") or "").strip())
+            if employer_cost is None or employer_cost <= 0:
+                continue
+            full_name = " ".join(part for part in [first_name, last_name] if part).strip()
+            users_touched.add(full_name)
+            email = _resolve_import_email(db, full_name)
+            user = db.scalar(select(User).where(func.lower(User.email) == email.lower()))
+            if not user:
+                user = User(email=email, full_name=full_name or email.split("@")[0], role="employee", is_active=True)
+                if apply:
+                    db.add(user)
+                    db.flush()
+            elif full_name and user.full_name != full_name:
+                user.full_name = full_name
+                user.is_active = True
+
+            transaction_id = hashlib.sha256(
+                f"{path.name}|{current_pay_day.isoformat()}|{'|'.join(row)}".encode("utf-8")
+            ).hexdigest()[:40]
+            if transaction_id in seen_transaction_ids:
+                continue
+            seen_transaction_ids.add(transaction_id)
+            writer.writerow(
+                {
+                    "date": current_pay_day.isoformat(),
+                    "description": f"Payroll | {full_name}",
+                    "amount": f"{float(employer_cost):.2f}",
+                    "account": "Payroll",
+                    "transaction_id": transaction_id,
+                    "merchant_key": full_name,
+                    "category": "Payroll Taxes And Processing",
+                    "final_category": "Payroll Taxes And Processing",
+                    "expense_group": "OH",
+                    "category_source": "freshbooks_payroll",
+                    "source_file": path.name,
+                    "currency": "USD",
+                    "notes": f"Gross earnings {float(gross_earnings or 0.0):.2f}",
+                }
+            )
+            rows_total += 1
+            rows_prepared += 1
+
+    if not apply:
+        return {
+            "ok": True,
+            "connection_name": "FreshBooks Payroll",
+            "accounts_created": 0,
+            "transactions_created": rows_prepared,
+            "transactions_updated": 0,
+            "rows_total": rows_prepared,
+            "rows_skipped": 0,
+            "rows_prepared": rows_prepared,
+            "rows_total_source": rows_total,
+            "users_touched": len(users_touched),
+        }
+
+    result = await import_expense_cat_categorized_csv(
+        file=UploadFile(filename="freshbooks_payroll_import.csv", file=io.BytesIO(out_buffer.getvalue().encode("utf-8"))),
+        connection_name="FreshBooks Payroll",
+        default_is_business=True,
+        db=db,
+        current_user=current_user,
+    )
+    payload = result.model_dump()
+    payload["rows_prepared"] = rows_prepared
+    payload["rows_total_source"] = rows_total
+    payload["users_touched"] = len(users_touched)
+    return payload
 
 
 class DevBootstrapRequest(BaseModel):
@@ -133,6 +650,9 @@ class ProjectCreate(BaseModel):
     is_billable: bool = True
 
 
+PROJECT_LIFECYCLE_STATUSES = ["planning", "active", "paused", "completed", "cancelled"]
+
+
 class ProjectOut(BaseModel):
     id: int
     name: str
@@ -145,6 +665,8 @@ class ProjectOut(BaseModel):
     is_overhead: bool
     is_billable: bool
     is_active: bool
+    lifecycle_status: str = "active"
+    completed_date: date | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -158,6 +680,11 @@ class ProjectUpdate(BaseModel):
     is_overhead: bool = False
     is_billable: bool = True
     is_active: bool = True
+
+
+class ProjectStatusUpdate(BaseModel):
+    lifecycle_status: str = Field(min_length=1, max_length=32)
+    completed_date: date | None = None
 
 
 class TaskCreate(BaseModel):
@@ -184,6 +711,108 @@ class ProjectExpenseOut(BaseModel):
     category: str
     description: str
     amount: float
+
+
+LOAN_TYPES = ["term_loan", "line_of_credit", "credit_card", "owner_loan", "sba", "other"]
+LOAN_FREQUENCIES = ["monthly", "weekly", "biweekly", "quarterly", "irregular"]
+
+
+class LoanCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    lender: str = Field(default="", max_length=255)
+    loan_type: str = Field(default="term_loan")
+    account_last4: str | None = Field(default=None, max_length=16)
+    principal_original: float = Field(default=0.0, ge=0)
+    principal_current: float = Field(default=0.0, ge=0)
+    interest_rate_apr: float = Field(default=0.0, ge=0, le=100)
+    payment_amount: float = Field(default=0.0, ge=0)
+    payment_frequency: str = Field(default="monthly")
+    origination_date: date | None = None
+    maturity_date: date | None = None
+    description_match: str = Field(default="", max_length=2000)
+    notes: str = Field(default="", max_length=2000)
+    is_active: bool = True
+
+
+class LoanUpdate(LoanCreate):
+    pass
+
+
+class LoanOut(BaseModel):
+    id: int
+    name: str
+    lender: str
+    loan_type: str
+    account_last4: str | None
+    principal_original: float
+    principal_current: float
+    interest_rate_apr: float
+    payment_amount: float
+    payment_frequency: str
+    origination_date: date | None
+    maturity_date: date | None
+    description_match: str
+    notes: str
+    is_active: bool
+    payments_count: int = 0
+    payments_total: float = 0.0
+    interest_total: float = 0.0
+    principal_total: float = 0.0
+
+
+class LoanPaymentCreate(BaseModel):
+    payment_date: date
+    total_amount: float = Field(ge=0)
+    principal_amount: float = Field(default=0.0, ge=0)
+    interest_amount: float = Field(default=0.0, ge=0)
+    fees_amount: float = Field(default=0.0, ge=0)
+    bank_transaction_id: int | None = None
+    notes: str = Field(default="", max_length=2000)
+
+
+class LoanPaymentOut(BaseModel):
+    id: int
+    loan_id: int
+    payment_date: date
+    total_amount: float
+    principal_amount: float
+    interest_amount: float
+    fees_amount: float
+    bank_transaction_id: int | None
+    notes: str
+
+
+PROJECT_MEMBER_ROLES = ["Lead", "PM", "Engineer", "QA/QC", "Reviewer", "Admin Support", "Other"]
+
+
+class ProjectMemberCreate(BaseModel):
+    user_id: int
+    role: str = Field(default="Engineer", min_length=1, max_length=64)
+    allocation_pct: float = Field(default=0.0, ge=0, le=100)
+    start_date: date | None = None
+    end_date: date | None = None
+    notes: str = Field(default="", max_length=2000)
+
+
+class ProjectMemberUpdate(BaseModel):
+    role: str = Field(default="Engineer", min_length=1, max_length=64)
+    allocation_pct: float = Field(default=0.0, ge=0, le=100)
+    start_date: date | None = None
+    end_date: date | None = None
+    notes: str = Field(default="", max_length=2000)
+
+
+class ProjectMemberOut(BaseModel):
+    id: int
+    project_id: int
+    user_id: int
+    user_name: str
+    user_email: str
+    role: str
+    allocation_pct: float
+    start_date: date | None
+    end_date: date | None
+    notes: str
 
 
 class SubtaskCreate(BaseModel):
@@ -252,7 +881,7 @@ class TimeEntryOut(BaseModel):
 
 
 class TimesheetOut(BaseModel):
-    id: int
+    id: int | None
     user_id: int
     week_start: date
     week_end: date
@@ -265,6 +894,7 @@ class TimesheetOut(BaseModel):
 class TimesheetAdminOut(TimesheetOut):
     user_email: str
     user_full_name: str
+    has_record: bool = True
 
 
 class AccountingPreviewRow(BaseModel):
@@ -433,6 +1063,43 @@ class BankExpenseSummaryRow(BaseModel):
     label: str
     transaction_count: int
     amount_abs: float
+
+
+class FreshBooksInboxFileOut(BaseModel):
+    name: str
+    path: str
+    category: str
+    size_bytes: int
+    modified_at: datetime
+    sha1_prefix: str
+    duplicate_of: str | None = None
+    recommended_use: bool = True
+    reason: str = ""
+
+
+class FreshBooksInboxOut(BaseModel):
+    root_path: str
+    exists: bool
+    file_count: int
+    files: list[FreshBooksInboxFileOut]
+
+
+class FreshBooksTransitionStepOut(BaseModel):
+    step: str
+    ok: bool = True
+    used_files: list[str] = Field(default_factory=list)
+    imported: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: int = 0
+    detail: dict[str, object] = Field(default_factory=dict)
+
+
+class FreshBooksTransitionRunOut(BaseModel):
+    apply: bool
+    root_path: str
+    steps: list[FreshBooksTransitionStepOut]
+    totals: dict[str, int]
 
 
 class BankTransactionPostExpenseRequest(BaseModel):
@@ -767,6 +1434,7 @@ DEBIT_COLUMNS = ["Debit", "Withdrawal", "Charge"]
 CREDIT_COLUMNS = ["Credit", "Deposit", "Payment"]
 TIME_DATE_COLUMNS = ["Date", "Entry Date", "Logged Date", "Start Date", "Date of Service"]
 TIME_EMPLOYEE_COLUMNS = ["Team Member", "Team member", "Staff", "Employee", "User", "Email", "Team Member Email"]
+TIME_CLIENT_COLUMNS = ["Client", "Client Name", "Customer", "Organization"]
 TIME_PROJECT_COLUMNS = ["Project", "Project Name", "Client + Project", "Client", "Project/Client"]
 TIME_TASK_COLUMNS = ["Service", "Service Name", "Task", "Category"]
 TIME_SUBTASK_COLUMNS = ["Subtask", "Activity", "Item", "Sub Service", "Sub-service"]
@@ -777,8 +1445,8 @@ TIME_COST_RATE_COLUMNS = ["Cost Rate", "Cost", "Internal Cost Rate"]
 TIME_STATUS_COLUMNS = ["Approval Status", "Status", "Approved", "Timesheet Status"]
 INVOICE_NO_COLUMNS = ["Invoice #", "Invoice Number", "Invoice No", "Number", "Invoice"]
 INVOICE_CLIENT_COLUMNS = ["Client", "Client Name", "Customer", "Company"]
-INVOICE_ISSUE_DATE_COLUMNS = ["Invoice Date", "Issued Date", "Date"]
-INVOICE_DUE_DATE_COLUMNS = ["Due Date", "Due"]
+INVOICE_ISSUE_DATE_COLUMNS = ["Date Issued", "Invoice Date", "Issued Date", "Issue Date", "Date"]
+INVOICE_DUE_DATE_COLUMNS = ["Date Due", "Due Date", "Due"]
 INVOICE_STATUS_COLUMNS = ["Status", "Invoice Status", "Payment Status"]
 INVOICE_TOTAL_COLUMNS = ["Total", "Amount", "Invoice Total", "Total Amount", "Grand Total"]
 INVOICE_LINE_TOTAL_COLUMNS = ["Line Total", "Line Subtotal"]
@@ -834,13 +1502,241 @@ def _ensure_default_subtasks_for_all_tasks() -> None:
 @app.get("/")
 def health(db: Session = Depends(get_db)) -> dict[str, object]:
     user_count = db.scalar(select(func.count(User.id))) or 0
-    return {"ok": True, "app": "aquatechpm", "users": user_count}
+    return {"ok": True, "app": "aqtpm", "users": user_count}
 
 
 @app.get("/health")
 def healthcheck(db: Session = Depends(get_db)) -> dict[str, object]:
     user_count = db.scalar(select(func.count(User.id))) or 0
-    return {"ok": True, "app": "aquatechpm", "users": user_count}
+    return {"ok": True, "app": "aqtpm", "users": user_count}
+
+
+@app.get("/transition/freshbooks/inbox", response_model=FreshBooksInboxOut)
+def freshbooks_transition_inbox(
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> FreshBooksInboxOut:
+    return _freshbooks_inbox_files()
+
+
+@app.post("/transition/freshbooks/import", response_model=FreshBooksTransitionRunOut)
+async def freshbooks_transition_import(
+    apply: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> FreshBooksTransitionRunOut:
+    root, recommended = _freshbooks_inbox_recommended_paths()
+    if not root.exists():
+        raise HTTPException(status_code=404, detail="Configured FreshBooks inbox folder does not exist")
+
+    steps: list[FreshBooksTransitionStepOut] = []
+
+    clients_path = _freshbooks_inbox_find_exact("clients.csv")
+    if clients_path:
+        with clients_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            row_count = 0
+            organizations = set()
+            contacts = 0
+            for row in reader:
+                row_count += 1
+                org = str(row.get("Organization") or "").strip()
+                first_name = str(row.get("First Name") or "").strip()
+                last_name = str(row.get("Last Name") or "").strip()
+                if org:
+                    organizations.add(_normalize_import_client_name(org))
+                if first_name or last_name:
+                    contacts += 1
+            steps.append(
+                FreshBooksTransitionStepOut(
+                    step="clients_scan",
+                    used_files=[clients_path.name],
+                    imported=len(organizations),
+                    detail={"rows": row_count, "organizations": len(organizations), "contacts": contacts},
+                )
+            )
+
+    time_paths = recommended.get("time_entries", [])
+    time_import_min: date | None = None
+    time_import_max: date | None = None
+    if time_paths:
+        for path in time_paths:
+            payload = await freshbooks_time_import(
+                apply=apply,
+                file=_freshbooks_upload_from_path(path),
+                mapping_overrides=None,
+                db=db,
+                current_user=current_user,
+            )
+            min_date_raw = payload.get("min_imported_date")
+            max_date_raw = payload.get("max_imported_date")
+            if isinstance(min_date_raw, str) and min_date_raw:
+                parsed = date.fromisoformat(min_date_raw)
+                time_import_min = parsed if time_import_min is None else min(time_import_min, parsed)
+            if isinstance(max_date_raw, str) and max_date_raw:
+                parsed = date.fromisoformat(max_date_raw)
+                time_import_max = parsed if time_import_max is None else max(time_import_max, parsed)
+            steps.append(
+                FreshBooksTransitionStepOut(
+                    step="time_import",
+                    used_files=[path.name],
+                    imported=int(payload.get("imported", 0)),
+                    skipped=int(payload.get("skipped", 0)),
+                    errors=int(payload.get("errors", 0)),
+                    detail={
+                        "rows": int(payload.get("count", 0)),
+                        "non_approved_skipped": int(payload.get("non_approved_skipped", 0)),
+                        "min_imported_date": payload.get("min_imported_date"),
+                        "max_imported_date": payload.get("max_imported_date"),
+                    },
+                )
+            )
+
+    if apply and time_import_min and time_import_max:
+        timesheet_result = _ensure_timesheets_approved_for_range(
+            db,
+            current_user=current_user,
+            start=time_import_min,
+            end=time_import_max,
+        )
+        db.commit()
+        steps.append(
+            FreshBooksTransitionStepOut(
+                step="timesheet_backfill",
+                used_files=[],
+                imported=int(timesheet_result["created"]),
+                updated=int(timesheet_result["updated"]),
+                detail=timesheet_result,
+            )
+        )
+
+    invoice_paths = recommended.get("invoices", [])
+    payments_paths = recommended.get("payments", [])
+    if invoice_paths:
+        primary_invoice = invoice_paths[0]
+        payments_upload = _freshbooks_upload_from_path(payments_paths[0]) if payments_paths else None
+        payload = await import_legacy_invoices(
+            apply=apply,
+            file=_freshbooks_upload_from_path(primary_invoice),
+            payments_file=payments_upload,
+            mapping_overrides=None,
+            db=db,
+            current_user=current_user,
+        )
+        steps.append(
+            FreshBooksTransitionStepOut(
+                step="invoice_import",
+                used_files=[primary_invoice.name] + ([payments_paths[0].name] if payments_paths else []),
+                imported=int(payload.get("imported", 0)),
+                updated=int(payload.get("updated", 0)),
+                skipped=int(payload.get("skipped", 0)),
+                errors=int(payload.get("errors", 0)),
+                detail={
+                    "rows": int(payload.get("count", 0)),
+                    "line_item_mode": bool(payload.get("line_item_mode", False)),
+                    "payments_matched_invoices": int(payload.get("payments_matched_invoices", 0)),
+                },
+            )
+        )
+
+    expense_paths = recommended.get("expenses", [])
+    if expense_paths:
+        expense_payload = await _import_freshbooks_expenses_to_bank(
+            path=expense_paths[0],
+            apply=apply,
+            db=db,
+            current_user=current_user,
+        )
+        steps.append(
+            FreshBooksTransitionStepOut(
+                step="expense_import",
+                used_files=[expense_paths[0].name],
+                imported=int(expense_payload.get("transactions_created", 0)),
+                updated=int(expense_payload.get("transactions_updated", 0)),
+                skipped=int(expense_payload.get("rows_skipped", 0)),
+                detail=expense_payload,
+            )
+        )
+
+    expense_details_path = _freshbooks_inbox_find_exact("expense_details.csv")
+    if expense_details_path:
+        project_expense_payload = _import_freshbooks_project_expenses(
+            path=expense_details_path,
+            apply=apply,
+            db=db,
+            current_user=current_user,
+        )
+        if apply:
+            db.commit()
+        steps.append(
+            FreshBooksTransitionStepOut(
+                step="project_expense_import",
+                used_files=[expense_details_path.name],
+                imported=int(project_expense_payload.get("imported", 0)),
+                skipped=int(project_expense_payload.get("skipped", 0)),
+                errors=int(project_expense_payload.get("errors", 0)),
+                detail=project_expense_payload,
+            )
+        )
+
+    payroll_paths = recommended.get("payroll", [])
+    if payroll_paths:
+        payroll_payload = await _import_freshbooks_payroll_to_bank(
+            paths=payroll_paths,
+            apply=apply,
+            db=db,
+            current_user=current_user,
+        )
+        steps.append(
+            FreshBooksTransitionStepOut(
+                step="payroll_import",
+                used_files=[path.name for path in payroll_paths],
+                imported=int(payroll_payload.get("transactions_created", 0)),
+                updated=int(payroll_payload.get("transactions_updated", 0)),
+                skipped=int(payroll_payload.get("rows_skipped", 0)),
+                detail=payroll_payload,
+            )
+        )
+
+    report_files = []
+    for category in ["profit_loss", "aging", "reports"]:
+        report_files.extend(path.name for path in recommended.get(category, []))
+    if report_files:
+        steps.append(
+            FreshBooksTransitionStepOut(
+                step="reports_detected",
+                used_files=report_files,
+                imported=len(report_files),
+                detail={"note": "Reference reports are available in the inbox for benchmarking and validation."},
+            )
+        )
+
+    totals = {
+        "imported": sum(step.imported for step in steps),
+        "updated": sum(step.updated for step in steps),
+        "skipped": sum(step.skipped for step in steps),
+        "errors": sum(step.errors for step in steps),
+    }
+    if apply:
+        _log_audit_event(
+            db=db,
+            entity_type="transition",
+            entity_id=0,
+            action="import_freshbooks_inbox",
+            actor_user_id=current_user.id,
+            payload={
+                "root_path": str(root),
+                "steps": [step.model_dump() for step in steps],
+                "totals": totals,
+            },
+        )
+        db.commit()
+
+    return FreshBooksTransitionRunOut(
+        apply=apply,
+        root_path=str(root),
+        steps=steps,
+        totals=totals,
+    )
 
 
 def _plaid_base_url() -> str:
@@ -1361,6 +2257,950 @@ def bank_category_summary(
     return rows
 
 
+# Categories that represent inter-account transfers / non-expense flows.
+# These need CPA adjudication (loan vs distribution vs reimbursement vs contribution etc.)
+# and are excluded from tax-summary totals.
+TRANSFER_CATEGORY_KEYWORDS = (
+    "transfer",
+    "owner draw",
+    "owner contribution",
+    "loan payment",
+    "due to",
+    "due from",
+    "shareholder",
+    "internal",
+    "equity",
+    "investment",
+)
+
+
+def _is_transfer_category(category: str | None) -> bool:
+    if not category:
+        return False
+    c = str(category).strip().lower()
+    return any(kw in c for kw in TRANSFER_CATEGORY_KEYWORDS)
+
+
+def _parse_gusto_payroll_journal(text: str) -> dict[str, object]:
+    """Parse a Gusto 'Payroll Journal Report' CSV into structured data.
+
+    The CSV has a multi-section layout:
+      - Header rows (title, company, address)
+      - 'Per Employee Summary' block: one row per employee with annual totals
+      - Repeated 'Employee Earnings' blocks per pay period:
+          - 'Payroll period', 'Pay day' lines
+          - Header row, then employee rows, then 'Payroll Totals'
+
+    All money columns are summed under treatment="COGS" for an engineering
+    consulting business (employees are the product; their full loaded cost is COGS).
+    """
+    rows = list(csv.reader(io.StringIO(text)))
+    # Identify the canonical column header (the row beginning with "Last Name","First Name",...)
+    header: list[str] | None = None
+    for row in rows:
+        if len(row) > 5 and row[0].strip() == "Last Name" and row[1].strip() == "First Name":
+            header = [c.strip() for c in row]
+            break
+    if header is None:
+        return {"periods": [], "employees": {}, "totals": {}, "error": "Could not find header row"}
+
+    # Indexes we care about
+    def idx(*candidates: str) -> int:
+        for c in candidates:
+            if c in header:
+                return header.index(c)
+        return -1
+
+    i_last = idx("Last Name")
+    i_first = idx("First Name")
+    i_hours = idx("Regular (Hours)")
+    i_gross = idx("Gross Earnings")
+    i_employee_taxes = idx("Employee Taxes")
+    i_employer_taxes = idx("Employer Taxes")
+    i_401k_co = idx("Human Interest Traditional 401(k) (Company Contribution)")
+    i_net = idx("Net Pay")
+    i_check = idx("Check Amount")
+    i_employer_cost = idx("Employer Cost")
+
+    def fnum(s: str) -> float:
+        try:
+            v = (s or "").strip().replace(",", "").replace("$", "")
+            return float(v) if v else 0.0
+        except ValueError:
+            return 0.0
+
+    periods: list[dict[str, object]] = []
+    cur_period: dict[str, object] | None = None
+    employees: dict[str, dict[str, float]] = {}
+    in_per_employee_summary = False
+    seen_first_header = False
+
+    for row in rows:
+        if not row:
+            continue
+        first = (row[0] or "").strip() if row else ""
+        if first == "Per Employee Summary by Employee" or first.startswith("Per Employee Summary"):
+            in_per_employee_summary = True
+            continue
+        if first == "Employee Earnings":
+            in_per_employee_summary = False
+            continue
+        if first == "Payroll period" and len(row) > 1:
+            # Push previous period
+            if cur_period:
+                periods.append(cur_period)
+            cur_period = {
+                "period": (row[1] or "").strip(),
+                "pay_day": "",
+                "rows": [],
+                "totals": {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0},
+            }
+            continue
+        if first == "Pay day" and len(row) > 1 and cur_period:
+            cur_period["pay_day"] = (row[1] or "").strip()
+            continue
+        if first in {"Last Name"}:
+            seen_first_header = True
+            continue
+        # Data row?
+        if not seen_first_header:
+            continue
+        last = (row[i_last] if i_last >= 0 and i_last < len(row) else "").strip()
+        if not last:
+            continue
+        # Skip totals rows (we re-compute)
+        if last in {"Totals", "Payroll Totals"}:
+            continue
+        first_name = (row[i_first] if i_first >= 0 and i_first < len(row) else "").strip()
+        emp_key = f"{last}, {first_name}".strip(", ")
+        gross = fnum(row[i_gross]) if i_gross >= 0 and i_gross < len(row) else 0.0
+        employer_taxes = fnum(row[i_employer_taxes]) if i_employer_taxes >= 0 and i_employer_taxes < len(row) else 0.0
+        co_401k = fnum(row[i_401k_co]) if i_401k_co >= 0 and i_401k_co < len(row) else 0.0
+        net_pay = fnum(row[i_net]) if i_net >= 0 and i_net < len(row) else 0.0
+        check_amt = fnum(row[i_check]) if i_check >= 0 and i_check < len(row) else 0.0
+        employer_cost = fnum(row[i_employer_cost]) if i_employer_cost >= 0 and i_employer_cost < len(row) else 0.0
+        hours = fnum(row[i_hours]) if i_hours >= 0 and i_hours < len(row) else 0.0
+
+        if in_per_employee_summary:
+            ents = employees.setdefault(emp_key, {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0, "periods": 0})
+            ents["gross"] = gross
+            ents["employer_taxes"] = employer_taxes
+            ents["employer_401k"] = co_401k
+            ents["employer_cost"] = employer_cost
+            ents["net_pay"] = net_pay
+            ents["hours"] = hours
+        else:
+            if cur_period is None:
+                continue
+            cur_period["rows"].append(
+                {
+                    "employee": emp_key,
+                    "hours": hours,
+                    "gross": gross,
+                    "employer_taxes": employer_taxes,
+                    "employer_401k": co_401k,
+                    "net_pay": net_pay,
+                    "check_amount": check_amt,
+                    "employer_cost": employer_cost,
+                }
+            )
+            t = cur_period["totals"]
+            t["gross"] += gross
+            t["employer_taxes"] += employer_taxes
+            t["employer_401k"] += co_401k
+            t["employer_cost"] += employer_cost
+            t["net_pay"] += net_pay
+            t["hours"] += hours
+
+    if cur_period:
+        periods.append(cur_period)
+
+    # YTD totals
+    ytd = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0, "period_count": len(periods)}
+    for p in periods:
+        for k in ("gross", "employer_taxes", "employer_401k", "employer_cost", "net_pay", "hours"):
+            ytd[k] += p["totals"][k]
+
+    return {"periods": periods, "employees": employees, "totals": ytd}
+
+
+# =====================================================================
+# Loans + accounting (P&L, Cash Flow, Balance Sheet) endpoints
+# =====================================================================
+
+def _to_loan_out(db: Session, loan: Loan) -> LoanOut:
+    payments = db.scalars(select(LoanPayment).where(LoanPayment.loan_id == loan.id)).all()
+    return LoanOut(
+        id=loan.id,
+        name=loan.name,
+        lender=loan.lender or "",
+        loan_type=loan.loan_type or "term_loan",
+        account_last4=loan.account_last4,
+        principal_original=float(loan.principal_original or 0.0),
+        principal_current=float(loan.principal_current or 0.0),
+        interest_rate_apr=float(loan.interest_rate_apr or 0.0),
+        payment_amount=float(loan.payment_amount or 0.0),
+        payment_frequency=loan.payment_frequency or "monthly",
+        origination_date=loan.origination_date,
+        maturity_date=loan.maturity_date,
+        description_match=loan.description_match or "",
+        notes=loan.notes or "",
+        is_active=bool(loan.is_active),
+        payments_count=len(payments),
+        payments_total=sum((p.total_amount or 0) for p in payments),
+        interest_total=sum((p.interest_amount or 0) for p in payments),
+        principal_total=sum((p.principal_amount or 0) for p in payments),
+    )
+
+
+@app.get("/loans", response_model=list[LoanOut])
+def list_loans(
+    include_inactive: bool = True,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[LoanOut]:
+    q = select(Loan).order_by(Loan.is_active.desc(), Loan.name.asc())
+    if not include_inactive:
+        q = q.where(Loan.is_active.is_(True))
+    return [_to_loan_out(db, l) for l in db.scalars(q).all()]
+
+
+@app.post("/loans", response_model=LoanOut)
+def create_loan(
+    payload: LoanCreate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> LoanOut:
+    if payload.loan_type not in LOAN_TYPES:
+        raise HTTPException(status_code=400, detail=f"loan_type must be one of {LOAN_TYPES}")
+    if payload.payment_frequency not in LOAN_FREQUENCIES:
+        raise HTTPException(status_code=400, detail=f"payment_frequency must be one of {LOAN_FREQUENCIES}")
+    name = payload.name.strip()
+    if db.scalar(select(Loan).where(func.lower(Loan.name) == name.lower())):
+        raise HTTPException(status_code=400, detail="Loan name already exists")
+    loan = Loan(
+        name=name,
+        lender=payload.lender.strip(),
+        loan_type=payload.loan_type,
+        account_last4=payload.account_last4,
+        principal_original=payload.principal_original,
+        principal_current=payload.principal_current or payload.principal_original,
+        interest_rate_apr=payload.interest_rate_apr,
+        payment_amount=payload.payment_amount,
+        payment_frequency=payload.payment_frequency,
+        origination_date=payload.origination_date,
+        maturity_date=payload.maturity_date,
+        description_match=payload.description_match.strip(),
+        notes=payload.notes.strip(),
+        is_active=payload.is_active,
+    )
+    db.add(loan)
+    db.flush()
+    _log_audit_event(
+        db=db, entity_type="loan", entity_id=loan.id, action="create",
+        actor_user_id=actor.id, payload={"name": loan.name, "lender": loan.lender},
+    )
+    db.commit()
+    db.refresh(loan)
+    return _to_loan_out(db, loan)
+
+
+@app.put("/loans/{loan_id}", response_model=LoanOut)
+def update_loan(
+    loan_id: int,
+    payload: LoanUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> LoanOut:
+    loan = db.get(Loan, loan_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    if payload.loan_type not in LOAN_TYPES:
+        raise HTTPException(status_code=400, detail=f"loan_type must be one of {LOAN_TYPES}")
+    if payload.payment_frequency not in LOAN_FREQUENCIES:
+        raise HTTPException(status_code=400, detail=f"payment_frequency must be one of {LOAN_FREQUENCIES}")
+    loan.name = payload.name.strip()
+    loan.lender = payload.lender.strip()
+    loan.loan_type = payload.loan_type
+    loan.account_last4 = payload.account_last4
+    loan.principal_original = payload.principal_original
+    loan.principal_current = payload.principal_current
+    loan.interest_rate_apr = payload.interest_rate_apr
+    loan.payment_amount = payload.payment_amount
+    loan.payment_frequency = payload.payment_frequency
+    loan.origination_date = payload.origination_date
+    loan.maturity_date = payload.maturity_date
+    loan.description_match = payload.description_match.strip()
+    loan.notes = payload.notes.strip()
+    loan.is_active = payload.is_active
+    _log_audit_event(
+        db=db, entity_type="loan", entity_id=loan.id, action="update",
+        actor_user_id=actor.id, payload={"name": loan.name},
+    )
+    db.commit()
+    db.refresh(loan)
+    return _to_loan_out(db, loan)
+
+
+@app.delete("/loans/{loan_id}")
+def delete_loan(
+    loan_id: int,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    loan = db.get(Loan, loan_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    name = loan.name
+    # Refuse deletion if there are payments — soft-delete via is_active instead
+    has_payments = db.scalar(select(LoanPayment).where(LoanPayment.loan_id == loan_id))
+    if has_payments:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Loan '{name}' has payments; mark inactive instead of deleting.",
+        )
+    db.delete(loan)
+    _log_audit_event(
+        db=db, entity_type="loan", entity_id=loan_id, action="delete",
+        actor_user_id=actor.id, payload={"name": name},
+    )
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.get("/loans/{loan_id}/payments", response_model=list[LoanPaymentOut])
+def list_loan_payments(
+    loan_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[LoanPaymentOut]:
+    if not db.get(Loan, loan_id):
+        raise HTTPException(status_code=404, detail="Loan not found")
+    rows = db.scalars(
+        select(LoanPayment)
+        .where(LoanPayment.loan_id == loan_id)
+        .order_by(LoanPayment.payment_date.desc())
+    ).all()
+    return [
+        LoanPaymentOut(
+            id=p.id,
+            loan_id=p.loan_id,
+            payment_date=p.payment_date,
+            total_amount=p.total_amount,
+            principal_amount=p.principal_amount,
+            interest_amount=p.interest_amount,
+            fees_amount=p.fees_amount,
+            bank_transaction_id=p.bank_transaction_id,
+            notes=p.notes or "",
+        )
+        for p in rows
+    ]
+
+
+@app.post("/loans/{loan_id}/payments", response_model=LoanPaymentOut)
+def add_loan_payment(
+    loan_id: int,
+    payload: LoanPaymentCreate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> LoanPaymentOut:
+    loan = db.get(Loan, loan_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    # Auto-fill split: if user only provides total, treat all as principal (interest must be entered manually).
+    total = float(payload.total_amount or 0)
+    principal = float(payload.principal_amount or 0)
+    interest = float(payload.interest_amount or 0)
+    fees = float(payload.fees_amount or 0)
+    if principal == 0 and interest == 0 and fees == 0 and total > 0:
+        principal = total
+    pmt = LoanPayment(
+        loan_id=loan_id,
+        payment_date=payload.payment_date,
+        total_amount=total,
+        principal_amount=principal,
+        interest_amount=interest,
+        fees_amount=fees,
+        bank_transaction_id=payload.bank_transaction_id,
+        notes=payload.notes or "",
+    )
+    db.add(pmt)
+    # Decrement principal_current
+    loan.principal_current = max(0.0, float(loan.principal_current or 0) - principal)
+    db.flush()
+    _log_audit_event(
+        db=db, entity_type="loan_payment", entity_id=pmt.id, action="create",
+        actor_user_id=actor.id,
+        payload={"loan_id": loan_id, "total": total, "principal": principal, "interest": interest},
+    )
+    db.commit()
+    db.refresh(pmt)
+    return LoanPaymentOut(
+        id=pmt.id, loan_id=pmt.loan_id, payment_date=pmt.payment_date,
+        total_amount=pmt.total_amount, principal_amount=pmt.principal_amount,
+        interest_amount=pmt.interest_amount, fees_amount=pmt.fees_amount,
+        bank_transaction_id=pmt.bank_transaction_id, notes=pmt.notes or "",
+    )
+
+
+@app.delete("/loans/{loan_id}/payments/{payment_id}")
+def delete_loan_payment(
+    loan_id: int,
+    payment_id: int,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    pmt = db.get(LoanPayment, payment_id)
+    if not pmt or pmt.loan_id != loan_id:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    loan = db.get(Loan, loan_id)
+    if loan:
+        loan.principal_current = float(loan.principal_current or 0) + float(pmt.principal_amount or 0)
+    db.delete(pmt)
+    _log_audit_event(
+        db=db, entity_type="loan_payment", entity_id=payment_id, action="delete",
+        actor_user_id=actor.id, payload={"loan_id": loan_id},
+    )
+    db.commit()
+    return {"status": "deleted"}
+
+
+# ----- Accounting summaries -----
+
+def _accounting_period(start_iso: str | None, end_iso: str | None) -> tuple[date, date]:
+    today = date.today()
+    if end_iso:
+        end = datetime.strptime(end_iso, "%Y-%m-%d").date()
+    else:
+        end = today
+    if start_iso:
+        start = datetime.strptime(start_iso, "%Y-%m-%d").date()
+    else:
+        start = date(end.year, 1, 1)
+    if start > end:
+        raise HTTPException(status_code=400, detail="start must be on/before end")
+    return start, end
+
+
+@app.get("/accounting/pl")
+def accounting_pl(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Profit & Loss for the period.
+
+    - Revenue: sum of paid invoice amounts (cash basis) within issue_date in period.
+    - COGS: Gusto employer cost (gross + employer taxes + 401k match) within payroll period.
+    - Operating Expenses (OPEX): bank transactions in period tagged with expense_group OH/Other,
+      EXCLUDING anything mapped to a LoanPayment (those are not expenses).
+    - Interest expense: sum of LoanPayment.interest_amount in period.
+    - Net income = Revenue - COGS - OPEX - Interest.
+    """
+    s, e = _accounting_period(start, end)
+
+    # Revenue (cash basis): paid invoices with paid_date in period
+    revenue = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
+        .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
+    ) or 0.0)
+
+    # Accrual revenue: invoices issued in period (alternate)
+    revenue_accrual = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.subtotal_amount), 0.0))
+        .where(Invoice.issue_date >= s, Invoice.issue_date <= e)
+    ) or 0.0)
+
+    # COGS from Gusto journal (canonical). Re-parse the inbox.
+    # Use pay_day (when the expense actually hits) — that's the canonical date for
+    # cash-basis accounting and matches what the IRS expects for payroll tax timing.
+    cogs = 0.0
+    payroll_breakdown = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0}
+    try:
+        inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+        if inbox.exists():
+            for f in sorted(inbox.glob("*payroll-summary*.csv")):
+                try:
+                    text = f.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                parsed = _parse_gusto_payroll_journal(text)
+                for period in parsed.get("periods", []):
+                    # Try pay_day first (preferred), fall back to period-end date
+                    pd_str = (period.get("pay_day") or "").strip()
+                    pd: date | None = None
+                    if pd_str:
+                        for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+                            try:
+                                pd = datetime.strptime(pd_str, fmt).date()
+                                break
+                            except ValueError:
+                                continue
+                    if pd is None:
+                        # Fall back to parsing the end of "MM/DD/YYYY - MM/DD/YYYY"
+                        per_str = (period.get("period") or "").strip()
+                        if " - " in per_str:
+                            end_str = per_str.split(" - ")[-1].strip()
+                            for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+                                try:
+                                    pd = datetime.strptime(end_str, fmt).date()
+                                    break
+                                except ValueError:
+                                    continue
+                    if pd is None or pd < s or pd > e:
+                        continue
+                    t = period.get("totals", {})
+                    cogs += float(t.get("employer_cost", 0))
+                    payroll_breakdown["gross"] += float(t.get("gross", 0))
+                    payroll_breakdown["employer_taxes"] += float(t.get("employer_taxes", 0))
+                    payroll_breakdown["employer_401k"] += float(t.get("employer_401k", 0))
+    except Exception:
+        # If parsing fails, leave COGS at 0 — UI will show note
+        pass
+
+    # OPEX from bank/CC outflows in period
+    # Exclude transactions linked to a LoanPayment (those are debt servicing not expense)
+    linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
+    opex = 0.0
+    interest_in_loans = 0.0
+    cc_payments = 0.0
+    cc_transfers_keywords = ("PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER")
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True),
+            BankTransaction.amount < 0,  # outflows only
+        )
+    ).all():
+        if tx.id in linked_tx_ids:
+            continue  # already accounted for as loan payment, not expense
+        try:
+            cats = json.loads(tx.category_json or "[]")
+        except Exception:
+            cats = []
+        cat_lower = " ".join(str(c).lower() for c in cats)
+        nm_upper = (tx.name or "").upper()
+        if any(k in nm_upper for k in cc_transfers_keywords):
+            continue  # internal transfers are not expenses
+        # If it's a chase-CC double of payroll skip (Gusto canonical handles payroll)
+        if "payroll" in cat_lower and "tax" not in cat_lower:
+            continue
+        opex += -float(tx.amount or 0)
+
+    # Interest expense from LoanPayment
+    interest_expense = float(db.scalar(
+        select(func.coalesce(func.sum(LoanPayment.interest_amount), 0.0))
+        .where(LoanPayment.payment_date >= s, LoanPayment.payment_date <= e)
+    ) or 0.0)
+    fees_expense = float(db.scalar(
+        select(func.coalesce(func.sum(LoanPayment.fees_amount), 0.0))
+        .where(LoanPayment.payment_date >= s, LoanPayment.payment_date <= e)
+    ) or 0.0)
+
+    net_income_cash = revenue - cogs - opex - interest_expense - fees_expense
+    net_income_accrual = revenue_accrual - cogs - opex - interest_expense - fees_expense
+
+    return {
+        "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "revenue_cash": revenue,
+        "revenue_accrual": revenue_accrual,
+        "cogs": cogs,
+        "payroll_breakdown": payroll_breakdown,
+        "opex": opex,
+        "interest_expense": interest_expense,
+        "fees_expense": fees_expense,
+        "net_income_cash": net_income_cash,
+        "net_income_accrual": net_income_accrual,
+        "notes": [
+            "Revenue (cash) = paid invoices in period; Revenue (accrual) = invoices issued in period.",
+            "COGS = Gusto employer cost (gross + employer taxes + 401(k) match) — engineering consulting treats all payroll as COGS.",
+            "OPEX excludes transactions linked to a Loan Payment (those reduce balance-sheet debt, not P&L).",
+            "Interest expense + Fees come from LoanPayment splits.",
+        ],
+    }
+
+
+@app.get("/accounting/cashflow")
+def accounting_cashflow(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Cash flow statement (simplified, cash basis).
+
+    Operating: cash in from invoices paid - cash out for OPEX - cash out for COGS (payroll cash).
+    Investing: 0 (placeholder).
+    Financing: loan proceeds in - loan payments out (full amount) + owner contributions - distributions.
+    """
+    s, e = _accounting_period(start, end)
+
+    # Operating IN
+    cash_in_invoices = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
+        .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
+    ) or 0.0)
+
+    # Operating OUT — re-use PL helpers (call accounting_pl logic inline-light)
+    # For simplicity: sum negative bank transactions in business accounts, excluding loan-mapped + transfers.
+    linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
+    cash_out_opex = 0.0
+    cc_transfers_keywords = ("PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER")
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True), BankTransaction.amount < 0,
+        )
+    ).all():
+        if tx.id in linked_tx_ids:
+            continue
+        nm_upper = (tx.name or "").upper()
+        if any(k in nm_upper for k in cc_transfers_keywords):
+            continue
+        cash_out_opex += -float(tx.amount or 0)
+
+    # Financing
+    loan_payments = db.scalars(
+        select(LoanPayment).where(LoanPayment.payment_date >= s, LoanPayment.payment_date <= e)
+    ).all()
+    loan_payments_total = sum(float(p.total_amount or 0) for p in loan_payments)
+
+    return {
+        "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "operating": {
+            "cash_in_invoices": cash_in_invoices,
+            "cash_out_opex_and_payroll": cash_out_opex,
+            "net": cash_in_invoices - cash_out_opex,
+        },
+        "investing": {"capex": 0.0, "net": 0.0, "note": "Capex not tracked yet."},
+        "financing": {
+            "loan_payments_total": loan_payments_total,
+            "net": -loan_payments_total,
+            "note": "Loan proceeds (cash inflows) not auto-detected yet — record them in the Loans tab.",
+        },
+        "net_change_in_cash":
+            (cash_in_invoices - cash_out_opex) - loan_payments_total,
+    }
+
+
+@app.get("/accounting/balance-sheet")
+def accounting_balance_sheet(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Balance sheet snapshot. Liabilities are Σ Loan.principal_current.
+    Cash assets come from BankAccount.current_balance where available.
+    AR = Σ Invoice.balance_due where balance_due > 0.
+    Equity is the plug (assets − liabilities).
+    """
+    cash = float(db.scalar(
+        select(func.coalesce(func.sum(BankAccount.current_balance), 0.0))
+        .where(BankAccount.is_business.is_(True))
+    ) or 0.0)
+    ar = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.balance_due), 0.0))
+        .where(Invoice.balance_due > 0)
+    ) or 0.0)
+    loans_principal = float(db.scalar(
+        select(func.coalesce(func.sum(Loan.principal_current), 0.0))
+        .where(Loan.is_active.is_(True))
+    ) or 0.0)
+    total_assets = cash + ar
+    total_liabilities = loans_principal
+    equity = total_assets - total_liabilities
+    return {
+        "as_of": date.today().isoformat(),
+        "assets": {
+            "cash": cash,
+            "accounts_receivable": ar,
+            "total": total_assets,
+        },
+        "liabilities": {
+            "loans_outstanding": loans_principal,
+            "total": total_liabilities,
+        },
+        "equity": equity,
+        "notes": [
+            "Cash from BankAccount.current_balance where set; many imported accounts may show 0.",
+            "AR = sum of unpaid invoice balances.",
+            "Liabilities = current loan principal balances. Add loans in the Loans tab to populate.",
+            "Equity is computed as Assets − Liabilities (plug).",
+        ],
+    }
+
+
+@app.get("/payroll/journal/summary")
+def payroll_journal_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Parse all Gusto payroll journal CSVs in the FB inbox and return a per-year summary.
+
+    For an engineering consulting business: every dollar of Employer Cost is COGS.
+    """
+    _ = current_user, db
+    inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+    if not inbox.exists():
+        raise HTTPException(status_code=404, detail=f"Inbox folder not found: {inbox}")
+
+    out: dict[str, object] = {"by_year": {}, "all_periods": [], "all_employees": {}, "yearly_ytd": {}}
+    for path in sorted(inbox.glob("*payroll-summary*.csv")):
+        # Try to extract year from filename (e.g., 2024-01-01-to-2024-12-31)
+        m = re.search(r"(\d{4})-\d{2}-\d{2}-to-\d{4}-", path.name)
+        year_label = m.group(1) if m else path.stem
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+            parsed = _parse_gusto_payroll_journal(text)
+        except Exception as exc:
+            out["by_year"][year_label] = {"error": str(exc)[:200]}
+            continue
+        out["by_year"][year_label] = {
+            "file": path.name,
+            "period_count": len(parsed["periods"]),
+            "employee_count": len(parsed["employees"]),
+            "totals": parsed["totals"],
+        }
+        # Merge into year-aggregate yearly_ytd
+        out["yearly_ytd"][year_label] = parsed["totals"]
+        for emp, vals in parsed["employees"].items():
+            cur = out["all_employees"].setdefault(
+                emp, {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0, "by_year": {}}
+            )
+            cur["gross"] += vals["gross"]
+            cur["employer_taxes"] += vals["employer_taxes"]
+            cur["employer_401k"] += vals["employer_401k"]
+            cur["employer_cost"] += vals["employer_cost"]
+            cur["net_pay"] += vals["net_pay"]
+            cur["hours"] += vals["hours"]
+            cur["by_year"][year_label] = vals
+        for p in parsed["periods"]:
+            out["all_periods"].append({**p, "year": year_label, "file": path.name})
+
+    # Grand total across years
+    grand = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0}
+    for y, vals in out["yearly_ytd"].items():
+        for k in grand:
+            grand[k] += vals.get(k, 0.0)
+    out["grand_total"] = grand
+    out["treatment_note"] = (
+        "Engineering consulting business — entire Employer Cost (gross wages + employer taxes + "
+        "employer 401(k) match) is COGS. Employee tax withholdings and employee 401(k) deductions are "
+        "already inside Gross, not separate company expense."
+    )
+    return out
+
+
+def _bank_tx_source_file(tx: BankTransaction) -> str:
+    try:
+        return str((json.loads(tx.raw_json or "{}").get("source_file") or "")).lower()
+    except Exception:
+        return ""
+
+
+def _bank_tx_origin(tx: BankTransaction) -> str:
+    """Returns 'freshbooks' for FB-Expenses-Export rows, 'chase' for Chase rows, 'other' otherwise."""
+    sf = _bank_tx_source_file(tx)
+    if "freshbooks" in sf and ("expense" in sf or "expenses" in sf):
+        return "freshbooks"
+    if "chase" in sf:
+        return "chase"
+    return "other"
+
+
+@app.get("/bank/dedup/analysis")
+def bank_dedup_analysis(
+    date_tolerance_days: int = Query(default=3, ge=0, le=30),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Detects FB Expenses-source rows that duplicate Chase-source rows.
+
+    Match rule: same absolute amount (within $0.01) AND posted_date within
+    +/- `date_tolerance_days`. FB-side rows are treated as duplicates when matched
+    (Chase is the source-of-truth for cash flow). Unmatched FB rows are likely
+    personal-paid-business expenses that haven't been reimbursed yet.
+    """
+    _ = current_user
+    txs = db.scalars(select(BankTransaction)).all()
+    fb_rows: list[BankTransaction] = []
+    chase_rows: list[BankTransaction] = []
+    for tx in txs:
+        origin = _bank_tx_origin(tx)
+        if origin == "freshbooks":
+            fb_rows.append(tx)
+        elif origin == "chase":
+            chase_rows.append(tx)
+
+    # Build a lookup of chase rows by absolute amount for fast O(N+M) match.
+    chase_by_amt: dict[float, list[BankTransaction]] = {}
+    for tx in chase_rows:
+        if tx.posted_date is None:
+            continue
+        chase_by_amt.setdefault(round(abs(float(tx.amount or 0)), 2), []).append(tx)
+
+    matched: list[dict[str, object]] = []
+    unmatched: list[dict[str, object]] = []
+    matched_amount = 0.0
+    unmatched_amount = 0.0
+    for fb in fb_rows:
+        if fb.posted_date is None:
+            continue
+        fb_amt = round(abs(float(fb.amount or 0)), 2)
+        candidates = chase_by_amt.get(fb_amt, [])
+        best_match: BankTransaction | None = None
+        best_delta = date_tolerance_days + 1
+        for ch in candidates:
+            if ch.posted_date is None:
+                continue
+            delta = abs((ch.posted_date - fb.posted_date).days)
+            if delta < best_delta:
+                best_delta = delta
+                best_match = ch
+        if best_match and best_delta <= date_tolerance_days:
+            matched.append(
+                {
+                    "fb_id": fb.id,
+                    "chase_id": best_match.id,
+                    "fb_date": fb.posted_date.isoformat(),
+                    "chase_date": best_match.posted_date.isoformat() if best_match.posted_date else None,
+                    "amount_abs": fb_amt,
+                    "fb_description": (fb.name or "")[:200],
+                    "chase_description": (best_match.name or "")[:200],
+                    "date_delta_days": best_delta,
+                }
+            )
+            matched_amount += fb_amt
+        else:
+            _, fb_category = _tx_category_from_json(fb)
+            unmatched.append(
+                {
+                    "fb_id": fb.id,
+                    "posted_date": fb.posted_date.isoformat(),
+                    "amount_abs": fb_amt,
+                    "amount": float(fb.amount or 0),
+                    "description": (fb.name or "")[:200],
+                    "merchant": fb.merchant_name,
+                    "category": fb_category,
+                }
+            )
+            unmatched_amount += fb_amt
+
+    # Sort unmatched by amount desc
+    unmatched.sort(key=lambda r: -float(r["amount_abs"]))
+    matched.sort(key=lambda r: -float(r["amount_abs"]))
+
+    return {
+        "fb_count": len(fb_rows),
+        "chase_count": len(chase_rows),
+        "matched_count": len(matched),
+        "matched_total": matched_amount,
+        "unmatched_count": len(unmatched),
+        "unmatched_total": unmatched_amount,
+        "tolerance_days": date_tolerance_days,
+        "matched_sample": matched[:50],
+        "unmatched": unmatched[:200],
+    }
+
+
+@app.get("/bank/transfers/pending")
+def bank_transfers_pending(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Returns transfer-bucket bank transactions awaiting CPA adjudication, plus a
+    per-year rollforward summary. Transfers are not tax-summary expenses; they
+    move funds between accounts and require classification (loan / distribution /
+    contribution / reimbursement / payroll / contractor / personal).
+    """
+    _ = current_user
+    txs = db.scalars(select(BankTransaction)).all()
+    transfer_txs: list[BankTransaction] = []
+    for tx in txs:
+        _, category = _tx_category_from_json(tx)
+        if _is_transfer_category(category):
+            transfer_txs.append(tx)
+
+    # Per-year rollforward by account
+    by_year_account: dict[tuple[int, str], dict[str, float]] = {}
+    by_category: dict[str, dict[str, float]] = {}
+    for tx in transfer_txs:
+        if not tx.posted_date:
+            continue
+        year = tx.posted_date.year
+        acct = tx.account_id or "?"
+        amt = float(tx.amount or 0)
+        key = (year, acct)
+        bucket = by_year_account.setdefault(key, {"count": 0.0, "out": 0.0, "in": 0.0, "net": 0.0})
+        bucket["count"] += 1
+        if amt < 0:
+            bucket["out"] += abs(amt)
+        else:
+            bucket["in"] += amt
+        bucket["net"] += amt
+
+        _, category = _tx_category_from_json(tx)
+        cat_key = category or "Unclassified"
+        cb = by_category.setdefault(cat_key, {"count": 0.0, "abs": 0.0, "net": 0.0})
+        cb["count"] += 1
+        cb["abs"] += abs(amt)
+        cb["net"] += amt
+
+    rollforward = [
+        {
+            "year": k[0],
+            "account": k[1],
+            "transaction_count": int(v["count"]),
+            "outflow": v["out"],
+            "inflow": v["in"],
+            "net": v["net"],
+        }
+        for k, v in sorted(by_year_account.items())
+    ]
+
+    category_summary = [
+        {
+            "category": c,
+            "transaction_count": int(v["count"]),
+            "abs_amount": v["abs"],
+            "net_amount": v["net"],
+        }
+        for c, v in sorted(by_category.items(), key=lambda kv: -kv[1]["abs"])
+    ]
+
+    # Recent transactions (limit 200 for UI)
+    transfer_txs_sorted = sorted(
+        transfer_txs,
+        key=lambda t: (t.posted_date or date.min, abs(float(t.amount or 0))),
+        reverse=True,
+    )
+    items = []
+    for tx in transfer_txs_sorted[:200]:
+        _, category = _tx_category_from_json(tx)
+        items.append(
+            {
+                "id": tx.id,
+                "posted_date": tx.posted_date.isoformat() if tx.posted_date else None,
+                "account": tx.account_id,
+                "amount": float(tx.amount or 0),
+                "description": (tx.name or "")[:300],
+                "merchant": tx.merchant_name,
+                "category": category,
+                "needs_review": True,  # all transfers need review by definition
+            }
+        )
+
+    return {
+        "total_count": len(transfer_txs),
+        "rollforward_by_year_account": rollforward,
+        "by_category": category_summary,
+        "items": items,
+    }
+
+
 @app.get("/bank/summary", response_model=list[BankExpenseSummaryRow])
 def bank_expense_summary(
     group_by: str = Query(default="category", pattern="^(category|merchant|expense_group)$"),
@@ -1587,6 +3427,7 @@ async def import_expense_cat_categorized_csv(
             )
         )
         category = _truncate_text(str(row.get("final_category") or row.get("category") or ""), 180)
+        expense_group = _truncate_text(str(row.get("expense_group") or ""), 64)
         merchant = _truncate_text(str(row.get("merchant_key") or ""), 255) or None
         needs_review_raw = str(row.get("needs_review") or "").strip().lower()
         needs_review = needs_review_raw in {"1", "true", "yes", "y"}
@@ -1602,6 +3443,7 @@ async def import_expense_cat_categorized_csv(
             "amount": amount,
             "is_expense": row.get("is_expense"),
             "expense_amount": row.get("expense_amount"),
+            "expense_group": expense_group,
             "category": row.get("category"),
             "final_category": row.get("final_category"),
             "confidence": row.get("confidence"),
@@ -2334,10 +4176,11 @@ def dev_bootstrap_admin(payload: DevBootstrapRequest, request: Request, db: Sess
     if existing_admin:
         raise HTTPException(status_code=409, detail="An active admin already exists")
 
-    user = db.scalar(select(User).where(User.email == payload.email.lower()))
+    email = payload.email.lower().strip()
+    user = db.scalar(select(User).where(func.lower(User.email) == email))
     if not user:
         user = User(
-            email=payload.email.lower(),
+            email=email,
             full_name=payload.full_name,
             role="admin",
             is_active=True,
@@ -2358,12 +4201,12 @@ def dev_bootstrap_admin(payload: DevBootstrapRequest, request: Request, db: Sess
 def dev_login(payload: DevLoginRequest, request: Request, db: Session = Depends(get_db)) -> UserOut:
     if not settings.DEV_AUTH_BYPASS:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Dev auth bypass disabled")
-    email = payload.email.lower()
+    email = payload.email.lower().strip()
     domain = email.split("@")[-1]
     if domain != settings.ALLOWED_GOOGLE_DOMAIN.lower():
         raise HTTPException(status_code=400, detail="Email domain is not allowed")
 
-    user = db.scalar(select(User).where(User.email == email))
+    user = db.scalar(select(User).where(func.lower(User.email) == email))
     if not user:
         user = User(email=email, full_name=email.split("@")[0], role="employee", is_active=False)
         db.add(user)
@@ -2656,6 +4499,184 @@ def update_project(
     db.commit()
     db.refresh(project)
     return _to_project_out(project)
+
+
+@app.patch("/projects/{project_id}/status", response_model=ProjectOut)
+def update_project_status(
+    project_id: int,
+    payload: ProjectStatusUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> ProjectOut:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    new_status = payload.lifecycle_status.strip().lower()
+    if new_status not in PROJECT_LIFECYCLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"lifecycle_status must be one of: {', '.join(PROJECT_LIFECYCLE_STATUSES)}",
+        )
+    project.lifecycle_status = new_status
+    # Derived flag: only "active" lifecycle keeps is_active=True
+    project.is_active = new_status == "active"
+    if new_status == "completed":
+        project.completed_date = payload.completed_date or project.completed_date or date.today()
+    elif new_status == "active":
+        project.completed_date = None
+    _log_audit_event(
+        db=db,
+        entity_type="project",
+        entity_id=project.id,
+        action="lifecycle_status",
+        actor_user_id=actor.id,
+        payload={
+            "lifecycle_status": new_status,
+            "completed_date": project.completed_date.isoformat() if project.completed_date else None,
+        },
+    )
+    db.commit()
+    db.refresh(project)
+    return _to_project_out(project)
+
+
+def _to_project_member_out(db: Session, m: ProjectMember) -> ProjectMemberOut:
+    user = db.get(User, m.user_id)
+    return ProjectMemberOut(
+        id=m.id,
+        project_id=m.project_id,
+        user_id=m.user_id,
+        user_name=user.full_name if user else f"(deleted user {m.user_id})",
+        user_email=user.email if user else "",
+        role=m.role,
+        allocation_pct=m.allocation_pct,
+        start_date=m.start_date,
+        end_date=m.end_date,
+        notes=m.notes or "",
+    )
+
+
+@app.get("/projects/{project_id}/members", response_model=list[ProjectMemberOut])
+def list_project_members(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[ProjectMemberOut]:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    rows = (
+        db.scalars(
+            select(ProjectMember)
+            .where(ProjectMember.project_id == project_id)
+            .order_by(ProjectMember.role.asc(), ProjectMember.created_at.asc())
+        ).all()
+    )
+    return [_to_project_member_out(db, m) for m in rows]
+
+
+@app.post("/projects/{project_id}/members", response_model=ProjectMemberOut)
+def add_project_member(
+    project_id: int,
+    payload: ProjectMemberCreate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> ProjectMemberOut:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    user = db.get(User, payload.user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="user_id does not exist")
+    role = payload.role.strip()
+    if not role:
+        raise HTTPException(status_code=400, detail="Role required")
+    existing = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == payload.user_id,
+            ProjectMember.role == role,
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail=f"{user.full_name} already has role '{role}' on this project")
+    m = ProjectMember(
+        project_id=project_id,
+        user_id=payload.user_id,
+        role=role,
+        allocation_pct=payload.allocation_pct,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        notes=payload.notes or "",
+    )
+    db.add(m)
+    db.flush()
+    _log_audit_event(
+        db=db,
+        entity_type="project",
+        entity_id=project_id,
+        action="member_added",
+        actor_user_id=actor.id,
+        payload={"user_id": user.id, "user_name": user.full_name, "role": role},
+    )
+    db.commit()
+    db.refresh(m)
+    return _to_project_member_out(db, m)
+
+
+@app.put("/projects/{project_id}/members/{member_id}", response_model=ProjectMemberOut)
+def update_project_member(
+    project_id: int,
+    member_id: int,
+    payload: ProjectMemberUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> ProjectMemberOut:
+    m = db.get(ProjectMember, member_id)
+    if not m or m.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Member not found on project")
+    role = payload.role.strip()
+    if not role:
+        raise HTTPException(status_code=400, detail="Role required")
+    m.role = role
+    m.allocation_pct = payload.allocation_pct
+    m.start_date = payload.start_date
+    m.end_date = payload.end_date
+    m.notes = payload.notes or ""
+    _log_audit_event(
+        db=db,
+        entity_type="project",
+        entity_id=project_id,
+        action="member_updated",
+        actor_user_id=actor.id,
+        payload={"member_id": member_id, "user_id": m.user_id, "role": role},
+    )
+    db.commit()
+    db.refresh(m)
+    return _to_project_member_out(db, m)
+
+
+@app.delete("/projects/{project_id}/members/{member_id}")
+def remove_project_member(
+    project_id: int,
+    member_id: int,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    m = db.get(ProjectMember, member_id)
+    if not m or m.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Member not found on project")
+    db.delete(m)
+    _log_audit_event(
+        db=db,
+        entity_type="project",
+        entity_id=project_id,
+        action="member_removed",
+        actor_user_id=actor.id,
+        payload={"member_id": member_id, "user_id": m.user_id, "role": m.role},
+    )
+    db.commit()
+    return {"status": "removed"}
 
 
 @app.post("/projects/{project_id}/tasks")
@@ -3580,6 +5601,7 @@ def approve_timesheet(
 @app.post("/timesheets/{timesheet_id}/return", response_model=TimesheetOut)
 def return_timesheet(
     timesheet_id: int,
+    note: str = Query(default="", max_length=2000),
     db: Session = Depends(get_db),
     approver: User = Depends(require_permission("APPROVE_TIMESHEETS")),
 ) -> TimesheetOut:
@@ -3604,6 +5626,7 @@ def return_timesheet(
             "week_start": ts.week_start.isoformat(),
             "week_end": ts.week_end.isoformat(),
             "status": ts.status,
+            "note": note.strip(),
         },
     )
     db.commit()
@@ -3628,6 +5651,7 @@ def all_timesheets(
     end: date | None = None,
     user_id: int | None = None,
     status_filter: str | None = None,
+    include_pending: bool = True,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("APPROVE_TIMESHEETS")),
 ) -> list[TimesheetAdminOut]:
@@ -3642,8 +5666,37 @@ def all_timesheets(
         q = q.where(Timesheet.status == status_filter)
 
     sheets = db.scalars(q).all()
+    normalized_status_filter = (status_filter or "").strip().lower()
+    existing_pairs = {(int(ts.user_id), ts.week_start) for ts in sheets}
     user_ids = sorted({ts.user_id for ts in sheets})
-    users = db.scalars(select(User).where(User.id.in_(user_ids) if user_ids else false())).all()
+
+    pending_rows: list[TimesheetAdminOut] = []
+    if include_pending and normalized_status_filter in {"", "unsubmitted"}:
+        entry_query = select(TimeEntry.user_id, TimeEntry.work_date)
+        if start:
+            entry_query = entry_query.where(TimeEntry.work_date >= start)
+        if end:
+            entry_query = entry_query.where(TimeEntry.work_date <= end)
+        if user_id:
+            entry_query = entry_query.where(TimeEntry.user_id == user_id)
+
+        pending_pairs: set[tuple[int, date]] = set()
+        for entry_user_id, work_date in db.execute(entry_query).all():
+            ws = _week_start(work_date)
+            we = ws + timedelta(days=6)
+            if start and ws < start:
+                continue
+            if end and we > end:
+                continue
+            key = (int(entry_user_id), ws)
+            if key in existing_pairs or key in pending_pairs:
+                continue
+            pending_pairs.add(key)
+
+        if pending_pairs:
+            user_ids.extend(uid for uid, _ in pending_pairs)
+
+    users = db.scalars(select(User).where(User.id.in_(sorted(set(user_ids))) if user_ids else false())).all()
     user_map = {u.id: u for u in users}
 
     out: list[TimesheetAdminOut] = []
@@ -3656,8 +5709,49 @@ def all_timesheets(
                 **row.model_dump(),
                 user_email=u.email if u else "",
                 user_full_name=u.full_name if u else "",
+                has_record=True,
             )
         )
+
+    if include_pending and normalized_status_filter in {"", "unsubmitted"}:
+        pending_pairs = sorted(
+            {
+                (int(entry_user_id), _week_start(work_date))
+                for entry_user_id, work_date in db.execute(entry_query).all()
+                if (int(entry_user_id), _week_start(work_date)) not in existing_pairs
+            },
+            key=lambda pair: (pair[1], pair[0]),
+            reverse=True,
+        )
+        seen_pending: set[tuple[int, date]] = set()
+        for pending_user_id, ws in pending_pairs:
+            if (pending_user_id, ws) in seen_pending:
+                continue
+            we = ws + timedelta(days=6)
+            if start and ws < start:
+                continue
+            if end and we > end:
+                continue
+            seen_pending.add((pending_user_id, ws))
+            user_row = user_map.get(pending_user_id)
+            pending_rows.append(
+                TimesheetAdminOut(
+                    id=None,
+                    user_id=pending_user_id,
+                    week_start=ws,
+                    week_end=we,
+                    status="unsubmitted",
+                    employee_signed_at=None,
+                    supervisor_signed_at=None,
+                    total_hours=_timesheet_hours(db, pending_user_id, ws, we),
+                    user_email=user_row.email if user_row else "",
+                    user_full_name=user_row.full_name if user_row else "",
+                    has_record=False,
+                )
+            )
+
+    out.extend(pending_rows)
+    out.sort(key=lambda row: (row.week_start, row.user_full_name.lower(), row.user_id), reverse=True)
     return out
 
 
@@ -5609,6 +7703,7 @@ async def freshbooks_time_import(
     overrides = _parse_mapping_overrides(mapping_overrides)
     date_cols = _time_cols("date", TIME_DATE_COLUMNS, overrides)
     employee_cols = _time_cols("employee", TIME_EMPLOYEE_COLUMNS, overrides)
+    client_cols = _time_cols("client_name", TIME_CLIENT_COLUMNS, overrides)
     project_cols = _time_cols("project", TIME_PROJECT_COLUMNS, overrides)
     task_cols = _time_cols("task", TIME_TASK_COLUMNS, overrides)
     subtask_cols = _time_cols("subtask", TIME_SUBTASK_COLUMNS, overrides)
@@ -5633,6 +7728,7 @@ async def freshbooks_time_import(
     for row_index, row in enumerate(reader, start=2):
         work_date_raw = _first_value(row, date_cols)
         employee_raw = _first_value(row, employee_cols)
+        client_name = _normalize_import_client_name(_first_value(row, client_cols) or "Imported Client")
         project_name = _first_value(row, project_cols) or "Imported Project"
         task_name = _first_value(row, task_cols) or "General"
         subtask_name = _first_value(row, subtask_cols) or task_name
@@ -5662,6 +7758,27 @@ async def freshbooks_time_import(
             continue
 
         if not parsed_hours or parsed_hours <= 0:
+            if (
+                str(project_name or "").strip().lower() in {"no project", "imported project"}
+                and str(task_name or "").strip().lower() in {"no service", "general"}
+                and str(subtask_name or "").strip().lower() in {"no service", "general"}
+            ):
+                rows_out.append(
+                    TimeImportRowOut(
+                        row_number=row_index,
+                        work_date=parsed_date.isoformat(),
+                        employee_email=employee_email,
+                        project_name=project_name,
+                        task_name=task_name,
+                        subtask_name=subtask_name,
+                        hours=parsed_hours,
+                        note=note,
+                        status="skipped",
+                        reason="Placeholder zero-hour row",
+                    )
+                )
+                skipped += 1
+                continue
             rows_out.append(
                 TimeImportRowOut(
                     row_number=row_index,
@@ -5718,26 +7835,37 @@ async def freshbooks_time_import(
         if not user:
             user = db.scalar(select(User).where(User.email == employee_email))
             if not user:
-                user = User(email=employee_email, full_name=employee_email.split("@")[0], role="employee", is_active=True)
+                user = User(
+                    email=employee_email,
+                    full_name=_normalize_person_name(employee_raw) or employee_email.split("@")[0],
+                    role="employee",
+                    is_active=True,
+                )
                 db.add(user)
                 db.flush()
             elif not user.is_active:
                 user.is_active = True
+            if employee_raw and _normalize_person_name(employee_raw) and user.full_name != _normalize_person_name(employee_raw):
+                user.full_name = _normalize_person_name(employee_raw)
             users_cache[employee_email] = user
 
         project = projects_cache.get(project_name.lower())
         if not project:
             project = db.scalar(select(Project).where(func.lower(Project.name) == project_name.lower()))
             if not project:
+                is_internal = _is_internal_project_or_client(project_name, client_name)
                 project = Project(
                     name=project_name.strip(),
-                    client_name="Imported Client",
+                    client_name=client_name,
                     pm_user_id=current_user.id,
-                    is_overhead=False,
+                    is_overhead=is_internal,
+                    is_billable=not is_internal,
                     is_active=True,
                 )
                 db.add(project)
                 db.flush()
+            elif (not project.client_name or project.client_name.lower() in {"imported client", "unassigned client"}) and client_name:
+                project.client_name = client_name
             projects_cache[project_name.lower()] = project
 
         task_key = (project.id, task_name.lower())
@@ -6321,6 +8449,8 @@ def _to_project_out(project: Project) -> ProjectOut:
         is_overhead=project.is_overhead,
         is_billable=project.is_billable,
         is_active=project.is_active,
+        lifecycle_status=getattr(project, "lifecycle_status", None) or "active",
+        completed_date=getattr(project, "completed_date", None),
     )
 
 
@@ -6553,6 +8683,10 @@ def _normalize_invoice_status(raw: str) -> str:
         return "void"
     if val in {"draft"}:
         return "draft"
+    if val in {"overdue", "past due", "past-due", "late"}:
+        return "overdue"
+    if val in {"viewed", "opened", "seen"}:
+        return "viewed"
     if val in {"sent", "open", "unpaid", "outstanding", ""}:
         return "sent"
     return "sent"
@@ -7029,3 +9163,286 @@ def _normalize_vendor(description: str) -> str:
     cleaned = re.sub(r"[^A-Z0-9 ]+", " ", description.upper())
     words = [w for w in cleaned.split() if w not in NOISE_WORDS]
     return " ".join(words)
+
+
+# =====================================================================
+# FreshBooks OAuth + sync endpoints
+# =====================================================================
+
+@app.get("/auth/freshbooks/start")
+def freshbooks_oauth_start(
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> RedirectResponse:
+    """Kick off the FreshBooks OAuth dance — redirects user to FB consent screen."""
+    s = get_settings()
+    if not s.FRESHBOOKS_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="FRESHBOOKS_CLIENT_ID not configured in .env")
+    return RedirectResponse(fb_integration.authorize_url(state="aqtpm"))
+
+
+@app.get("/auth/freshbooks/callback")
+def freshbooks_oauth_callback(
+    code: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Receive the OAuth code and exchange it for tokens.
+
+    NOTE: FreshBooks requires HTTPS for the redirect URI on registration. For local
+    dev without a TLS cert, the user manually flips https->http in the browser when
+    redirected back here. Either way, we get the `code` query param and complete
+    the token exchange.
+    """
+    if error:
+        return Response(
+            content=f"<h1>FreshBooks authorization failed</h1><p>{error}</p>",
+            media_type="text/html",
+            status_code=400,
+        )
+    if not code:
+        raise HTTPException(status_code=400, detail="missing 'code' query parameter")
+    try:
+        token_resp = fb_integration.exchange_code(code)
+    except httpx.HTTPStatusError as e:
+        return Response(
+            content=f"<h1>Token exchange failed</h1><pre>{e.response.text}</pre>",
+            media_type="text/html",
+            status_code=502,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        return Response(
+            content=f"<h1>Token exchange error</h1><pre>{e}</pre>",
+            media_type="text/html",
+            status_code=502,
+        )
+    fb_integration.store_tokens(db, token_resp, notes="Connected via /auth/freshbooks/callback")
+    db.commit()
+    # Redirect back to the frontend Imports page
+    s = get_settings()
+    front = s.FRONTEND_ORIGIN.rstrip("/")
+    return RedirectResponse(f"{front}/?fb_connected=1#imports")
+
+
+@app.get("/admin/freshbooks/status")
+def freshbooks_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    row = fb_integration.load_token(db)
+    if not row:
+        return {"connected": False}
+    return {
+        "connected": True,
+        "account_id": row.account_id,
+        "business_id": row.business_id,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
+        "last_sync_status": row.last_sync_status,
+        "last_sync_summary": json.loads(row.last_sync_summary or "{}"),
+        "notes": row.notes,
+    }
+
+
+@app.post("/admin/freshbooks/sync")
+def freshbooks_sync(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    """Run a read-only sync of clients, invoices, expenses from FreshBooks."""
+    try:
+        summary = fb_integration.sync_summary(db)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"FreshBooks API error: {e.response.text}")
+    return summary
+
+
+@app.post("/admin/freshbooks/disconnect")
+def freshbooks_disconnect(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    row = fb_integration.load_token(db)
+    if row:
+        db.delete(row)
+        db.commit()
+    return {"status": "disconnected"}
+
+
+# =====================================================================
+# Gusto OAuth + sync endpoints
+# =====================================================================
+
+@app.get("/auth/gusto/start")
+def gusto_oauth_start(
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> RedirectResponse:
+    s = get_settings()
+    if not s.GUSTO_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="GUSTO_CLIENT_ID not configured in .env")
+    return RedirectResponse(gusto_integration.authorize_url(state="aqtpm"))
+
+
+@app.get("/auth/gusto/callback")
+def gusto_oauth_callback(
+    code: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    if error:
+        return Response(
+            content=f"<h1>Gusto authorization failed</h1><p>{error}</p>",
+            media_type="text/html",
+            status_code=400,
+        )
+    if not code:
+        raise HTTPException(status_code=400, detail="missing 'code' query parameter")
+    try:
+        token_resp = gusto_integration.exchange_code(code)
+    except httpx.HTTPStatusError as e:
+        return Response(
+            content=f"<h1>Token exchange failed</h1><pre>{e.response.text}</pre>",
+            media_type="text/html",
+            status_code=502,
+        )
+    except Exception as e:
+        return Response(
+            content=f"<h1>Token exchange error</h1><pre>{e}</pre>",
+            media_type="text/html",
+            status_code=502,
+        )
+    gusto_integration.store_tokens(db, token_resp, notes="Connected via /auth/gusto/callback")
+    db.commit()
+    s = get_settings()
+    front = s.FRONTEND_ORIGIN.rstrip("/")
+    return RedirectResponse(f"{front}/?gusto_connected=1#imports")
+
+
+@app.get("/admin/gusto/status")
+def gusto_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    row = gusto_integration.load_token(db)
+    if not row:
+        return {"connected": False}
+    return {
+        "connected": True,
+        "account_id": row.account_id,
+        "business_id": row.business_id,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
+        "last_sync_status": row.last_sync_status,
+        "last_sync_summary": json.loads(row.last_sync_summary or "{}"),
+        "notes": row.notes,
+    }
+
+
+@app.post("/admin/gusto/sync")
+def gusto_sync(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    try:
+        summary = gusto_integration.sync_summary(db)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Gusto API error: {e.response.text}")
+    return summary
+
+
+@app.post("/admin/gusto/disconnect")
+def gusto_disconnect(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    row = gusto_integration.load_token(db)
+    if row:
+        db.delete(row)
+        db.commit()
+    return {"status": "disconnected"}
+
+
+# =====================================================================
+# Plaid Link + transactions sync endpoints
+# =====================================================================
+
+@app.post("/admin/plaid/link-token")
+def plaid_create_link_token(
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    s = get_settings()
+    if not s.PLAID_CLIENT_ID or not s.PLAID_SECRET:
+        raise HTTPException(status_code=500, detail="PLAID_CLIENT_ID / PLAID_SECRET not configured in .env")
+    try:
+        token = plaid_integration.create_link_token()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Plaid error: {e.response.text}")
+    return {"link_token": token}
+
+
+class PlaidExchangePayload(BaseModel):
+    public_token: str
+
+
+@app.post("/admin/plaid/exchange")
+def plaid_exchange(
+    payload: PlaidExchangePayload,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    """Called by the frontend after Plaid Link returns a public_token."""
+    try:
+        resp = plaid_integration.exchange_public_token(payload.public_token)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Plaid error: {e.response.text}")
+    plaid_integration.store_access_token(db, resp, notes="Linked via Plaid Link UI")
+    db.commit()
+    return {"status": "linked"}
+
+
+@app.get("/admin/plaid/status")
+def plaid_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    row = plaid_integration.load_token(db)
+    if not row:
+        return {"connected": False}
+    return {
+        "connected": True,
+        "account_id": row.account_id,
+        "business_id": row.business_id,
+        "expires_at": None,    # Plaid access_tokens don't expire
+        "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
+        "last_sync_status": row.last_sync_status,
+        "last_sync_summary": json.loads(row.last_sync_summary or "{}"),
+        "notes": row.notes,
+    }
+
+
+@app.post("/admin/plaid/sync")
+def plaid_sync(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    try:
+        return plaid_integration.sync_summary(db)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Plaid error: {e.response.text}")
+
+
+@app.post("/admin/plaid/disconnect")
+def plaid_disconnect(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    row = plaid_integration.load_token(db)
+    if row:
+        db.delete(row)
+        db.commit()
+    return {"status": "disconnected"}

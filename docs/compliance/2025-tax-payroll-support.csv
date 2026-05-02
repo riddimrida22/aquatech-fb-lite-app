@@ -1,0 +1,12 @@
+Metric,Amount,Note
+P&L payroll-related total (cash),173674.07,Cash-basis support from provided P&L payroll lines.
+P&L payroll-related total (accrual),198124.09,Accrual-basis support from provided P&L payroll lines.
+AquatechPM payroll-related bank categories,175936.21,"Imported bank/payroll journal style support recovered from the SQL backup; includes payroll taxes, benefits, and other payroll-like categories."
+AquatechPM time-entry labor cost,496761.25,"Derived from 2025 time entries using applied cost rates; operational labor support, not a statutory payroll filing total."
+AquatechPM time-entry bill value,894917.36,Derived from 2025 time entries using applied bill rates.
+Bank payroll category: Payroll Taxes And Processing,98300.29,Expense group OH across 57 transactions.
+Bank payroll category: Cost of Goods Sold_Employee Benefits and Retirement,56420.75,Expense group Unassigned across 25 transactions.
+Bank payroll category: Cost of Goods Sold_Healthcare,15010.40,Expense group Unassigned across 13 transactions.
+Bank payroll category: Taxes,3135.99,Expense group Unassigned across 6 transactions.
+Bank payroll category: Uncategorized,2390.40,Expense group Unassigned across 2 transactions.
+Bank payroll category: Cost of Goods Sold_Labor Insurance,678.38,Expense group Unassigned across 6 transactions.

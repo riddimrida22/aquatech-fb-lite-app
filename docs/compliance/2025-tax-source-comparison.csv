@@ -1,0 +1,8 @@
+Metric,Cash P&L,Accrual P&L,App Invoices,App Reconciliation,Note
+Gross receipts / sales,373632.12,592506.24,428815.17,592443.36,"Cash P&L matches app invoice payments; accrual P&L nearly matches app reconciliation billings, while the invoice table is materially short for accrual support."
+Cash collections,373632.12,,373632.12,,Cash P&L minus app invoice paid = 0.00.
+Year-end open A/R,,,55183.05,,Comes from the app invoice table only; use with caution if invoice history is incomplete.
+Total expenses,209772.68,209772.68,,,P&L is the primary expense source in the provided files; app project_expenses has no 2025 rows.
+Net profit / loss,-8948.29,185475.81,,224246.61,"App reconciliation profit is project margin support, not the filed tax net income."
+2025 time-entry cost support,,,,368196.75,Operational cost from time-entry reconciliation; compare to payroll/COGS support.
+Accrual support gap,,592506.24,428815.17,592443.36,Accrual P&L minus app invoice subtotal = 163691.07; accrual P&L minus app reconciliation billings = 62.88.

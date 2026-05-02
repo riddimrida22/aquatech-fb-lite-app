@@ -32,9 +32,40 @@ class Project(Base):
     is_overhead: Mapped[bool] = mapped_column(Boolean, default=False)
     is_billable: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Lifecycle stage. Source of truth — is_active is auto-derived from this.
+    # Allowed values: planning | active | paused | completed | cancelled
+    lifecycle_status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    completed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    members: Mapped[list["ProjectMember"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+
+class ProjectMember(Base):
+    """Per-project staffing assignment with role.
+
+    role values (canonical): Lead, PM, Engineer, QA/QC, Reviewer, Admin Support, Other
+    A user can hold multiple roles on the same project (e.g. Lead + PM) — each is a row.
+    """
+
+    __tablename__ = "project_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(64), default="Engineer", index=True)
+    allocation_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    project: Mapped[Project] = relationship(back_populates="members")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", "role", name="uq_project_member_proj_user_role"),
+    )
 
 
 class Task(Base):
@@ -260,6 +291,83 @@ class BankTransactionMatch(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class IntegrationToken(Base):
+    """OAuth tokens for cloud integrations (FreshBooks, Gusto, etc).
+
+    One row per provider — token rotation overwrites in place. Refresh tokens are
+    one-time-use, so on every refresh the new pair is written before the old token
+    is used to make any API call.
+    """
+
+    __tablename__ = "integration_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    bearer_token: Mapped[str] = mapped_column(Text)
+    refresh_token: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    business_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_status: Mapped[str] = mapped_column(String(255), default="")
+    last_sync_summary: Mapped[str] = mapped_column(Text, default="{}")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Loan(Base):
+    """A debt instrument: term loan, line of credit, owner loan, SBA, etc.
+
+    Tracks declining principal so balance sheet liabilities can be computed
+    and so loan-principal payments are not misclassified as expenses.
+    """
+
+    __tablename__ = "loans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    lender: Mapped[str] = mapped_column(String(255), default="")
+    # Type: term_loan | line_of_credit | credit_card | owner_loan | sba | other
+    loan_type: Mapped[str] = mapped_column(String(32), default="term_loan", index=True)
+    account_last4: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    principal_original: Mapped[float] = mapped_column(Float, default=0.0)
+    principal_current: Mapped[float] = mapped_column(Float, default=0.0)
+    interest_rate_apr: Mapped[float] = mapped_column(Float, default=0.0)
+    payment_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    # monthly | weekly | biweekly | irregular
+    payment_frequency: Mapped[str] = mapped_column(String(16), default="monthly")
+    origination_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    maturity_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # match keywords found in BankTransaction.name to auto-suggest mapping
+    description_match: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class LoanPayment(Base):
+    """A single payment made against a loan, split into principal + interest + fees.
+
+    Optionally linked to a BankTransaction so the same row isn't also classified as an expense.
+    """
+
+    __tablename__ = "loan_payments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    loan_id: Mapped[int] = mapped_column(ForeignKey("loans.id"), index=True)
+    payment_date: Mapped[date] = mapped_column(Date, index=True)
+    total_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    principal_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    interest_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    fees_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    bank_transaction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bank_transactions.id"), nullable=True, unique=True, index=True
+    )
+    notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 

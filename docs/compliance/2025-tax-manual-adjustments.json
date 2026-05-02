@@ -1,0 +1,18 @@
+[
+  {
+    "section": "Schedule L / shareholder debt basis",
+    "label": "Aquatech repayment of shareholder loan to Bertrand Byrne",
+    "amount": 125000.0,
+    "book_treatment": "Reduce shareholder loan payable / related liability",
+    "return_treatment": "Not a Page 1 deduction; principal repayment of shareholder debt. Review Schedule L and Form 7203 debt-basis impact.",
+    "note": "User-directed 2025 adjustment entered in Codex on 2026-03-12. Confirm note, amortization, and remaining balance against the underlying loan documents."
+  },
+  {
+    "section": "Due to shareholder / reimbursable business expenses",
+    "label": "Business expenses paid on Bertrand Byrne personal credit card",
+    "amount": 25000.0,
+    "book_treatment": "Record deductible business expenses with offset to due-to-shareholder liability or shareholder loan, if not already booked",
+    "return_treatment": "Potential corporate deduction if substantiated and not already in the books; generally treat at the corporation level rather than as a personal unreimbursed employee expense.",
+    "note": "User-directed 2025 adjustment entered in Codex on 2026-03-12. Retain receipts and reimbursement/accountable-plan support before filing."
+  }
+]

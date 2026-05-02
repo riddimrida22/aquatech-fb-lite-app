@@ -6,6 +6,7 @@ type SortDirection = "asc" | "desc";
 type SortState = { columnIndex: number; direction: SortDirection };
 
 const TABLE_SELECTOR = ".aq-main-pane table:not([data-disable-table-sort='true'])";
+const DISABLED_HEADER_ATTR = "data-disable-sort";
 
 function parseCellValue(raw: string): { kind: "number" | "date" | "text"; value: number | string } {
   const cleaned = raw.replace(/\s+/g, " ").trim();
@@ -109,6 +110,13 @@ export function useAutoSortableTables() {
         const headers = Array.from(table.querySelectorAll("thead th"));
         if (headers.length < 2 || !table.tBodies.length) return;
         headers.forEach((th) => {
+          const label = (th.textContent || "").replace(/\s+/g, " ").trim();
+          if (th.hasAttribute(DISABLED_HEADER_ATTR) || !label) {
+            th.classList.remove("aq-sortable-header");
+            th.removeAttribute("title");
+            th.removeAttribute("aria-sort");
+            return;
+          }
           th.classList.add("aq-sortable-header");
           if (!th.getAttribute("title")) {
             th.setAttribute("title", "Click to sort");
@@ -134,6 +142,9 @@ export function useAutoSortableTables() {
 
       const headerRow = th.parentElement;
       if (!headerRow) return;
+      if (th.hasAttribute(DISABLED_HEADER_ATTR)) return;
+      const label = (th.textContent || "").replace(/\s+/g, " ").trim();
+      if (!label) return;
       const headers = Array.from(headerRow.children).filter((el) => el.tagName === "TH");
       const columnIndex = headers.indexOf(th);
       if (columnIndex < 0) return;

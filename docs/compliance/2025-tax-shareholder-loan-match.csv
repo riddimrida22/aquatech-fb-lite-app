@@ -1,0 +1,24 @@
+Metric,Amount,Note
+Target shareholder loan repayment,125000.00,Manual adjustment supplied by user for 2025.
+Additional business expenses paid on personal credit card,25000.00,Manual adjustment supplied by user for shareholder-paid business expenses not yet reimbursed through the books.
+Combined shareholder-related target (loan + personal-card expenses),150000.00,Used to test whether the strict 6611/0273 transfer family fully explains the owner-related cash movement.
+Gross withdrawals from business to ...0273,309162.49,Transfers classified by the app's Aquatech-specific 6611/0273 equity-transfer rule.
+Gross returns from ...0273 back to business,166373.51,Offsets against the gross withdrawals in the same 6611/0273 transfer family.
+Net withdrawals matched to 6611/0273 transfer family,142788.98,Year-end net of those internal-equity transfer movements.
+Amount of target loan repayment supported by that net-withdrawal family,125000.00,Capped at the stated shareholder-loan repayment amount.
+Support remaining after the loan repayment target,17788.98,"Available for other shareholder-related items after allocating the first $125,000 to the stated loan repayment."
+Personal-card expenses supported by remaining matched withdrawals,17788.98,Applies the excess 6611/0273 net withdrawals to the shareholder-paid business expenses.
+Personal-card expense amount still unreimbursed after matched withdrawals,7211.02,"Amount of the $25,000 personal-card business expense item not covered by the strict 6611/0273 transfer family."
+Gap between target loan repayment and matched net withdrawals,-17788.98,Positive gap means the current bank support is short; negative gap means the transfer family exceeds the stated loan repayment.
+Shortfall against target,0.00,Only populated when the transfer family is below the stated loan repayment.
+Excess transfer-family support over target,17788.98,Only populated when the transfer family exceeds the stated loan repayment.
+Amount of combined shareholder-related target supported by matched net withdrawals,142788.98,Capped at the combined total of the loan repayment plus shareholder-paid business expenses.
+Net withdrawals after accounting for loan and personal-card expenses,-7211.02,Negative means the combined shareholder-related target exceeds the matched net withdrawals; positive means withdrawals remain unexplained.
+Unaccounted withdrawals after both items,0.00,"Residual unexplained withdrawals after applying the $125,000 loan repayment and $25,000 personal-card expense assumption."
+Remaining unreimbursed shareholder-related amount,7211.02,Amount still due to the shareholder after applying all matched 6611/0273 withdrawals to the stated loan and personal-card expense items.
+Peak cumulative net withdrawals during 2025,142788.98,Peak reached on 2025-12-30.
+Date cumulative net first reached the target,2025-10-28,Target was first crossed when 405.43 of that transaction was needed.
+Date cumulative net first reached the combined target,,Combined target was never reached by cumulative net withdrawals.
+Owner Draw bank category not auto-matched,100.00,Separate owner-activity bucket; left outside the strict 6611/0273 transfer family.
+P&L owners equity line (cash),9100.00,Book presentation only; not auto-matched to the loan without supporting entries.
+P&L owners equity line (accrual),9100.00,Book presentation only; not auto-matched to the loan without supporting entries.

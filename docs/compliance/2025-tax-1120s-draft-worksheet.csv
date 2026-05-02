@@ -1,0 +1,30 @@
+Section,Form Line,Label,Cash Basis Amount,Accrual Basis Amount,Note
+Page 1,1a,Gross receipts or sales,373632.12,592506.24,Provided cash/accrual P&Ls; app cross-checks in source comparison file.
+Page 1,1b,Less returns and allowances,0.00,0.00,No separate returns/allowances lines were provided.
+Page 1,1c,Balance,373632.12,592506.24,Matches line 1a because no returns/allowances were supplied.
+Page 1,2,Cost of goods sold,172807.73,197257.75,Books place direct labor/payroll-related costs in COGS.
+Page 1,3,Gross profit,200824.39,395248.49,Taken directly from the provided P&Ls.
+Page 1,4,Net gain/loss from Form 4797,0.00,0.00,No Form 4797 source was provided in the workspace.
+Page 1,5,Other income/loss,0.00,0.00,Not separately identified in the provided P&Ls; review if other income exists outside sales.
+Page 1,6,Total income/loss,200824.39,395248.49,Using gross profit as provided because no separate lines 4-5 support was supplied.
+Page 1,7,Compensation of officers,0.00,0.00,Officer compensation appears embedded in COGS in the books; do not duplicate unless reclassified.
+Page 1,8,Salaries and wages,0.00,0.00,Wages appear embedded in COGS in the books; do not duplicate unless reclassified.
+Page 1,9,Repairs and maintenance,0.00,0.00,No separate repairs/maintenance line found in the provided P&Ls.
+Page 1,10,Bad debts,0.00,0.00,No bad-debt support provided.
+Page 1,11,Rents,12977.51,12977.51,Mapped from P&L category `Rent or Lease`.
+Page 1,12,Taxes and licenses,853.35,853.35,"Mapped from Business Taxes, Taxes & Licenses, and Employer Taxes lines outside COGS."
+Page 1,13,Interest,1744.51,1744.51,Mapped from `Other Expenses / Interest - Other`.
+Page 1,14,Depreciation,0.00,0.00,Requires fixed-asset/depreciation schedule; not in the provided files.
+Page 1,15,Depletion,0.00,0.00,No depletion support provided.
+Page 1,16,Advertising,438.42,438.42,Mapped from P&L category `Advertising`.
+Page 1,17,"Pension, profit-sharing, etc. plans",0.00,0.00,Retirement-related amounts appear in COGS in the books; keep out of line 17 unless reclassified.
+Page 1,18,Employee benefit programs,835.38,835.38,Mapped from the P&L `Employee Benefits` category outside COGS.
+Page 1,19,Energy efficient buildings deduction,0.00,0.00,No Form 7205 support provided.
+Page 1,20,Other deductions (attach statement),192923.51,192923.51,Residual operating expenses after separately mapped lines; see category map and bank review files.
+Page 1,21,Total deductions,209772.68,209772.68,Taken directly from the provided P&Ls.
+Page 1,22,Ordinary business income/loss,-8948.29,185475.81,Taken directly from the provided P&Ls.
+COGS detail,memo,Bertrand Byrne Unpaid Salary,63878.30,63878.30,Shown here so the COGS composition is visible for review.
+COGS detail,memo,COGS-Payroll Wages,87453.48,111903.50,Shown here so the COGS composition is visible for review.
+COGS detail,memo,COGS-Payroll Taxes,7150.83,7150.83,Shown here so the COGS composition is visible for review.
+COGS detail,memo,COGS-Payroll Health Benefits,10329.60,10329.60,Shown here so the COGS composition is visible for review.
+COGS detail,memo,COGS-Payroll Retirement Benefits,3995.52,3995.52,Shown here so the COGS composition is visible for review.
