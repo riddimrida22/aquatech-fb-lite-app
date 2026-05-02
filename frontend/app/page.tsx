@@ -19,6 +19,7 @@ import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
 import { AccountingWorkspace } from "./components/AccountingWorkspace";
 import { CloudConnectionsPanel } from "./components/CloudConnectionsPanel";
+import { ReconciliationPanel } from "./components/ReconciliationPanel";
 import {
   AdminTimesheet,
   BankCategorySummaryRow,
@@ -1632,6 +1633,9 @@ export default function AquatechPmHome() {
 
             {/* Cloud connections — direct API integration with FreshBooks (and later Gusto) */}
             <CloudConnectionsPanel />
+
+            {/* v2.0 reconciliation engine — show CSV vs API drift, dedupe overlap window */}
+            <ReconciliationPanel />
 
             {/* FreshBooks folder-based intake — the existing CSV inbox panel */}
             <div className="aq-lite-grid aq-lite-grid-1">

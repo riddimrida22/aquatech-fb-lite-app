@@ -14,14 +14,15 @@ We use httpx directly against Plaid's REST API to avoid the Plaid Python SDK dep
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import re
+from datetime import date, datetime
 from typing import Any
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import IntegrationToken
+from .models import BankAccount, BankConnection, BankTransaction, IntegrationToken, User
 from .settings import get_settings
 
 PROVIDER = "plaid"
@@ -115,11 +116,119 @@ def load_token(db: Session) -> IntegrationToken | None:
     return db.scalar(select(IntegrationToken).where(IntegrationToken.provider == PROVIDER))
 
 
+def _parse_date(s: Any) -> date | None:
+    if not s:
+        return None
+    if isinstance(s, date):
+        return s
+    if isinstance(s, str):
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+        if m:
+            try:
+                return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                return None
+    return None
+
+
+def _ensure_bank_connection(db: Session, item_id: str, accounts: list[dict[str, Any]]) -> BankConnection:
+    """Find or create the BankConnection row for this Plaid item."""
+    row = db.scalar(select(BankConnection).where(BankConnection.item_id == item_id))
+    if row is None:
+        # Pick a user_id for ownership — first admin in the system is fine
+        owner = db.scalar(select(User).where(User.role == "admin"))
+        if owner is None:
+            owner = db.scalar(select(User))  # fall back to any user
+        if owner is None:
+            raise RuntimeError("No User row exists — cannot create BankConnection without owner")
+        # Try to infer institution name from the first account
+        inst_name = ""
+        if accounts:
+            inst_name = (accounts[0].get("official_name") or accounts[0].get("name") or "").split(" - ")[0]
+        row = BankConnection(
+            provider="plaid",
+            user_id=owner.id,
+            institution_name=inst_name or "Plaid bank",
+            item_id=item_id,
+            status="connected",
+        )
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _persist_account(db: Session, conn: BankConnection, a: dict[str, Any]) -> BankAccount:
+    """Upsert a Plaid account into bank_accounts."""
+    pid = a.get("account_id") or ""
+    row = db.scalar(
+        select(BankAccount).where(BankAccount.connection_id == conn.id, BankAccount.account_id == pid)
+    )
+    if row is None:
+        row = BankAccount(connection_id=conn.id, account_id=pid)
+        db.add(row)
+    bal = a.get("balances") or {}
+    row.name = a.get("name") or row.name or ""
+    row.mask = a.get("mask") or row.mask
+    row.type = a.get("type") or row.type
+    row.subtype = a.get("subtype") or row.subtype
+    row.iso_currency_code = bal.get("iso_currency_code") or row.iso_currency_code
+    row.current_balance = bal.get("current") if bal.get("current") is not None else row.current_balance
+    row.available_balance = bal.get("available") if bal.get("available") is not None else row.available_balance
+    row.last_synced_at = datetime.utcnow()
+    db.flush()
+    return row
+
+
+def _persist_transaction(db: Session, conn: BankConnection, t: dict[str, Any]) -> str:
+    """Upsert a single Plaid transaction. Returns 'inserted' | 'updated'."""
+    txid = t.get("transaction_id") or ""
+    if not txid:
+        raise ValueError("Plaid transaction missing transaction_id")
+    row = db.scalar(
+        select(BankTransaction).where(
+            BankTransaction.connection_id == conn.id,
+            BankTransaction.transaction_id == txid,
+        )
+    )
+    outcome = "updated"
+    if row is None:
+        row = BankTransaction(connection_id=conn.id, transaction_id=txid, account_id=t.get("account_id") or "")
+        db.add(row)
+        outcome = "inserted"
+
+    # Plaid sign convention: positive amount = money OUT (debit), negative = money IN.
+    # Aqt convention (csv_chase): positive = money IN, negative = money OUT.
+    # Flip the sign so our P&L math doesn't get confused.
+    plaid_amt = t.get("amount")
+    amount = -float(plaid_amt) if plaid_amt is not None else 0.0
+
+    pfc = t.get("personal_finance_category") or {}
+    cat_list = [pfc.get("primary"), pfc.get("detailed")]
+    cat_list = [c for c in cat_list if c]
+    if not cat_list:
+        cat_list = t.get("category") or []
+
+    row.account_id = t.get("account_id") or row.account_id
+    row.posted_date = _parse_date(t.get("authorized_date") or t.get("date"))
+    row.name = (t.get("name") or "")[:255]
+    row.merchant_name = (t.get("merchant_name") or "")[:255] or None
+    row.amount = amount
+    row.iso_currency_code = t.get("iso_currency_code") or row.iso_currency_code
+    row.pending = bool(t.get("pending", False))
+    row.is_business = True
+    row.category_json = json.dumps(cat_list)
+    row.raw_json = json.dumps(t)[:8000]  # cap raw blob size
+    row.source = "plaid_api"
+    db.flush()
+    return outcome
+
+
 def sync_summary(db: Session) -> dict[str, Any]:
     row = load_token(db)
     if not row:
         raise RuntimeError("No Plaid item connected — link a bank via Plaid Link first")
     summary: dict[str, Any] = {"item_id": row.business_id}
+    accounts: list[dict[str, Any]] = []
     try:
         accts = get_accounts(row.bearer_token)
         accounts = accts.get("accounts") or []
@@ -139,39 +248,67 @@ def sync_summary(db: Session) -> dict[str, Any]:
         }
     except Exception as e:
         summary["accounts"] = {"error": str(e)}
+
+    # Persist BankConnection + BankAccount rows from accounts payload
+    bank_conn: BankConnection | None = None
     try:
-        # Pull a first batch of transactions; cursor stored in last_sync_summary for incremental
+        bank_conn = _ensure_bank_connection(db, row.business_id or "", accounts)
+        for a in accounts:
+            _persist_account(db, bank_conn, a)
+        bank_conn.last_synced_at = datetime.utcnow()
+        db.flush()
+    except Exception as e:
+        summary["accounts_persist_error"] = str(e)
+
+    # Persist transactions
+    counts = {"inserted": 0, "updated": 0, "errors": 0}
+    sample: list[dict[str, Any]] = []
+    next_cursor = ""
+    try:
         prior = json.loads(row.last_sync_summary or "{}")
-        cursor = prior.get("transactions_cursor") or ""
-        added: list[Any] = []
-        next_cursor = cursor
-        for _ in range(5):  # safety: at most 5 pages this run
+        next_cursor = prior.get("transactions_cursor") or ""
+        if bank_conn is None:
+            raise RuntimeError("No BankConnection — accounts step failed")
+        for _ in range(20):  # up to 20 pages — first sync has years of history
             tx = transactions_sync(row.bearer_token, cursor=next_cursor)
-            added.extend(tx.get("added") or [])
+            for t in tx.get("added") or []:
+                try:
+                    outcome = _persist_transaction(db, bank_conn, t)
+                    counts[outcome] += 1
+                except Exception as exc:
+                    counts["errors"] += 1
+                    if len(sample) < 3:
+                        sample.append({"transaction_id": t.get("transaction_id"), "error": str(exc)})
+                    continue
+                if len(sample) < 5:
+                    sample.append({
+                        "id": t.get("transaction_id"),
+                        "date": t.get("date"),
+                        "name": t.get("name"),
+                        "amount": t.get("amount"),
+                        "outcome": outcome,
+                    })
+            for t in tx.get("modified") or []:
+                try:
+                    outcome = _persist_transaction(db, bank_conn, t)  # treat modified same as upsert
+                    counts[outcome] += 1
+                except Exception as exc:
+                    counts["errors"] += 1
             next_cursor = tx.get("next_cursor") or ""
             if not tx.get("has_more"):
                 break
         summary["transactions"] = {
-            "added_count": len(added),
+            "by_outcome": counts,
             "next_cursor": next_cursor,
-            "sample": [
-                {
-                    "id": t.get("transaction_id"),
-                    "date": t.get("date"),
-                    "name": t.get("name"),
-                    "amount": t.get("amount"),
-                    "category": t.get("personal_finance_category", {}).get("primary"),
-                }
-                for t in added[:10]
-            ],
+            "sample": sample,
         }
-        summary["transactions_cursor"] = next_cursor  # for next sync
+        summary["transactions_cursor"] = next_cursor
     except Exception as e:
-        summary["transactions"] = {"error": str(e)}
+        summary["transactions"] = {"error": str(e), "by_outcome": counts}
 
     row.last_synced_at = datetime.utcnow()
     row.last_sync_status = (
-        "ok" if all("error" not in (v or {}) for v in (summary.get("accounts", {}), summary.get("transactions", {}))) else "partial"
+        "ok" if "error" not in (summary.get("accounts", {}) or {}) and "error" not in (summary.get("transactions", {}) or {}) else "partial"
     )
     row.last_sync_summary = json.dumps(summary)
     db.commit()

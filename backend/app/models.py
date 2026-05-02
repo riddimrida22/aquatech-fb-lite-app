@@ -155,12 +155,18 @@ class Invoice(Base):
     invoice_number: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     client_name: Mapped[str] = mapped_column(String(255), default="")
+    # Provenance: where this row came from. Used by reconciliation engine to
+    # distinguish CSV-imported rows from API-pulled rows.
+    # Values: csv | csv_freshbooks | freshbooks_api | manual
+    source: Mapped[str] = mapped_column(String(32), default="csv", index=True)
+    # External-system ID (FreshBooks invoice id like 164410). Populated only for
+    # API-sourced rows. Used as the upsert key when re-syncing.
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     start_date: Mapped[date] = mapped_column(Date, index=True)
     end_date: Mapped[date] = mapped_column(Date, index=True)
     issue_date: Mapped[date] = mapped_column(Date, default=date.today)
     due_date: Mapped[date] = mapped_column(Date, default=date.today)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
-    source: Mapped[str] = mapped_column(String(32), default="app", index=True)
     subtotal_amount: Mapped[float] = mapped_column(Float, default=0.0)
     amount_paid: Mapped[float] = mapped_column(Float, default=0.0)
     balance_due: Mapped[float] = mapped_column(Float, default=0.0)
@@ -203,6 +209,9 @@ class ProjectExpense(Base):
     category: Mapped[str] = mapped_column(String(128), default="General")
     description: Mapped[str] = mapped_column(String(255), default="")
     amount: Mapped[float] = mapped_column(Float, default=0.0)
+    # Provenance: csv | csv_freshbooks | freshbooks_api | manual
+    source: Mapped[str] = mapped_column(String(32), default="csv", index=True)
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -275,6 +284,8 @@ class BankTransaction(Base):
     is_business: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     category_json: Mapped[str] = mapped_column(Text, default="[]")
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
+    # Provenance: csv_chase | csv_fb_expenses | plaid_api | manual
+    source: Mapped[str] = mapped_column(String(32), default="csv", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     __table_args__ = (UniqueConstraint("connection_id", "transaction_id", name="uq_bank_tx_conn_txid"),)
