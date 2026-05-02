@@ -24,7 +24,15 @@ type Cashflow = {
   period: { start: string; end: string };
   operating: { cash_in_invoices: number; cash_out_opex_and_payroll: number; net: number };
   investing: { capex: number; net: number; note: string };
-  financing: { loan_payments_total: number; net: number; note: string };
+  financing: {
+    loan_proceeds_boc?: number;
+    loan_proceeds_fundbox?: number;
+    owner_contributions?: number;
+    loan_payments_total: number;
+    net: number;
+    note: string;
+  };
+  inflow_breakdown?: Record<string, number>;
   net_change_in_cash: number;
 };
 
@@ -207,7 +215,16 @@ function CashflowView({ start, end }: { start: string; end: string }) {
           <tr style={{ background: "#f1f5f9", fontWeight: 700 }}><td>Investing activities</td><td></td><td></td></tr>
           <tr><td>&nbsp;&nbsp;Capex</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.investing.capex)})</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>{cf.investing.note}</td></tr>
           <tr style={{ background: "#f1f5f9", fontWeight: 700 }}><td>Financing activities</td><td></td><td></td></tr>
-          <tr><td>&nbsp;&nbsp;Loan payments out</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.financing.loan_payments_total)})</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>{cf.financing.note}</td></tr>
+          {cf.financing.loan_proceeds_boc !== undefined && cf.financing.loan_proceeds_boc > 0 ? (
+            <tr><td>&nbsp;&nbsp;Cash in — BOC factoring proceeds</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.financing.loan_proceeds_boc)}</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Working capital advances on factored invoices</td></tr>
+          ) : null}
+          {cf.financing.loan_proceeds_fundbox !== undefined && cf.financing.loan_proceeds_fundbox > 0 ? (
+            <tr><td>&nbsp;&nbsp;Cash in — FundBox draws</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.financing.loan_proceeds_fundbox)}</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>LOC draws</td></tr>
+          ) : null}
+          {cf.financing.owner_contributions !== undefined && cf.financing.owner_contributions > 0 ? (
+            <tr><td>&nbsp;&nbsp;Cash in — Owner contributions</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.financing.owner_contributions)}</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Online transfers from 0273 + Zelle from BertrandAlbert</td></tr>
+          ) : null}
+          <tr><td>&nbsp;&nbsp;Cash out — Loan payments</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.financing.loan_payments_total)})</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Principal + interest + fees</td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Net financing cash flow</td><td style={{ textAlign: "right", color: cf.financing.net >= 0 ? "var(--aq-green)" : "var(--aq-red)" }}>{formatCurrency(cf.financing.net)}</td><td></td></tr>
           <tr style={{ background: "#e5f5ee", fontWeight: 800, color: "#235944" }}>
             <td>Net change in cash</td>
