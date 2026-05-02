@@ -61,6 +61,74 @@ from . import gusto as gusto_integration
 from . import plaid_integration
 
 
+# ---------- Reconciliation keyword constants ----------
+# Centralized so P&L, cashflow, full-report, and active-opex endpoints stay in sync.
+
+CC_TRANSFER_KEYWORDS = (
+    "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
+    "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK",
+    "PAYMENT TO CHASE CARD", "AUTOMATIC PAYMENT",
+)
+
+PAYROLL_KEYWORDS = (
+    "GUSTO",            # all Gusto wires
+    "MATRIX TRUST",     # 401(k) custodian
+    "HUMAN INTEREST",   # 401(k) plan administrator
+    "NU ERA", "NUERA",  # health insurance benefits
+    "NYSIF",            # NY State Workers Comp + disability
+)
+
+# Subset of PAYROLL_KEYWORDS that should specifically be added to COGS (benefits/WC),
+# not just excluded from OPEX. Currently same set minus pure payroll wires.
+BENEFITS_TO_COGS_KEYWORDS = ("NYSIF", "NU ERA", "NUERA", "HUMAN INTEREST")
+
+PERSONAL_OVERRIDE_KEYWORDS = (
+    "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
+    "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
+    "MANUAL DB-BKRG", "MANUAL CR-BKRG",
+    "BERTRAND LOAN REPAYMENT",
+)
+
+# Personal-account items that ARE business per user directive:
+#   1. Computer hardware purchases at major retailers
+#   2. Travel — airfare, hotels, taxis, ride-share, transit (per user 2026-05-02:
+#      "in 2025 we took many trips that were business expenses, so airfare hotels
+#      taxis uber all these charges were opex whether in personal or business account")
+PERSONAL_TO_BUSINESS_KEYWORDS = (
+    # Computer hardware
+    "BEST BUY", "BESTBUY", "BBY*",
+    "HP STORE", "HP.COM", "HEWLETT",
+    "APPLE STORE", "APPLE.COM/US", "APPLE INC",
+    "MICRO CENTER", "MICROCENTER",
+    # Airlines + airfare upgrades
+    "DELTA AIR", "AMERICAN AIR", "UNITED AIRL", "JETBLUE", "SOUTHWEST",
+    "ALASKA AIR", "SPIRIT AIR", "FRONTIER AIR", "ALLEGIANT",
+    "AIR FRANCE", "AIR CANADA", "BRITISH AIR", "VIRGIN ATLANTIC",
+    "FRENCH BEE", "LUFTHANSA", "KLM", "IBERIA", "TURKISH AIR",
+    "EMIRATES", "QATAR", "JAL ", "ANA ", "QANTAS", "SINGAPORE AIR",
+    "EASYUPGRADE", "PLUSGRADE",
+    # Hotels
+    "MARRIOTT", "HILTON", "HYATT", "IHG", "INTERCONTINENTAL",
+    "SHERATON", "WESTIN", "RAMADA", "RADISSON", "DOUBLETREE",
+    "BEST WESTERN", "HOLIDAY INN", "CROWNE PLAZA", "EMBASSY SUITES",
+    "FOUR SEASONS", "RITZ ", "WALDORF", "FAIRMONT", "NOVOTEL", "IBIS ",
+    "EXPEDIA", "BOOKING.COM", "HOTELS.COM", "AIRBNB", "VRBO",
+    "PRICELINE", "TRAVELOCITY", "ORBITZ", "KAYAK", "TRIVAGO",
+    # Ride-share + taxi + transit
+    "UBER", "UBR*", "LYFT", "TAXI", "MEDALLION", "CABS",
+    "MTA ", "METRO", "LIRR", "PATH", "WMATA", "TFL ", "RATP", "SNCF",
+    "AMTRAK", "GREYHOUND", "MEGABUS", "FLIXBUS",
+    # Car rental
+    "AVIS", "HERTZ", "ENTERPRISE RENT", "BUDGET RENT", "BUDGET CAR",
+    "DOLLAR RENT", "NATIONAL CAR", "SIXT", "ZIPCAR", "TURO",
+)
+
+PERSONAL_TO_BUSINESS_EXCLUDE_KEYWORDS = (
+    "APPLE CASH",       # Apple's P2P payments
+    "APPLE.COM/BILL",   # iCloud/Music/etc subscriptions
+)
+
+
 settings = get_settings()
 app = FastAPI(title="AquatechPM")
 cors_origin_regex = (
@@ -2763,7 +2831,7 @@ def accounting_pl(
     # (health insurance for one employee) are per-employee benefit costs that
     # belong in COGS, not OPEX. Pull bank outflows matching those merchants.
     benefits_cogs = 0.0
-    benefits_keywords_for_cogs = ("NYSIF", "NU ERA", "NUERA")
+    benefits_keywords_for_cogs = BENEFITS_TO_COGS_KEYWORDS
     superseded_for_benefits = ("csv_chase_superseded", "csv_fb_expenses_superseded")
     for tx in db.scalars(
         select(BankTransaction).where(
@@ -2800,16 +2868,7 @@ def accounting_pl(
     cc_payments = 0.0
     # Internal-transfer + CC-payment keywords. These move money between user-owned
     # accounts (or personal account 0273) — they are NOT operating expenses.
-    cc_transfers_keywords = (
-        "PAYMENT THANK YOU",
-        "INTERNAL TRANSFER",
-        "EQUITY TRANSFER",
-        "INVESTMENT TRANSFER",
-        "ONLINE TRANSFER TO CHK",        # business → personal/other-checking transfers
-        "ONLINE TRANSFER FROM CHK",
-        "PAYMENT TO CHASE CARD",          # business → CC 0434 payment (CC charges hit OPEX separately)
-        "AUTOMATIC PAYMENT",              # auto CC pay
-    )
+    cc_transfers_keywords = CC_TRANSFER_KEYWORDS
     # Payroll-related keywords. These are already counted via Gusto journal in COGS.
     # Plaid categorizes Gusto wires as TRANSFER_OUT_ACCOUNT_TRANSFER (not "payroll"),
     # so the existing category-based filter doesn't catch them.
@@ -2817,13 +2876,7 @@ def accounting_pl(
     # user (Nu Era = health insurance for Svadlenka; NYSIF = workers comp). They
     # should ideally be added to the COGS line; for now we just exclude them
     # from OPEX so they don't double-count.
-    payroll_keywords = (
-        "GUSTO",            # all Gusto wires (gross, taxes, 401k, fees)
-        "MATRIX TRUST",     # 401(k) custodian — employer match
-        "NU ERA",           # health insurance benefits (per-employee, COGS-side)
-        "NUERA",
-        "NYSIF",            # NY State Workers Comp insurance (COGS-side)
-    )
+    payroll_keywords = PAYROLL_KEYWORDS
     # Zelle-to-staff: per user directive, sometimes salaries are paid via Zelle even
     # though payroll is processed in Gusto. Those Zelle outflows duplicate the
     # Gusto journal already in COGS, so exclude when the memo contains a staff
@@ -2835,24 +2888,11 @@ def accounting_pl(
             tok = tok.strip()
             if len(tok) >= 3:  # ignore single-letter middle initials
                 staff_name_tokens.add(tok)
-    # Personal-account items that are actually business (per user directive: computer
-    # hardware purchases at major electronics retailers are legit business expense
-    # even when charged to the personal account 0273). Tightened to specific
-    # purchase-channel patterns to avoid catching subscriptions (APPLE.COM/BILL =
-    # iCloud) or peer-to-peer transfers (APPLE CASH).
-    personal_to_business_keywords = (
-        "BEST BUY",
-        "BESTBUY",
-        "BBY*",
-        "HP STORE",
-        "HP.COM",
-        "HEWLETT",
-        "APPLE STORE",
-        "APPLE.COM/US",       # purchases (apple.com retail), NOT /BILL subscriptions
-        "APPLE INC",
-        "MICRO CENTER",
-        "MICROCENTER",
-    )
+    # Personal-account items that are actually business (per user directive):
+    #   1. Computer hardware purchases at major electronics retailers
+    #   2. Travel — airfare, hotels, taxis, ride-share, transit (2025+)
+    # Tightened: APPLE CASH (P2P) and APPLE.COM/BILL (iCloud subs) carved out.
+    personal_to_business_keywords = PERSONAL_TO_BUSINESS_KEYWORDS
     # Patterns that look like "personal_to_business" but should NOT promote (carve-out)
     personal_to_business_exclude = (
         "APPLE CASH",          # Apple's peer-to-peer payments
@@ -2860,17 +2900,7 @@ def accounting_pl(
     )
     # Outflows that LOOK like business but are actually personal (Alpaca trading,
     # Robinhood transfers, owner draws, etc) — exclude even on business accounts.
-    personal_overrides = (
-        "ALPACADB",                  # Alpaca brokerage (trading)
-        "MOOMOO FINANCIAL",
-        "FUTUINC",
-        "RH BROKERAGE",              # Robinhood brokerage deposit
-        "RHS BROKERAGE",             # Robinhood securities
-        "ROBINHOOD",
-        "MANUAL DB-BKRG",            # Manual brokerage debit (per user pattern)
-        "MANUAL CR-BKRG",            # Manual brokerage credit
-        "BERTRAND LOAN REPAYMENT",   # Owner loan repayment (debt servicing, not OPEX)
-    )
+    personal_overrides = PERSONAL_OVERRIDE_KEYWORDS
     # Two-pass query:
     #   Pass 1: business-tagged outflows (the normal OPEX universe)
     #   Pass 2: personal-tagged outflows that match business-hardware keywords
@@ -2995,24 +3025,10 @@ def accounting_cashflow(
             pat = pat.strip().upper()
             if pat:
                 loan_keywords_cf.append(pat)
-    payroll_keywords_cf = ("GUSTO", "MATRIX TRUST", "NU ERA", "NUERA", "NYSIF")
-    personal_overrides_cf = (
-        "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
-        "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
-        "MANUAL DB-BKRG", "MANUAL CR-BKRG",
-        "BERTRAND LOAN REPAYMENT",
-    )
+    payroll_keywords_cf = PAYROLL_KEYWORDS
+    personal_overrides_cf = PERSONAL_OVERRIDE_KEYWORDS
     cash_out_opex = 0.0
-    cc_transfers_keywords = (
-        "PAYMENT THANK YOU",
-        "INTERNAL TRANSFER",
-        "EQUITY TRANSFER",
-        "INVESTMENT TRANSFER",
-        "ONLINE TRANSFER TO CHK",
-        "ONLINE TRANSFER FROM CHK",
-        "PAYMENT TO CHASE CARD",
-        "AUTOMATIC PAYMENT",
-    )
+    cc_transfers_keywords = CC_TRANSFER_KEYWORDS
     for tx in db.scalars(
         select(BankTransaction).where(
             BankTransaction.posted_date.isnot(None),
@@ -9793,23 +9809,11 @@ def reconcile_full_report(
 
     # Build all the same exclusion sets the P&L code uses
     superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
-    cc_transfers_keywords = (
-        "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
-        "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK", "PAYMENT TO CHASE CARD",
-        "AUTOMATIC PAYMENT",
-    )
-    payroll_keywords = ("GUSTO", "MATRIX TRUST", "NU ERA", "NUERA", "NYSIF")
-    personal_overrides = (
-        "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
-        "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
-        "MANUAL DB-BKRG", "MANUAL CR-BKRG",
-        "BERTRAND LOAN REPAYMENT",
-    )
-    personal_to_business_keywords = (
-        "BEST BUY", "BESTBUY", "BBY*", "HP STORE", "HP.COM", "HEWLETT",
-        "APPLE STORE", "APPLE.COM/US", "APPLE INC", "MICRO CENTER", "MICROCENTER",
-    )
-    personal_to_business_exclude = ("APPLE CASH", "APPLE.COM/BILL")
+    cc_transfers_keywords = CC_TRANSFER_KEYWORDS
+    payroll_keywords = PAYROLL_KEYWORDS
+    personal_overrides = PERSONAL_OVERRIDE_KEYWORDS
+    personal_to_business_keywords = PERSONAL_TO_BUSINESS_KEYWORDS
+    personal_to_business_exclude = PERSONAL_TO_BUSINESS_EXCLUDE_KEYWORDS
 
     loan_keywords: list[str] = []
     for ln in db.scalars(select(Loan)).all():  # include paid-off loans too (descriptions still match historical txs)
@@ -9983,22 +9987,11 @@ def reconcile_active_opex(
 
     # Replicate the exclusion sets from the P&L code
     superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
-    cc_transfers_keywords = (
-        "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
-        "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK", "PAYMENT TO CHASE CARD",
-        "AUTOMATIC PAYMENT",
-    )
-    payroll_keywords = ("GUSTO", "MATRIX TRUST", "NU ERA", "NUERA", "NYSIF")
-    personal_overrides = (
-        "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
-        "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
-        "MANUAL DB-BKRG", "MANUAL CR-BKRG", "BERTRAND LOAN REPAYMENT",
-    )
-    personal_to_business_keywords = (
-        "BEST BUY", "BESTBUY", "BBY*", "HP STORE", "HP.COM", "HEWLETT",
-        "APPLE STORE", "APPLE.COM/US", "APPLE INC", "MICRO CENTER", "MICROCENTER",
-    )
-    personal_to_business_exclude = ("APPLE CASH", "APPLE.COM/BILL")
+    cc_transfers_keywords = CC_TRANSFER_KEYWORDS
+    payroll_keywords = PAYROLL_KEYWORDS
+    personal_overrides = PERSONAL_OVERRIDE_KEYWORDS
+    personal_to_business_keywords = PERSONAL_TO_BUSINESS_KEYWORDS
+    personal_to_business_exclude = PERSONAL_TO_BUSINESS_EXCLUDE_KEYWORDS
     loan_keywords: list[str] = []
     for ln in db.scalars(select(Loan)).all():  # include paid-off loans too (descriptions still match historical txs)
         for pat in (ln.description_match or "").split("|"):
