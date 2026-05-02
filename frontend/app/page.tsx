@@ -686,9 +686,8 @@ export default function AquatechPmHome() {
         <div className="aq-lite-brand">
           <img src="/Aqt_Logo.png" alt="Aquatech" className="aq-lite-brand-logo" />
           <div>
-            <p className="aq-lite-eyebrow">Aquatech Engineering P.C.</p>
+            <p className="aq-lite-eyebrow">Aquatech P.C.</p>
             <strong>AqtPM</strong>
-            <div className="aq-lite-build-stamp">{BUILD_STAMP}</div>
           </div>
         </div>
         <nav className="aq-lite-nav">
@@ -801,7 +800,9 @@ export default function AquatechPmHome() {
               </section>
 
               <ARAgingPanel invoices={invoices} />
+            </div>
 
+            <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
                   <div>
@@ -822,9 +823,7 @@ export default function AquatechPmHome() {
                   {projectPerformance.length === 0 ? <p className="aq-lite-muted">Financial reporting data will appear here once loaded.</p> : null}
                 </div>
               </section>
-            </div>
 
-            <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
                   <div>
@@ -833,40 +832,42 @@ export default function AquatechPmHome() {
                   </div>
                 </div>
                 <div className="aq-lite-list">
-                  {clientRollups.slice(0, 6).map((client) => (
+                  {clientRollups.slice(0, 5).map((client) => (
                     <div key={client.name} className="aq-lite-list-row">
                       <div>
                         <strong>{client.name}</strong>
-                        <span>{client.activeProjectCount} active projects</span>
+                        <span>
+                          {client.activeProjectCount} active project{client.activeProjectCount === 1 ? "" : "s"}
+                        </span>
                       </div>
                       <strong>{formatCurrency(client.billedRevenue)}</strong>
                     </div>
                   ))}
                 </div>
               </section>
-
-              <section className="aq-lite-panel">
-                <div className="aq-lite-panel-head">
-                  <div>
-                    <p className="aq-lite-eyebrow">Work capture</p>
-                    <h3>Recent time entries</h3>
-                  </div>
-                </div>
-                <div className="aq-lite-list">
-                  {timeEntries.slice(-6).reverse().map((entry) => (
-                    <div key={entry.id} className="aq-lite-list-row">
-                      <div>
-                        <strong>{entry.project_name || "Project"}</strong>
-                        <span>
-                          {formatDate(entry.work_date)} · {entry.task_name || "Task"}
-                        </span>
-                      </div>
-                      <strong>{formatNumber(entry.hours, 1)}h</strong>
-                    </div>
-                  ))}
-                </div>
-              </section>
             </div>
+
+            <section className="aq-lite-panel">
+              <div className="aq-lite-panel-head">
+                <div>
+                  <p className="aq-lite-eyebrow">Work capture</p>
+                  <h3>Recent time entries</h3>
+                </div>
+              </div>
+              <div className="aq-lite-grid aq-lite-grid-2" style={{ gap: 8 }}>
+                {timeEntries.slice(-8).reverse().map((entry) => (
+                  <div key={entry.id} className="aq-lite-list-row">
+                    <div>
+                      <strong>{entry.project_name || "Project"}</strong>
+                      <span>
+                        {formatDate(entry.work_date)} · {entry.task_name || "Task"}
+                      </span>
+                    </div>
+                    <strong>{formatNumber(entry.hours, 1)}h</strong>
+                  </div>
+                ))}
+              </div>
+            </section>
           </section>
         ) : null}
 
