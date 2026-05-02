@@ -575,7 +575,9 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 .aq-lite-topbar h1 {
   margin: 0;
   color: #183141;
-  font-size: 2rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .aq-lite-topbar-actions {
@@ -642,12 +644,24 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 
 .aq-lite-panel,
 .aq-lite-hero {
-  padding: 22px;
-  border-radius: 28px;
+  padding: 18px 20px;
+  border-radius: 22px;
   background: rgba(255, 255, 255, 0.76);
   border: 1px solid rgba(26, 50, 61, 0.08);
-  box-shadow: 0 18px 45px rgba(19, 40, 55, 0.08);
+  box-shadow: 0 12px 32px rgba(19, 40, 55, 0.06);
   backdrop-filter: blur(8px);
+}
+
+.aq-lite-hero h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 4px 0 6px;
+}
+
+.aq-lite-hero p:not(.aq-lite-eyebrow) {
+  font-size: 0.85rem;
+  line-height: 1.45;
 }
 
 .aq-lite-panel-span-2 {
@@ -680,9 +694,9 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 
 .aq-lite-kpi {
   display: grid;
-  gap: 6px;
-  padding: 18px;
-  border-radius: 22px;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 16px;
   background: linear-gradient(180deg, #ffffff, #f4f7f8);
   border: 1px solid #dbe4e8;
 }
@@ -690,13 +704,17 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 .aq-lite-kpi span,
 .aq-lite-stat-list span {
   color: #60717a;
-  font-size: 0.9rem;
+  font-size: 0.78rem;
+  font-weight: 500;
 }
 
 .aq-lite-kpi strong,
 .aq-lite-stat-list strong {
   color: #183242;
-  font-size: 1.45rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
 }
 
 .aq-lite-panel-head {
@@ -704,14 +722,22 @@ table th.aq-sortable-header.aq-sortable-desc::after {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+
+.aq-lite-panel h3 {
+  margin: 4px 0 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #173241;
 }
 
 .aq-lite-list,
 .aq-lite-note-stack,
 .aq-lite-stat-list {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .aq-lite-list-row,
@@ -721,8 +747,8 @@ table th.aq-sortable-header.aq-sortable-desc::after {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
-  border-radius: 18px;
+  padding: 10px 14px;
+  border-radius: 12px;
   background: #f9fbfb;
   border: 1px solid #e2eaed;
 }
