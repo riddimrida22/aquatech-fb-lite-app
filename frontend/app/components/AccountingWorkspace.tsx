@@ -10,6 +10,7 @@ type PL = {
   revenue_cash: number;
   revenue_accrual: number;
   cogs: number;
+  cogs_breakdown?: { gusto_employer_cost: number; benefits_workers_comp: number };
   payroll_breakdown: { gross: number; employer_taxes: number; employer_401k: number };
   opex: number;
   interest_expense: number;
@@ -120,10 +121,13 @@ function PLView({ start, end }: { start: string; end: string }) {
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Accrual basis: {formatCurrency(pl.revenue_accrual)} (issued)</td>
           </tr>
           <tr>
-            <td>− COGS (Gusto employer cost)</td>
+            <td>− COGS (Gusto + Benefits/WC)</td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.cogs)})</td>
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>
-              Gross {formatCurrency(pl.payroll_breakdown.gross)} · ER taxes {formatCurrency(pl.payroll_breakdown.employer_taxes)} · 401k {formatCurrency(pl.payroll_breakdown.employer_401k)}
+              Gusto: gross {formatCurrency(pl.payroll_breakdown.gross)} · ER taxes {formatCurrency(pl.payroll_breakdown.employer_taxes)} · 401k {formatCurrency(pl.payroll_breakdown.employer_401k)}
+              {pl.cogs_breakdown && pl.cogs_breakdown.benefits_workers_comp > 0 ? (
+                <> · Benefits/WC (NYSIF + Nu Era) {formatCurrency(pl.cogs_breakdown.benefits_workers_comp)}</>
+              ) : null}
             </td>
           </tr>
           <tr style={{ background: "#f1f5f9", fontWeight: 700 }}>

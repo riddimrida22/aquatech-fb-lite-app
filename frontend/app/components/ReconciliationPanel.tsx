@@ -48,22 +48,51 @@ type FullReport = {
   user_notes: string[];
 };
 
+type ActiveOpexItem = {
+  id: number;
+  date: string;
+  amount: number;
+  name: string;
+  source: string;
+  promoted_from_personal: boolean;
+};
+
+type ActiveOpex = {
+  period: { start: string; end: string };
+  count: number;
+  total: number;
+  items: ActiveOpexItem[];
+};
+
 const fmt$ = (n: number) =>
   n.toLocaleString(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 
 export function ReconciliationPanel() {
+  const [year, setYear] = useState<string>("2026");
   const [data, setData] = useState<ReconcilePreview | null>(null);
   const [report, setReport] = useState<FullReport | null>(null);
+  const [activeOpex, setActiveOpex] = useState<ActiveOpex | null>(null);
+  const [showOpexList, setShowOpexList] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dedupeResult, setDedupeResult] = useState<DedupeResult | null>(null);
 
+  function periodForYear(y: string): { start: string; end: string } {
+    if (y === "2026") return { start: "2026-01-01", end: "2026-05-02" };
+    if (y === "2025") return { start: "2025-01-01", end: "2025-12-31" };
+    if (y === "2024") return { start: "2024-01-01", end: "2024-12-31" };
+    return { start: `${y}-01-01`, end: `${y}-12-31` };
+  }
+
   async function load() {
     setErr(null);
+    setActiveOpex(null);
+    setShowOpexList(false);
     try {
+      const period = periodForYear(year);
       const [d, r] = await Promise.all([
         apiGet<ReconcilePreview>("/admin/reconcile/preview"),
-        apiGet<FullReport>("/admin/reconcile/full-report"),
+        apiGet<FullReport>(`/admin/reconcile/full-report?start=${period.start}&end=${period.end}`),
       ]);
       setData(d);
       setReport(r);
@@ -72,9 +101,22 @@ export function ReconciliationPanel() {
     }
   }
 
+  async function loadActiveOpex() {
+    setErr(null);
+    try {
+      const period = periodForYear(year);
+      const r = await apiGet<ActiveOpex>(`/admin/reconcile/active-opex?start=${period.start}&end=${period.end}`);
+      setActiveOpex(r);
+      setShowOpexList(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to load");
+    }
+  }
+
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year]);
 
   async function dedupe(apply: boolean) {
     setBusy(true);
@@ -119,9 +161,17 @@ export function ReconciliationPanel() {
           <p className="aq-lite-eyebrow">Reconciliation</p>
           <h3>API ↔ CSV reconciliation</h3>
         </div>
-        <button type="button" onClick={() => void load()} disabled={busy}>
-          Refresh
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label style={{ fontSize: 12, color: "var(--aq-muted)" }}>Period:</label>
+          <select value={year} onChange={(e) => setYear(e.target.value)} style={{ fontSize: 12 }}>
+            <option value="2026">2026 YTD</option>
+            <option value="2025">2025 (full year)</option>
+            <option value="2024">2024 (full year)</option>
+          </select>
+          <button type="button" onClick={() => void load()} disabled={busy}>
+            Refresh
+          </button>
+        </div>
       </div>
       <p className="aq-lite-muted" style={{ fontSize: 12 }}>
         Every operational row is now tagged with its source. CSV-imported rows from before the API era are
@@ -200,7 +250,22 @@ export function ReconciliationPanel() {
           </p>
         ) : null}
 
-        {report ? <FullReportSection report={report} /> : null}
+        {report ? (
+          <FullReportSection
+            report={report}
+            activeOpex={activeOpex}
+            showOpexList={showOpexList}
+            onToggleOpex={() => {
+              if (showOpexList) {
+                setShowOpexList(false);
+              } else if (activeOpex) {
+                setShowOpexList(true);
+              } else {
+                void loadActiveOpex();
+              }
+            }}
+          />
+        ) : null}
 
         {bt.duplicate_candidates_sample.length > 0 ? (
           <details style={{ marginTop: 10 }}>
@@ -234,7 +299,17 @@ export function ReconciliationPanel() {
   );
 }
 
-function FullReportSection({ report }: { report: FullReport }) {
+function FullReportSection({
+  report,
+  activeOpex,
+  showOpexList,
+  onToggleOpex,
+}: {
+  report: FullReport;
+  activeOpex: ActiveOpex | null;
+  showOpexList: boolean;
+  onToggleOpex: () => void;
+}) {
   const buckets = report.outflow_buckets;
   const opexActive = buckets.opex_active?.total || 0;
   const totalOutflows = Object.values(buckets).reduce((s, b) => s + b.total, 0);
@@ -306,6 +381,42 @@ function FullReportSection({ report }: { report: FullReport }) {
             </tr>
           </tbody>
         </table>
+
+        <div style={{ marginTop: 8 }}>
+          <button type="button" onClick={onToggleOpex} style={{ fontSize: 12 }}>
+            {showOpexList ? "Hide Active OPEX detail" : `View all ${buckets.opex_active?.count || 0} Active OPEX items`}
+          </button>
+        </div>
+
+        {showOpexList && activeOpex ? (
+          <div style={{ marginTop: 10, maxHeight: 360, overflow: "auto", border: "1px solid var(--aq-border)", borderRadius: 6 }}>
+            <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+              <thead style={{ position: "sticky", top: 0, background: "#fff" }}>
+                <tr style={{ borderBottom: "1px solid var(--aq-border)" }}>
+                  <th style={{ textAlign: "left", padding: 4 }}>Date</th>
+                  <th style={{ textAlign: "right", padding: 4 }}>Amount</th>
+                  <th style={{ textAlign: "left", padding: 4 }}>Source</th>
+                  <th style={{ textAlign: "left", padding: 4 }}>Name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeOpex.items.map((item) => (
+                  <tr key={item.id} style={{ borderBottom: "1px solid var(--aq-border)" }}>
+                    <td style={{ padding: 4 }}>{item.date}</td>
+                    <td style={{ padding: 4, textAlign: "right", fontWeight: 600 }}>{fmt$(item.amount)}</td>
+                    <td style={{ padding: 4, fontSize: 10 }}>
+                      <code>{item.source}</code>
+                      {item.promoted_from_personal ? (
+                        <span style={{ color: "var(--aq-green)", marginLeft: 4 }}>📦</span>
+                      ) : null}
+                    </td>
+                    <td style={{ padding: 4 }}>{item.name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
       </div>
 
       <div style={{ marginTop: 16 }}>
