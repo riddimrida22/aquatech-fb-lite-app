@@ -686,8 +686,8 @@ export default function AquatechPmHome() {
         <div className="aq-lite-brand">
           <img src="/Aqt_Logo.png" alt="Aquatech" className="aq-lite-brand-logo" />
           <div>
-            <p className="aq-lite-eyebrow">AqtPM</p>
-            <strong>Operations Workspace</strong>
+            <p className="aq-lite-eyebrow">Aquatech Engineering P.C.</p>
+            <strong>AqtPM</strong>
             <div className="aq-lite-build-stamp">{BUILD_STAMP}</div>
           </div>
         </div>
@@ -747,10 +747,9 @@ export default function AquatechPmHome() {
             <div className="aq-lite-hero">
               <div>
                 <p className="aq-lite-eyebrow">Overview</p>
-                <h2>Run the firm from one clean screen.</h2>
+                <h2>{`Welcome back${headlineMetrics.activeProjects ? `, ${headlineMetrics.activeProjects} active project${headlineMetrics.activeProjects === 1 ? "" : "s"}` : ""}.`}</h2>
                 <p>
-                  The app is now focused on project delivery, time capture, billing, collections, and reporting. Extra
-                  enterprise and compliance surfaces are intentionally out of the main path.
+                  Project delivery, time, billing, collections, and reporting — all on one screen.
                 </p>
               </div>
               <div className="aq-lite-hero-grid">

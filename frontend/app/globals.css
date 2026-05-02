@@ -951,11 +951,12 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 /* Compact AR aging panel */
 .aq-aging-row {
   display: grid;
-  grid-template-columns: 1fr repeat(4, 90px) 110px;
-  gap: 8px;
+  grid-template-columns: minmax(150px, 1.4fr) repeat(5, minmax(70px, 1fr)) minmax(90px, 1.1fr);
+  gap: 10px;
   align-items: center;
-  padding: 8px 0;
+  padding: 8px 4px;
   border-bottom: 1px solid var(--aq-border);
+  font-size: 12px;
 }
 
 .aq-aging-row.is-header {
