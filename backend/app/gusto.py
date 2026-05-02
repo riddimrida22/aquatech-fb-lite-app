@@ -13,15 +13,16 @@ Key endpoints (from Gusto's docs):
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import IntegrationToken
+from .models import GustoEmployee, GustoPayroll, IntegrationToken
 from .settings import get_settings
 
 PROVIDER = "gusto"
@@ -161,6 +162,82 @@ def list_payrolls(db: Session, company_uuid: str) -> list[dict[str, Any]]:
     return []
 
 
+def _parse_date(s: Any) -> date | None:
+    if not s:
+        return None
+    if isinstance(s, date):
+        return s
+    if isinstance(s, str):
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+        if m:
+            try:
+                return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                return None
+    return None
+
+
+def _persist_employee(db: Session, e: dict[str, Any], company_uuid: str) -> str:
+    """Upsert one Gusto employee. Returns 'inserted' or 'updated'."""
+    uuid = e.get("uuid") or e.get("id") or ""
+    if not uuid:
+        raise ValueError("Gusto employee missing uuid")
+    row = db.scalar(select(GustoEmployee).where(GustoEmployee.uuid == uuid))
+    outcome = "updated"
+    if row is None:
+        row = GustoEmployee(uuid=uuid, company_uuid=company_uuid)
+        db.add(row)
+        outcome = "inserted"
+    row.company_uuid = company_uuid
+    row.first_name = (e.get("first_name") or "")[:128]
+    row.last_name = (e.get("last_name") or "")[:128]
+    row.email = (e.get("email") or e.get("work_email") or None)
+    row.department = e.get("department")
+    row.employment_status = e.get("current_employment_status")
+    row.payment_method = e.get("payment_method")
+    row.terminated = bool(e.get("terminated", False))
+    row.onboarded = bool(e.get("onboarded", False))
+    row.last_synced_at = datetime.utcnow()
+    row.raw_json = json.dumps(e)[:8000]
+    db.flush()
+    return outcome
+
+
+def _persist_payroll(db: Session, p: dict[str, Any], company_uuid: str) -> str:
+    """Upsert one Gusto payroll header. Returns 'inserted' or 'updated'."""
+    uuid = p.get("uuid") or p.get("payroll_uuid") or ""
+    if not uuid:
+        raise ValueError("Gusto payroll missing uuid")
+    row = db.scalar(select(GustoPayroll).where(GustoPayroll.uuid == uuid))
+    outcome = "updated"
+    if row is None:
+        row = GustoPayroll(uuid=uuid, company_uuid=company_uuid)
+        db.add(row)
+        outcome = "inserted"
+    pay_period = p.get("pay_period") or {}
+    row.company_uuid = company_uuid
+    row.check_date = _parse_date(p.get("check_date"))
+    row.pay_period_start = _parse_date(pay_period.get("start_date"))
+    row.pay_period_end = _parse_date(pay_period.get("end_date"))
+    row.processed = bool(p.get("processed", False))
+    row.processed_date = _parse_date(p.get("processed_date"))
+    row.off_cycle = bool(p.get("off_cycle", False))
+    row.auto_payroll = bool(p.get("auto_payroll", False))
+    # Totals (if present at this level — full detail would come from /payrolls/{uuid}?include=compensations)
+    totals = p.get("totals") or {}
+    if totals:
+        try:
+            row.total_gross_pay = float(totals.get("gross_pay") or 0.0)
+            row.total_net_pay = float(totals.get("net_pay") or 0.0)
+            row.total_employer_taxes = float(totals.get("employer_taxes") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    row.last_synced_at = datetime.utcnow()
+    row.raw_json = json.dumps(p)[:8000]
+    db.flush()
+    return outcome
+
+
 def sync_summary(db: Session) -> dict[str, Any]:
     row = ensure_active_token(db)
     summary: dict[str, Any] = {}
@@ -180,25 +257,46 @@ def sync_summary(db: Session) -> dict[str, Any]:
             row.business_id = uuid
             row.account_id = uuid
             db.flush()
+
+            # Employees — persist
             try:
                 emps = list_employees(db, uuid)
+                emp_counts = {"inserted": 0, "updated": 0, "errors": 0}
+                for e in emps:
+                    try:
+                        outcome = _persist_employee(db, e, uuid)
+                        emp_counts[outcome] += 1
+                    except Exception as exc:
+                        emp_counts["errors"] += 1
                 summary["employees"] = {
                     "count": len(emps),
+                    "by_outcome": emp_counts,
                     "sample": [
                         {
                             "uuid": e.get("uuid") or e.get("id"),
                             "first": e.get("first_name"),
                             "last": e.get("last_name"),
+                            "department": e.get("department"),
                         }
                         for e in emps[:5]
                     ],
                 }
             except Exception as e:
                 summary["employees"] = {"error": str(e)}
+
+            # Payrolls — persist
             try:
                 pays = list_payrolls(db, uuid)
+                pay_counts = {"inserted": 0, "updated": 0, "errors": 0}
+                for p in pays:
+                    try:
+                        outcome = _persist_payroll(db, p, uuid)
+                        pay_counts[outcome] += 1
+                    except Exception as exc:
+                        pay_counts["errors"] += 1
                 summary["payrolls"] = {
                     "count": len(pays),
+                    "by_outcome": pay_counts,
                     "sample": [
                         {
                             "uuid": p.get("uuid") or p.get("id"),

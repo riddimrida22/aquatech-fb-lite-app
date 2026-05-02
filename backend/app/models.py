@@ -305,6 +305,55 @@ class BankTransactionMatch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class GustoEmployee(Base):
+    """Gusto employee mirror. Source of truth is Gusto API — we cache the slice we
+    need locally for joins/reports without round-tripping the API every time.
+    """
+
+    __tablename__ = "gusto_employees"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uuid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    company_uuid: Mapped[str] = mapped_column(String(64), index=True)
+    first_name: Mapped[str] = mapped_column(String(128), default="")
+    last_name: Mapped[str] = mapped_column(String(128), default="")
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    department: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    employment_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payment_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    terminated: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    onboarded: Mapped[bool] = mapped_column(Boolean, default=False)
+    aqt_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class GustoPayroll(Base):
+    """Gusto payroll header. Per-employee line items can be added later as a
+    separate gusto_payroll_compensations table; this header alone gives us
+    timeline + processed flag + pay period for COGS bucketing.
+    """
+
+    __tablename__ = "gusto_payrolls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uuid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    company_uuid: Mapped[str] = mapped_column(String(64), index=True)
+    check_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    pay_period_start: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    pay_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    processed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    off_cycle: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_payroll: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Totals — populated when we fetch payroll detail with include=compensations
+    total_gross_pay: Mapped[float] = mapped_column(Float, default=0.0)
+    total_net_pay: Mapped[float] = mapped_column(Float, default=0.0)
+    total_employer_taxes: Mapped[float] = mapped_column(Float, default=0.0)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class IntegrationToken(Base):
     """OAuth tokens for cloud integrations (FreshBooks, Gusto, etc).
 
