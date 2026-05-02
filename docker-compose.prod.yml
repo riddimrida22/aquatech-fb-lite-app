@@ -25,7 +25,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     env_file:
-      - .env
+      - .env.prod
     environment:
       DATABASE_URL: ${DATABASE_URL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
@@ -73,7 +73,7 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     env_file:
-      - .env
+      - .env.prod
     environment:
       NEXT_PUBLIC_API_BASE: auto
       NEXT_PUBLIC_DEV_AUTH_BYPASS: "false"
@@ -107,7 +107,7 @@ services:
     image: postgres:16
     restart: unless-stopped
     env_file:
-      - .env
+      - .env.prod
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: db

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +27,13 @@ def reset_db() -> None:
 
 def test_freshbooks_invoice_import_and_ar_rollup() -> None:
     with TestClient(app) as client:
+        today = date.today()
+        invoice_1_date = today - timedelta(days=90)
+        invoice_1_due = today - timedelta(days=75)
+        invoice_2_date = today - timedelta(days=14)
+        invoice_2_due = today + timedelta(days=21)
+        paid_date = today - timedelta(days=45)
+
         bootstrap = client.post(
             "/auth/dev/bootstrap-admin",
             json={"email": "admin.fin@aquatechpc.com", "full_name": "Finance Admin"},
@@ -35,8 +43,8 @@ def test_freshbooks_invoice_import_and_ar_rollup() -> None:
         csv_content = "\n".join(
             [
                 "Invoice #,Client,Invoice Date,Due Date,Status,Total,Paid,Balance",
-                "INV-1001,Acme Co,2026-01-05,2026-01-20,Sent,1000,200,800",
-                "INV-1002,Beta LLC,2026-01-10,2026-03-15,Sent,500,0,500",
+                f"INV-1001,Acme Co,{invoice_1_date.isoformat()},{invoice_1_due.isoformat()},Sent,1000,200,800",
+                f"INV-1002,Beta LLC,{invoice_2_date.isoformat()},{invoice_2_due.isoformat()},Sent,500,0,500",
             ]
         )
         files = {"file": ("freshbooks_invoices.csv", csv_content, "text/csv")}
@@ -71,7 +79,7 @@ def test_freshbooks_invoice_import_and_ar_rollup() -> None:
 
         pay_update = client.put(
             f"/invoices/{invoice_1001['id']}/payment",
-            json={"amount_paid": 1000, "paid_date": "2026-02-15"},
+            json={"amount_paid": 1000, "paid_date": paid_date.isoformat()},
         )
         assert pay_update.status_code == 200
         updated = pay_update.json()

@@ -13,7 +13,15 @@ node_modules/
 .env.*
 !.env.example
 !.env.local.example
+.env_py/
 
 # Build artifacts
 *.log
 coverage/
+frontend/tsconfig.tsbuildinfo
+start_log.txt
+
+# Runtime data + backups (do not commit)
+backend/aquatech.db
+backups/
+*.dump
