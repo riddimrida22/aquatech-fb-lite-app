@@ -9446,3 +9446,187 @@ def plaid_disconnect(
         db.delete(row)
         db.commit()
     return {"status": "disconnected"}
+
+
+# ----------------------------------------------------------------------------
+# Reconciliation engine (v2.0): expose CSV vs API drift so the user can clean up.
+# ----------------------------------------------------------------------------
+
+
+@app.get("/admin/reconcile/preview")
+def reconcile_preview(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    """Summarize CSV-vs-API drift for the three operational tables.
+
+    Returns:
+      - source distribution per table
+      - bank-transaction overlap window (where csv_chase and plaid_api both exist)
+      - candidate duplicates (same date + amount within ±$0.01) in that overlap window
+    """
+    out: dict[str, object] = {}
+
+    # --- Source distribution ---
+    def _dist(table_model) -> list[dict[str, object]]:
+        rows = db.execute(
+            select(table_model.source, func.count()).group_by(table_model.source)
+        ).all()
+        return [{"source": s or "(unknown)", "count": int(c)} for s, c in rows]
+
+    out["invoices"] = {"by_source": _dist(Invoice)}
+    out["project_expenses"] = {"by_source": _dist(ProjectExpense)}
+    out["bank_transactions"] = {"by_source": _dist(BankTransaction)}
+
+    # --- Overlap window for bank transactions ---
+    csv_min, csv_max = db.execute(
+        select(func.min(BankTransaction.posted_date), func.max(BankTransaction.posted_date))
+        .where(BankTransaction.source == "csv_chase")
+    ).one()
+    plaid_min, plaid_max = db.execute(
+        select(func.min(BankTransaction.posted_date), func.max(BankTransaction.posted_date))
+        .where(BankTransaction.source == "plaid_api")
+    ).one()
+    overlap_start = max(d for d in (csv_min, plaid_min) if d is not None) if csv_min and plaid_min else None
+    overlap_end = min(d for d in (csv_max, plaid_max) if d is not None) if csv_max and plaid_max else None
+    out["bank_transactions"]["csv_chase_range"] = [str(csv_min) if csv_min else None, str(csv_max) if csv_max else None]
+    out["bank_transactions"]["plaid_api_range"] = [str(plaid_min) if plaid_min else None, str(plaid_max) if plaid_max else None]
+    out["bank_transactions"]["overlap_window"] = [
+        str(overlap_start) if overlap_start else None,
+        str(overlap_end) if overlap_end else None,
+    ]
+
+    # --- Candidate duplicates: same posted_date + amount across sources ---
+    duplicates: list[dict[str, object]] = []
+    if overlap_start and overlap_end:
+        # Round amount to 2 decimals to absorb minor float jitter
+        plaid_rows = db.execute(
+            select(BankTransaction.posted_date, BankTransaction.amount, BankTransaction.name, BankTransaction.id)
+            .where(
+                BankTransaction.source == "plaid_api",
+                BankTransaction.posted_date >= overlap_start,
+                BankTransaction.posted_date <= overlap_end,
+            )
+        ).all()
+        # Index csv_chase rows by (date, rounded amount)
+        csv_rows = db.execute(
+            select(BankTransaction.posted_date, BankTransaction.amount, BankTransaction.name, BankTransaction.id)
+            .where(
+                BankTransaction.source == "csv_chase",
+                BankTransaction.posted_date >= overlap_start,
+                BankTransaction.posted_date <= overlap_end,
+            )
+        ).all()
+        csv_by_key: dict[tuple, list[tuple]] = {}
+        for d, a, n, i in csv_rows:
+            key = (d, round(float(a or 0.0), 2))
+            csv_by_key.setdefault(key, []).append((d, a, n, i))
+        matched_csv_ids: set[int] = set()
+        for d, a, n, i in plaid_rows:
+            key = (d, round(float(a or 0.0), 2))
+            cands = csv_by_key.get(key) or []
+            # Pop the first un-matched CSV row at this key
+            for c in cands:
+                if c[3] in matched_csv_ids:
+                    continue
+                matched_csv_ids.add(c[3])
+                duplicates.append({
+                    "date": str(d),
+                    "amount": float(a or 0.0),
+                    "plaid_id": int(i),
+                    "plaid_name": n,
+                    "csv_id": int(c[3]),
+                    "csv_name": c[2],
+                })
+                break
+    out["bank_transactions"]["duplicate_candidates_count"] = len(duplicates)
+    out["bank_transactions"]["duplicate_candidates_sample"] = duplicates[:25]
+    if overlap_start and overlap_end:
+        # How many csv_chase rows fall inside overlap (these are the dedup target population)
+        csv_in_overlap = db.scalar(
+            select(func.count())
+            .select_from(BankTransaction)
+            .where(
+                BankTransaction.source == "csv_chase",
+                BankTransaction.posted_date >= overlap_start,
+                BankTransaction.posted_date <= overlap_end,
+            )
+        )
+        plaid_in_overlap = db.scalar(
+            select(func.count())
+            .select_from(BankTransaction)
+            .where(
+                BankTransaction.source == "plaid_api",
+                BankTransaction.posted_date >= overlap_start,
+                BankTransaction.posted_date <= overlap_end,
+            )
+        )
+        out["bank_transactions"]["csv_in_overlap"] = int(csv_in_overlap or 0)
+        out["bank_transactions"]["plaid_in_overlap"] = int(plaid_in_overlap or 0)
+
+    return out
+
+
+@app.post("/admin/reconcile/dedupe-bank")
+def reconcile_dedupe_bank(
+    apply: bool = False,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    """Soft-deduplicate bank_transactions: for csv_chase rows that match a plaid_api
+    row (same date + amount) within the overlap window, retag the csv row as
+    'csv_chase_superseded' so it stops contributing to P&L without being lost.
+
+    Pass `?apply=true` to actually retag. Default is dry-run (preview only).
+    """
+    csv_min, csv_max = db.execute(
+        select(func.min(BankTransaction.posted_date), func.max(BankTransaction.posted_date))
+        .where(BankTransaction.source == "csv_chase")
+    ).one()
+    plaid_min, plaid_max = db.execute(
+        select(func.min(BankTransaction.posted_date), func.max(BankTransaction.posted_date))
+        .where(BankTransaction.source == "plaid_api")
+    ).one()
+    if not (csv_min and plaid_min and csv_max and plaid_max):
+        return {"status": "no-overlap", "retagged": 0}
+    overlap_start = max(csv_min, plaid_min)
+    overlap_end = min(csv_max, plaid_max)
+    if overlap_start > overlap_end:
+        return {"status": "no-overlap", "retagged": 0}
+
+    plaid_rows = db.execute(
+        select(BankTransaction.posted_date, BankTransaction.amount)
+        .where(
+            BankTransaction.source == "plaid_api",
+            BankTransaction.posted_date >= overlap_start,
+            BankTransaction.posted_date <= overlap_end,
+        )
+    ).all()
+    plaid_keys: dict[tuple, int] = {}
+    for d, a in plaid_rows:
+        key = (d, round(float(a or 0.0), 2))
+        plaid_keys[key] = plaid_keys.get(key, 0) + 1
+
+    csv_rows = db.execute(
+        select(BankTransaction)
+        .where(
+            BankTransaction.source == "csv_chase",
+            BankTransaction.posted_date >= overlap_start,
+            BankTransaction.posted_date <= overlap_end,
+        )
+    ).scalars().all()
+    retagged = 0
+    for r in csv_rows:
+        key = (r.posted_date, round(float(r.amount or 0.0), 2))
+        if plaid_keys.get(key, 0) > 0:
+            plaid_keys[key] -= 1  # consume one so each plaid row only supersedes one csv row
+            if apply:
+                r.source = "csv_chase_superseded"
+            retagged += 1
+    if apply:
+        db.commit()
+    return {
+        "status": "applied" if apply else "preview",
+        "overlap_window": [str(overlap_start), str(overlap_end)],
+        "retagged": retagged,
+    }

@@ -23,5 +23,8 @@ start_log.txt
 
 # Runtime data + backups (do not commit)
 backend/aquatech.db
+aquatech.db
+*.sqlite
+*.sqlite3
 backups/
 *.dump
