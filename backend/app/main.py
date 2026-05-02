@@ -128,6 +128,29 @@ PERSONAL_TO_BUSINESS_EXCLUDE_KEYWORDS = (
     "APPLE.COM/BILL",   # iCloud/Music/etc subscriptions
 )
 
+# FreshBooks expense categories (account_id field on csv_fb_expenses rows) that
+# represent legit business OPEX. Per user: some FB charges were paid on a
+# personal card we don't have linked in AqtPM, so the FB ledger is the only
+# record of those expenses. Categories listed here add their amounts to OPEX
+# from active (non-superseded) csv_fb_expenses rows.
+# Not in this list (intentionally):
+#   - Payroll, Cost of Goods Sold, Employee Benefits → already in COGS via Gusto
+#   - Personal, Other Expenses, Uncategorized Expenses → ambiguous
+#   - Expense Refund → refunds (positive but negate something)
+#   - Rent or Lease → mostly Regus, already in OPEX from bank side
+FB_CATEGORIES_TO_OPEX = (
+    "Travel",
+    "Meals & Entertainment",
+    "Car & Truck Expenses",
+    "Office Expenses & Postage",
+    "Utilities",
+    "Professional Services",
+    "Advertising",
+    "Supplies",
+    "Education and Training",
+    "General Business Admin",
+)
+
 
 settings = get_settings()
 app = FastAPI(title="AquatechPM")
@@ -2948,13 +2971,36 @@ def accounting_pl(
         if "payroll" in cat_lower and "tax" not in cat_lower:
             continue
         opex += -float(tx.amount or 0)
-    # Pass 2: hardware purchases on personal account that are actually business
+    # Pass 2: hardware/travel purchases on personal account that are actually business
     for tx in personal_outflows:
         nm_upper = (tx.name or "").upper()
         if any(k in nm_upper for k in personal_to_business_exclude):
             continue  # carved-out: not a computer purchase
         if any(k in nm_upper for k in personal_to_business_keywords):
             opex += -float(tx.amount or 0)
+
+    # Pass 3: FB-only business expenses (paid on a personal card not linked to AqtPM,
+    # so the bank-side rows we have don't see them). Pull from active csv_fb_expenses
+    # rows where the FB category (stored in account_id) is a recognized OPEX bucket.
+    # csv_fb_expenses amounts are positive (FB ledger sign convention), so we add
+    # them directly to OPEX.
+    fb_only_opex = 0.0
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.source == "csv_fb_expenses",   # active, not superseded
+            BankTransaction.amount > 0,
+            BankTransaction.account_id.in_(FB_CATEGORIES_TO_OPEX),
+        )
+    ).all():
+        # Skip personal-overrides (Manual DB-Bkrg etc in case they ended up here)
+        nm_upper = (tx.name or "").upper()
+        if any(k in nm_upper for k in personal_overrides):
+            continue
+        fb_only_opex += float(tx.amount or 0)
+    opex += fb_only_opex
 
     # Interest expense from LoanPayment
     interest_expense = float(db.scalar(
@@ -9833,6 +9879,7 @@ def reconcile_full_report(
     # Classify every business + personal-hardware outflow
     buckets: dict[str, dict[str, object]] = {
         "opex_active": {"label": "Active OPEX (counted)", "count": 0, "total": 0.0, "samples": []},
+        "fb_only_opex": {"label": "FB-only OPEX (paid on unlinked card)", "count": 0, "total": 0.0, "samples": []},
         "loan_linked": {"label": "Loan payment (linked LoanPayment row)", "count": 0, "total": 0.0, "samples": []},
         "loan_keyword": {"label": "Loan payment (matched by name keyword)", "count": 0, "total": 0.0, "samples": []},
         "transfer": {"label": "Internal transfer / CC payment", "count": 0, "total": 0.0, "samples": []},
@@ -9909,6 +9956,33 @@ def reconcile_full_report(
         b = buckets[bucket]
         b["count"] += 1  # type: ignore[operator]
         b["total"] += -float(tx.amount or 0)  # type: ignore[operator]
+        if len(b["samples"]) < 5:
+            b["samples"].append({
+                "id": int(tx.id),
+                "date": str(tx.posted_date),
+                "name": (tx.name or "")[:80],
+                "amount": float(tx.amount or 0),
+                "source": tx.source,
+            })
+
+    # Pass 3: FB-only OPEX (csv_fb_expenses rows in business categories, paid on
+    # an unlinked card so the bank-side rows don't see them)
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.source == "csv_fb_expenses",
+            BankTransaction.amount > 0,
+            BankTransaction.account_id.in_(FB_CATEGORIES_TO_OPEX),
+        )
+    ).all():
+        nm_upper = (tx.name or "").upper()
+        if any(k in nm_upper for k in PERSONAL_OVERRIDE_KEYWORDS):
+            continue
+        b = buckets["fb_only_opex"]
+        b["count"] += 1  # type: ignore[operator]
+        b["total"] += float(tx.amount or 0)  # type: ignore[operator]
         if len(b["samples"]) < 5:
             b["samples"].append({
                 "id": int(tx.id),
@@ -10052,6 +10126,28 @@ def reconcile_active_opex(
             "name": tx.name or "",
             "source": tx.source,
             "promoted_from_personal": True,
+        })
+
+    # Pass 3: FB-only OPEX (csv_fb_expenses rows in business categories)
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.source == "csv_fb_expenses",
+            BankTransaction.amount > 0,
+            BankTransaction.account_id.in_(FB_CATEGORIES_TO_OPEX),
+        )
+    ).all():
+        nm = (tx.name or "").upper()
+        if any(k in nm for k in personal_overrides): continue
+        items.append({
+            "id": int(tx.id),
+            "date": str(tx.posted_date),
+            "amount": float(tx.amount or 0),
+            "name": tx.name or "",
+            "source": f"csv_fb_expenses ({tx.account_id})",
+            "promoted_from_personal": True,  # treat same as the hardware/travel promotion
         })
 
     items.sort(key=lambda x: -x["amount"])  # type: ignore[arg-type,operator]
