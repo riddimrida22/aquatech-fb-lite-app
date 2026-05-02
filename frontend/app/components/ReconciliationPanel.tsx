@@ -174,9 +174,10 @@ export function ReconciliationPanel() {
         </div>
       </div>
       <p className="aq-lite-muted" style={{ fontSize: 12 }}>
-        Every operational row is now tagged with its source. CSV-imported rows from before the API era are
-        labeled <code>csv_*</code>; rows pulled live from FreshBooks/Plaid get <code>*_api</code>. Use this
-        panel to spot and clean up overlap.
+        Every operational row is now tagged with its source. <strong>API sources</strong> (<code>freshbooks_api</code>,
+        <code>plaid_api</code>) are canonical. <strong>CSV imports</strong> (<code>csv_chase</code>, <code>csv_fb_expenses</code>)
+        are kept as historical archive — when an API row supersedes a CSV row by date+amount match, the CSV row
+        gets retagged <code>*_superseded</code> and stops contributing to P&amp;L (it stays in the DB for audit).
       </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginTop: 14 }}>
