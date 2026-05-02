@@ -2759,6 +2759,27 @@ def accounting_pl(
         # If parsing fails, leave COGS at 0 — UI will show note
         pass
 
+    # Benefits-to-COGS: per user, NYSIF (workers comp + disability) and Nu Era
+    # (health insurance for one employee) are per-employee benefit costs that
+    # belong in COGS, not OPEX. Pull bank outflows matching those merchants.
+    benefits_cogs = 0.0
+    benefits_keywords_for_cogs = ("NYSIF", "NU ERA", "NUERA")
+    superseded_for_benefits = ("csv_chase_superseded", "csv_fb_expenses_superseded")
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True),
+            BankTransaction.amount < 0,
+            ~BankTransaction.source.in_(superseded_for_benefits),
+        )
+    ).all():
+        nm_upper = (tx.name or "").upper()
+        if any(k in nm_upper for k in benefits_keywords_for_cogs):
+            benefits_cogs += -float(tx.amount or 0)
+    cogs += benefits_cogs
+
     # OPEX from bank/CC outflows in period
     # Exclude transactions linked to a LoanPayment (those are debt servicing not expense)
     linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
@@ -2769,7 +2790,7 @@ def accounting_pl(
     # This catches loan payments that aren't yet linked via LoanPayment.bank_transaction_id
     # (e.g. when LoanPayments are modeled as monthly aggregates while Plaid pulls dailies).
     loan_keywords: list[str] = []
-    for ln in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+    for ln in db.scalars(select(Loan)).all():  # include paid-off loans too (descriptions still match historical txs)
         for pat in (ln.description_match or "").split("|"):
             pat = pat.strip().upper()
             if pat:
@@ -2923,6 +2944,10 @@ def accounting_pl(
         "revenue_cash": revenue,
         "revenue_accrual": revenue_accrual,
         "cogs": cogs,
+        "cogs_breakdown": {
+            "gusto_employer_cost": cogs - benefits_cogs,
+            "benefits_workers_comp": benefits_cogs,
+        },
         "payroll_breakdown": payroll_breakdown,
         "opex": opex,
         "interest_expense": interest_expense,
@@ -2931,7 +2956,7 @@ def accounting_pl(
         "net_income_accrual": net_income_accrual,
         "notes": [
             "Revenue (cash) = paid invoices in period; Revenue (accrual) = invoices issued in period.",
-            "COGS = Gusto employer cost (gross + employer taxes + 401(k) match) — engineering consulting treats all payroll as COGS.",
+            "COGS = Gusto employer cost (gross + employer taxes + 401(k) match) + Benefits/Workers Comp (NYSIF + Nu Era).",
             "OPEX excludes transactions linked to a Loan Payment (those reduce balance-sheet debt, not P&L).",
             "Interest expense + Fees come from LoanPayment splits.",
         ],
@@ -2965,7 +2990,7 @@ def accounting_cashflow(
     superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
     # Loan keyword exclusions (in case some loan txs aren't yet linked via LoanPayment.bank_transaction_id)
     loan_keywords_cf: list[str] = []
-    for ln in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+    for ln in db.scalars(select(Loan)).all():  # include paid-off loans too (descriptions still match historical txs)
         for pat in (ln.description_match or "").split("|"):
             pat = pat.strip().upper()
             if pat:
@@ -3015,6 +3040,42 @@ def accounting_cashflow(
     ).all()
     loan_payments_total = sum(float(p.total_amount or 0) for p in loan_payments)
 
+    # Bank-level inflow breakdown (for transparency: where the money actually came in)
+    inflow_breakdown = {
+        "client_direct": 0.0,        # RTP + wire + Stripe (real client payments to bank)
+        "boc_factoring": 0.0,        # BOC Capital advances against factored invoices
+        "fundbox_draw": 0.0,         # FundBox LOC draws
+        "owner_contribution": 0.0,   # Online transfers from 0273 + Zelle from BertrandAlbert
+        "cc_payment_thank_you": 0.0, # Internal CC credit
+        "other": 0.0,
+    }
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True), BankTransaction.amount > 0,
+            ~BankTransaction.source.in_([*superseded_sources, "csv_fb_expenses"]),
+        )
+    ).all():
+        nm = (tx.name or "").upper()
+        amt = float(tx.amount or 0)
+        if "BOC CAPITAL" in nm:
+            inflow_breakdown["boc_factoring"] += amt
+        elif "FUNDBOX" in nm:
+            inflow_breakdown["fundbox_draw"] += amt
+        elif "ONLINE TRANSFER FROM CHK" in nm or "ZELLE PAYMENT FROM BERTRAND" in nm:
+            inflow_breakdown["owner_contribution"] += amt
+        elif "PAYMENT THANK YOU" in nm:
+            inflow_breakdown["cc_payment_thank_you"] += amt
+        elif "REAL TIME PAYMENT" in nm or "FEDWIRE" in nm or "STRIPE" in nm:
+            inflow_breakdown["client_direct"] += amt
+        else:
+            inflow_breakdown["other"] += amt
+
+    # Financing inflows = BOC + FundBox draws + owner contributions
+    financing_in = inflow_breakdown["boc_factoring"] + inflow_breakdown["fundbox_draw"] + inflow_breakdown["owner_contribution"]
+    financing_net = financing_in - loan_payments_total
+
     return {
         "period": {"start": s.isoformat(), "end": e.isoformat()},
         "operating": {
@@ -3024,12 +3085,16 @@ def accounting_cashflow(
         },
         "investing": {"capex": 0.0, "net": 0.0, "note": "Capex not tracked yet."},
         "financing": {
+            "loan_proceeds_boc": inflow_breakdown["boc_factoring"],
+            "loan_proceeds_fundbox": inflow_breakdown["fundbox_draw"],
+            "owner_contributions": inflow_breakdown["owner_contribution"],
             "loan_payments_total": loan_payments_total,
-            "net": -loan_payments_total,
-            "note": "Loan proceeds (cash inflows) not auto-detected yet — record them in the Loans tab.",
+            "net": financing_net,
+            "note": "BOC factoring proceeds and owner contributions auto-detected from bank inflows.",
         },
+        "inflow_breakdown": inflow_breakdown,
         "net_change_in_cash":
-            (cash_in_invoices - cash_out_opex) - loan_payments_total,
+            (cash_in_invoices - cash_out_opex) + financing_net,
     }
 
 
@@ -9747,7 +9812,7 @@ def reconcile_full_report(
     personal_to_business_exclude = ("APPLE CASH", "APPLE.COM/BILL")
 
     loan_keywords: list[str] = []
-    for ln in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+    for ln in db.scalars(select(Loan)).all():  # include paid-off loans too (descriptions still match historical txs)
         for pat in (ln.description_match or "").split("|"):
             pat = pat.strip().upper()
             if pat:
@@ -9901,6 +9966,107 @@ def reconcile_full_report(
             "Per user: Nu Era = health insurance for R. Svadlenka. NYSIF = workers comp + disability. Both currently excluded from OPEX; should be added to COGS in slice 4.",
             "Per user: 'Manual DB-Bkrg' / 'Manual CR-Bkrg' / Robinhood / 'Bertrand Loan Repayment' patterns are personal brokerage transfers or owner draws — excluded from OPEX.",
         ],
+    }
+
+
+@app.get("/admin/reconcile/active-opex")
+def reconcile_active_opex(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    """Return every transaction currently feeding the P&L OPEX line, sorted
+    largest-first, so the user can review item by item.
+    """
+    s, e = _accounting_period(start, end)
+
+    # Replicate the exclusion sets from the P&L code
+    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
+    cc_transfers_keywords = (
+        "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
+        "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK", "PAYMENT TO CHASE CARD",
+        "AUTOMATIC PAYMENT",
+    )
+    payroll_keywords = ("GUSTO", "MATRIX TRUST", "NU ERA", "NUERA", "NYSIF")
+    personal_overrides = (
+        "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
+        "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
+        "MANUAL DB-BKRG", "MANUAL CR-BKRG", "BERTRAND LOAN REPAYMENT",
+    )
+    personal_to_business_keywords = (
+        "BEST BUY", "BESTBUY", "BBY*", "HP STORE", "HP.COM", "HEWLETT",
+        "APPLE STORE", "APPLE.COM/US", "APPLE INC", "MICRO CENTER", "MICROCENTER",
+    )
+    personal_to_business_exclude = ("APPLE CASH", "APPLE.COM/BILL")
+    loan_keywords: list[str] = []
+    for ln in db.scalars(select(Loan)).all():  # include paid-off loans too (descriptions still match historical txs)
+        for pat in (ln.description_match or "").split("|"):
+            pat = pat.strip().upper()
+            if pat:
+                loan_keywords.append(pat)
+    staff_name_tokens: set[str] = set()
+    for u in db.scalars(select(User).where(User.is_active.is_(True))).all():
+        for tok in (u.full_name or "").upper().split():
+            if len(tok) >= 3:
+                staff_name_tokens.add(tok)
+    linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
+
+    items: list[dict[str, object]] = []
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True),
+            BankTransaction.amount < 0,
+            ~BankTransaction.source.in_(superseded_sources),
+        )
+    ).all():
+        nm = (tx.name or "").upper()
+        if tx.id in linked_tx_ids: continue
+        if any(k in nm for k in cc_transfers_keywords): continue
+        if any(k in nm for k in payroll_keywords): continue
+        if any(k in nm for k in loan_keywords): continue
+        if any(k in nm for k in personal_overrides): continue
+        if "ZELLE" in nm and any(t in nm for t in staff_name_tokens): continue
+        items.append({
+            "id": int(tx.id),
+            "date": str(tx.posted_date),
+            "amount": -float(tx.amount or 0),  # express as positive expense
+            "name": tx.name or "",
+            "source": tx.source,
+            "promoted_from_personal": False,
+        })
+    # Pass 2: personal hardware promoted to OPEX
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(False),
+            BankTransaction.amount < 0,
+            ~BankTransaction.source.in_(superseded_sources),
+        )
+    ).all():
+        nm = (tx.name or "").upper()
+        if any(k in nm for k in personal_to_business_exclude): continue
+        if not any(k in nm for k in personal_to_business_keywords): continue
+        items.append({
+            "id": int(tx.id),
+            "date": str(tx.posted_date),
+            "amount": -float(tx.amount or 0),
+            "name": tx.name or "",
+            "source": tx.source,
+            "promoted_from_personal": True,
+        })
+
+    items.sort(key=lambda x: -x["amount"])  # type: ignore[arg-type,operator]
+    return {
+        "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "count": len(items),
+        "total": sum(i["amount"] for i in items),  # type: ignore[arg-type]
+        "items": items,
     }
 
 
