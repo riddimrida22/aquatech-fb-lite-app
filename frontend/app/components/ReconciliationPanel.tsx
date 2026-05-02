@@ -33,11 +33,27 @@ type DedupeResult = {
   retagged: number;
 };
 
+type Bucket = {
+  label: string;
+  count: number;
+  total: number;
+  samples: { id: number; date: string; name: string; amount: number; source: string }[];
+};
+
+type FullReport = {
+  period: { start: string; end: string };
+  outflow_buckets: Record<string, Bucket>;
+  revenue_cash_invoices: number;
+  inflow_categorization: Record<string, number>;
+  user_notes: string[];
+};
+
 const fmt$ = (n: number) =>
   n.toLocaleString(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 
 export function ReconciliationPanel() {
   const [data, setData] = useState<ReconcilePreview | null>(null);
+  const [report, setReport] = useState<FullReport | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dedupeResult, setDedupeResult] = useState<DedupeResult | null>(null);
@@ -45,8 +61,12 @@ export function ReconciliationPanel() {
   async function load() {
     setErr(null);
     try {
-      const d = await apiGet<ReconcilePreview>("/admin/reconcile/preview");
+      const [d, r] = await Promise.all([
+        apiGet<ReconcilePreview>("/admin/reconcile/preview"),
+        apiGet<FullReport>("/admin/reconcile/full-report"),
+      ]);
       setData(d);
+      setReport(r);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to load");
     }
@@ -180,6 +200,8 @@ export function ReconciliationPanel() {
           </p>
         ) : null}
 
+        {report ? <FullReportSection report={report} /> : null}
+
         {bt.duplicate_candidates_sample.length > 0 ? (
           <details style={{ marginTop: 10 }}>
             <summary style={{ cursor: "pointer", fontSize: 12 }}>
@@ -209,6 +231,117 @@ export function ReconciliationPanel() {
         ) : null}
       </div>
     </section>
+  );
+}
+
+function FullReportSection({ report }: { report: FullReport }) {
+  const buckets = report.outflow_buckets;
+  const opexActive = buckets.opex_active?.total || 0;
+  const totalOutflows = Object.values(buckets).reduce((s, b) => s + b.total, 0);
+  const inflows = report.inflow_categorization;
+  const totalInflows = Object.values(inflows).reduce((s, v) => s + v, 0);
+
+  const inflowLabels: Record<string, string> = {
+    boc_factoring: "BOC Capital factoring (financing)",
+    owner_contrib_transfer: "Owner contributions (Online Transfer from 0273)",
+    owner_contrib_zelle: "Owner contributions (Zelle from BertrandAlbert)",
+    cc_payment_thank_you: "CC Payment Thank You (internal)",
+    client_rtp: "Client RTP",
+    client_wire: "Client wire (FedWire)",
+    fundbox_draw: "FundBox draw",
+    stripe: "Stripe / merchant",
+    other: "Other inflow",
+  };
+
+  return (
+    <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--aq-border)" }}>
+      <h4 style={{ margin: 0 }}>Comprehensive YTD reconciliation</h4>
+      <p className="aq-lite-muted" style={{ fontSize: 11, marginTop: 4 }}>
+        Period {report.period.start} → {report.period.end}. Every business outflow is classified into one of the
+        buckets below; only "Active OPEX" feeds the P&L OPEX line.
+      </p>
+
+      <div style={{ marginTop: 14 }}>
+        <strong style={{ fontSize: 13 }}>Outflow classification</strong>
+        <table style={{ width: "100%", fontSize: 11, marginTop: 6, borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--aq-border)" }}>
+              <th style={{ textAlign: "left", padding: 4 }}>Bucket</th>
+              <th style={{ textAlign: "right", padding: 4 }}>Count</th>
+              <th style={{ textAlign: "right", padding: 4 }}>Total</th>
+              <th style={{ textAlign: "left", padding: 4, paddingLeft: 12 }}>Sample</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(buckets).map(([key, b]) => {
+              const isActive = key === "opex_active";
+              const isPromoted = key === "personal_hw_to_opex";
+              return (
+                <tr
+                  key={key}
+                  style={{
+                    borderBottom: "1px solid var(--aq-border)",
+                    background: isActive ? "rgba(212, 73, 50, 0.06)" : isPromoted ? "rgba(34, 159, 122, 0.06)" : undefined,
+                  }}
+                >
+                  <td style={{ padding: 4 }}>
+                    {isActive ? "🔴 " : isPromoted ? "🟢 " : ""}
+                    {b.label}
+                  </td>
+                  <td style={{ padding: 4, textAlign: "right" }}>{b.count.toLocaleString()}</td>
+                  <td style={{ padding: 4, textAlign: "right", fontWeight: isActive ? 600 : 400 }}>{fmt$(b.total)}</td>
+                  <td style={{ padding: 4, paddingLeft: 12, color: "var(--aq-muted)" }}>
+                    {b.samples[0] ? `${b.samples[0].name.slice(0, 50)}…` : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr style={{ borderTop: "2px solid var(--aq-border)" }}>
+              <td style={{ padding: 4, fontWeight: 600 }}>All outflows YTD</td>
+              <td></td>
+              <td style={{ padding: 4, textAlign: "right", fontWeight: 600 }}>{fmt$(totalOutflows)}</td>
+              <td style={{ padding: 4, paddingLeft: 12, color: "var(--aq-muted)" }}>
+                Active OPEX = {((opexActive / totalOutflows) * 100).toFixed(1)}% of total
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <strong style={{ fontSize: 13 }}>Revenue ↔ inflow reconciliation</strong>
+        <p className="aq-lite-muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 6 }}>
+          Revenue (paid invoices, cash basis): <strong>{fmt$(report.revenue_cash_invoices)}</strong>. Bank inflows total{" "}
+          <strong>{fmt$(totalInflows)}</strong>; the difference is mostly financing and owner contributions:
+        </p>
+        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+          <tbody>
+            {Object.entries(inflows)
+              .filter(([, v]) => v !== 0)
+              .sort((a, b) => b[1] - a[1])
+              .map(([k, v]) => (
+                <tr key={k} style={{ borderBottom: "1px solid var(--aq-border)" }}>
+                  <td style={{ padding: 4 }}>{inflowLabels[k] || k}</td>
+                  <td style={{ padding: 4, textAlign: "right" }}>{fmt$(v)}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+
+      {report.user_notes.length > 0 ? (
+        <div style={{ marginTop: 16 }}>
+          <strong style={{ fontSize: 13 }}>Reconciliation notes (from your input)</strong>
+          <ul style={{ fontSize: 11, marginTop: 4, paddingLeft: 18, color: "var(--aq-muted)" }}>
+            {report.user_notes.map((n, i) => (
+              <li key={i} style={{ marginBottom: 4 }}>
+                {n}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

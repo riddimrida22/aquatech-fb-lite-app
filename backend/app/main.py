@@ -2792,9 +2792,16 @@ def accounting_pl(
     # Payroll-related keywords. These are already counted via Gusto journal in COGS.
     # Plaid categorizes Gusto wires as TRANSFER_OUT_ACCOUNT_TRANSFER (not "payroll"),
     # so the existing category-based filter doesn't catch them.
+    # Per-employee benefits + workers-comp insurance are also COGS-side per the
+    # user (Nu Era = health insurance for Svadlenka; NYSIF = workers comp). They
+    # should ideally be added to the COGS line; for now we just exclude them
+    # from OPEX so they don't double-count.
     payroll_keywords = (
         "GUSTO",            # all Gusto wires (gross, taxes, 401k, fees)
         "MATRIX TRUST",     # 401(k) custodian — employer match
+        "NU ERA",           # health insurance benefits (per-employee, COGS-side)
+        "NUERA",
+        "NYSIF",            # NY State Workers Comp insurance (COGS-side)
     )
     # Zelle-to-staff: per user directive, sometimes salaries are paid via Zelle even
     # though payroll is processed in Gusto. Those Zelle outflows duplicate the
@@ -2963,7 +2970,7 @@ def accounting_cashflow(
             pat = pat.strip().upper()
             if pat:
                 loan_keywords_cf.append(pat)
-    payroll_keywords_cf = ("GUSTO", "MATRIX TRUST")
+    payroll_keywords_cf = ("GUSTO", "MATRIX TRUST", "NU ERA", "NUERA", "NYSIF")
     personal_overrides_cf = (
         "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
         "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
@@ -9704,6 +9711,197 @@ def reconcile_preview(
         out["bank_transactions"]["plaid_in_overlap"] = int(plaid_in_overlap or 0)
 
     return out
+
+
+@app.get("/admin/reconcile/full-report")
+def reconcile_full_report(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    """Comprehensive reconciliation: walks every business outflow YTD and explains
+    where it lands (OPEX, COGS-related, loan, transfer, brokerage, etc.) so the
+    user can spot misclassifications quickly.
+    """
+    s, e = _accounting_period(start, end)
+
+    # Build all the same exclusion sets the P&L code uses
+    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
+    cc_transfers_keywords = (
+        "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
+        "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK", "PAYMENT TO CHASE CARD",
+        "AUTOMATIC PAYMENT",
+    )
+    payroll_keywords = ("GUSTO", "MATRIX TRUST", "NU ERA", "NUERA", "NYSIF")
+    personal_overrides = (
+        "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
+        "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
+        "MANUAL DB-BKRG", "MANUAL CR-BKRG",
+        "BERTRAND LOAN REPAYMENT",
+    )
+    personal_to_business_keywords = (
+        "BEST BUY", "BESTBUY", "BBY*", "HP STORE", "HP.COM", "HEWLETT",
+        "APPLE STORE", "APPLE.COM/US", "APPLE INC", "MICRO CENTER", "MICROCENTER",
+    )
+    personal_to_business_exclude = ("APPLE CASH", "APPLE.COM/BILL")
+
+    loan_keywords: list[str] = []
+    for ln in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+        for pat in (ln.description_match or "").split("|"):
+            pat = pat.strip().upper()
+            if pat:
+                loan_keywords.append(pat)
+
+    staff_name_tokens: set[str] = set()
+    for u in db.scalars(select(User).where(User.is_active.is_(True))).all():
+        for tok in (u.full_name or "").upper().split():
+            if len(tok) >= 3:
+                staff_name_tokens.add(tok)
+
+    linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
+
+    # Classify every business + personal-hardware outflow
+    buckets: dict[str, dict[str, object]] = {
+        "opex_active": {"label": "Active OPEX (counted)", "count": 0, "total": 0.0, "samples": []},
+        "loan_linked": {"label": "Loan payment (linked LoanPayment row)", "count": 0, "total": 0.0, "samples": []},
+        "loan_keyword": {"label": "Loan payment (matched by name keyword)", "count": 0, "total": 0.0, "samples": []},
+        "transfer": {"label": "Internal transfer / CC payment", "count": 0, "total": 0.0, "samples": []},
+        "payroll": {"label": "Payroll / benefits / WC (already in COGS)", "count": 0, "total": 0.0, "samples": []},
+        "zelle_staff": {"label": "Zelle to staff (salary, already in COGS)", "count": 0, "total": 0.0, "samples": []},
+        "personal_override": {"label": "Personal (brokerage, owner draws)", "count": 0, "total": 0.0, "samples": []},
+        "superseded": {"label": "Superseded (deduped CSV)", "count": 0, "total": 0.0, "samples": []},
+        "personal_hw_to_opex": {"label": "Personal hardware promoted to OPEX", "count": 0, "total": 0.0, "samples": []},
+    }
+
+    def classify(tx: BankTransaction, on_business: bool) -> str:
+        nm = (tx.name or "").upper()
+        if tx.source in superseded_sources:
+            return "superseded"
+        if not on_business:
+            # Personal account: only "personal hardware" can promote
+            if any(k in nm for k in personal_to_business_exclude):
+                return "skip"
+            if any(k in nm for k in personal_to_business_keywords):
+                return "personal_hw_to_opex"
+            return "skip"
+        # Business account
+        if tx.id in linked_tx_ids:
+            return "loan_linked"
+        if any(k in nm for k in cc_transfers_keywords):
+            return "transfer"
+        if any(k in nm for k in payroll_keywords):
+            return "payroll"
+        if any(k in nm for k in loan_keywords):
+            return "loan_keyword"
+        if any(k in nm for k in personal_overrides):
+            return "personal_override"
+        if "ZELLE" in nm and any(t in nm for t in staff_name_tokens):
+            return "zelle_staff"
+        return "opex_active"
+
+    business_outflows = db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True),
+            BankTransaction.amount < 0,
+        )
+    ).all()
+    personal_outflows = db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(False),
+            BankTransaction.amount < 0,
+        )
+    ).all()
+    for tx in business_outflows:
+        bucket = classify(tx, on_business=True)
+        if bucket == "skip":
+            continue
+        b = buckets[bucket]
+        b["count"] += 1  # type: ignore[operator]
+        b["total"] += -float(tx.amount or 0)  # type: ignore[operator]
+        if len(b["samples"]) < 5:  # type: ignore[arg-type]
+            b["samples"].append({  # type: ignore[union-attr]
+                "id": int(tx.id),
+                "date": str(tx.posted_date),
+                "name": (tx.name or "")[:80],
+                "amount": float(tx.amount or 0),
+                "source": tx.source,
+            })
+    for tx in personal_outflows:
+        bucket = classify(tx, on_business=False)
+        if bucket == "skip":
+            continue
+        b = buckets[bucket]
+        b["count"] += 1  # type: ignore[operator]
+        b["total"] += -float(tx.amount or 0)  # type: ignore[operator]
+        if len(b["samples"]) < 5:
+            b["samples"].append({
+                "id": int(tx.id),
+                "date": str(tx.posted_date),
+                "name": (tx.name or "")[:80],
+                "amount": float(tx.amount or 0),
+                "source": tx.source,
+            })
+
+    # Inflow side: paid invoices vs bank inflows
+    revenue_cash = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
+        .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
+    ) or 0.0)
+    inflow_cats = {
+        "boc_factoring": 0.0, "owner_contrib_transfer": 0.0, "owner_contrib_zelle": 0.0,
+        "client_rtp": 0.0, "client_wire": 0.0, "cc_payment_thank_you": 0.0,
+        "fundbox_draw": 0.0, "stripe": 0.0, "other": 0.0,
+    }
+    for tx in db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True), BankTransaction.amount > 0,
+            ~BankTransaction.source.in_([*superseded_sources, "csv_fb_expenses"]),
+        )
+    ).all():
+        nm = (tx.name or "").upper()
+        amt = float(tx.amount or 0)
+        if "BOC CAPITAL" in nm:
+            inflow_cats["boc_factoring"] += amt
+        elif "ONLINE TRANSFER FROM CHK" in nm:
+            inflow_cats["owner_contrib_transfer"] += amt
+        elif "ZELLE PAYMENT FROM BERTRAND" in nm:
+            inflow_cats["owner_contrib_zelle"] += amt
+        elif "PAYMENT THANK YOU" in nm:
+            inflow_cats["cc_payment_thank_you"] += amt
+        elif "REAL TIME PAYMENT" in nm:
+            inflow_cats["client_rtp"] += amt
+        elif "FEDWIRE" in nm:
+            inflow_cats["client_wire"] += amt
+        elif "FUNDBOX" in nm:
+            inflow_cats["fundbox_draw"] += amt
+        elif "STRIPE" in nm:
+            inflow_cats["stripe"] += amt
+        else:
+            inflow_cats["other"] += amt
+
+    return {
+        "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "outflow_buckets": buckets,
+        "revenue_cash_invoices": revenue_cash,
+        "inflow_categorization": inflow_cats,
+        "user_notes": [
+            "Per user (2026-05-02): BOC Capital $24,636 deposit on 2026-01-20 was misposted to personal brokerage; treated as financing not revenue.",
+            "Per user: Alpaca charges (ALPACADB) excluded from OPEX; refund pending from Alpaca.",
+            "Per user: Computer purchases at Best Buy / HP / Apple Store / Apple.com/US are legit business OPEX even when on personal account 0273.",
+            "Per user: Salaries sometimes paid via Zelle, but payroll itself runs through Gusto (so already in COGS via Gusto journal).",
+            "Per user: Nu Era = health insurance for R. Svadlenka. NYSIF = workers comp + disability. Both currently excluded from OPEX; should be added to COGS in slice 4.",
+            "Per user: 'Manual DB-Bkrg' / 'Manual CR-Bkrg' / Robinhood / 'Bertrand Loan Repayment' patterns are personal brokerage transfers or owner draws — excluded from OPEX.",
+        ],
+    }
 
 
 @app.post("/admin/reconcile/dedupe-fb-vs-bank")
