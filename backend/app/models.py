@@ -37,6 +37,10 @@ class Project(Base):
     lifecycle_status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     completed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Provenance + external-id (FreshBooks project id). Used by sync_projects to upsert.
+    # Values: manual | freshbooks_api | csv
+    source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     members: Mapped[list["ProjectMember"]] = relationship(back_populates="project", cascade="all, delete-orphan")
@@ -119,6 +123,13 @@ class TimeEntry(Base):
     bill_rate_applied: Mapped[float] = mapped_column(Float)
     cost_rate_applied: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Provenance + external-id (FreshBooks time-entry id). Used by sync_time_entries to upsert.
+    # Values: manual | freshbooks_api
+    source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Per-entry billable flag. For FB-sourced entries, mirrors FB's `billable` field.
+    # For manual entries, defaults to True. Drives unbilled-vs-non-billable reporting.
+    is_billable: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
 
 
 class Timesheet(Base):

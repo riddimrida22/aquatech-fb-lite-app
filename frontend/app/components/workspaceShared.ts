@@ -151,6 +151,49 @@ export type InvoiceRevenueStatus = {
   }>;
 };
 
+export type UnbilledEmployeeRow = {
+  user_id: number;
+  name: string;
+  email: string;
+  hours: number;
+  value?: number;
+};
+
+export type UnbilledProjectRow = {
+  project_id: number;
+  project_name: string;
+  client_name: string;
+  hours: number;
+  value?: number;
+};
+
+export type UnbilledHoursReport = {
+  as_of: string;
+  billable: {
+    totals: { hours: number; value: number };
+    by_employee: UnbilledEmployeeRow[];
+    by_project: UnbilledProjectRow[];
+  };
+  non_billable: {
+    current_month: {
+      period_start: string;
+      period_end: string;
+      label: string;
+      totals: { hours: number };
+      by_employee: UnbilledEmployeeRow[];
+      by_project: UnbilledProjectRow[];
+    };
+    ytd: {
+      period_start: string;
+      period_end: string;
+      label: string;
+      totals: { hours: number };
+      by_employee: UnbilledEmployeeRow[];
+      by_project: UnbilledProjectRow[];
+    };
+  };
+};
+
 export type ProjectExpense = {
   id: number;
   project_id: number;

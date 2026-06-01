@@ -1576,6 +1576,47 @@ def startup() -> None:
     _ensure_default_subtasks_for_all_tasks()
     _start_timesheet_reminder_worker()
     _start_recurring_invoice_worker()
+    _start_fb_time_sync_worker()
+
+
+_fb_time_sync_scheduler = None  # type: ignore[var-annotated]
+
+
+def _start_fb_time_sync_worker() -> None:
+    """Pull FreshBooks time entries every 10 minutes so timesheets stay fresh.
+
+    No-ops gracefully if FreshBooks isn't connected. Errors are swallowed (logged
+    via print) so a transient FB outage doesn't kill the scheduler thread.
+    """
+    global _fb_time_sync_scheduler
+    if _fb_time_sync_scheduler is not None:
+        return
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+    except ImportError:
+        print("[fb_time_sync] apscheduler not installed — auto-sync disabled")
+        return
+
+    def _tick() -> None:
+        from . import freshbooks as fb_mod
+        try:
+            with SessionLocal() as db:
+                tok = fb_mod.load_token(db)
+                if tok is None or not tok.account_id or not tok.business_id:
+                    return  # FB not connected; quiet no-op
+                result = fb_mod.sync_time_only(db)
+                te = result.get("time_entries", {})
+                outcomes = te.get("by_outcome") if isinstance(te, dict) else None
+                print(f"[fb_time_sync] tick: time_entries by_outcome={outcomes}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
+            print(f"[fb_time_sync] tick failed: {exc!r}", flush=True)
+
+    sched = BackgroundScheduler(daemon=True)
+    sched.add_job(_tick, "interval", minutes=10, id="fb_time_sync", coalesce=True, max_instances=1,
+                  next_run_time=datetime.utcnow() + timedelta(seconds=30))
+    sched.start()
+    _fb_time_sync_scheduler = sched
+    print("[fb_time_sync] scheduler started — interval 10 min, first tick in 30s", flush=True)
 
 
 def _ensure_default_subtasks_for_all_tasks() -> None:
@@ -2542,6 +2583,89 @@ def _to_loan_out(db: Session, loan: Loan) -> LoanOut:
         interest_total=sum((p.interest_amount or 0) for p in payments),
         principal_total=sum((p.principal_amount or 0) for p in payments),
     )
+
+
+# ============================================================================
+# Bookkeeping — tax-remediation actions and per-transaction tax overrides
+# Added 2026-05-11 to surface the CPA-remediation work in the app UI.
+# Backed by tables `bookkeeping_action_log` and `bookkeeping_tx_overrides`
+# (created by scripts/perform_bookkeeping_remediation.py at first run).
+# ============================================================================
+
+@app.get("/bookkeeping/actions")
+def list_bookkeeping_actions(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Return all bookkeeping action-log entries grouped by category, plus summary."""
+    from sqlalchemy import text
+    try:
+        rows = db.execute(text(
+            "SELECT id, action_key, action_date, category, title, description, "
+            "dollar_impact, status, artifact_refs, created_at "
+            "FROM bookkeeping_action_log ORDER BY id"
+        )).fetchall()
+    except Exception:
+        # Table doesn't exist yet — return empty shell so the UI renders gracefully
+        return {"actions": [], "summary": {"total": 0, "completed": 0, "pending": 0,
+                "total_impact": 0.0, "categories": {}}, "overrides_count": 0}
+
+    actions = []
+    by_cat: dict[str, dict] = {}
+    completed = pending = 0
+    total_impact = 0.0
+    for r in rows:
+        d = dict(r._mapping)
+        actions.append(d)
+        cat = d["category"]
+        by_cat.setdefault(cat, {"count": 0, "impact": 0.0})
+        by_cat[cat]["count"] += 1
+        by_cat[cat]["impact"] += float(d.get("dollar_impact") or 0)
+        if d["status"] == "completed":
+            completed += 1
+        else:
+            pending += 1
+        total_impact += float(d.get("dollar_impact") or 0)
+
+    try:
+        n_overrides = db.execute(text(
+            "SELECT COUNT(*) FROM bookkeeping_tx_overrides"
+        )).scalar() or 0
+    except Exception:
+        n_overrides = 0
+
+    return {
+        "actions": actions,
+        "summary": {
+            "total": len(actions),
+            "completed": completed,
+            "pending": pending,
+            "total_impact": total_impact,
+            "categories": by_cat,
+        },
+        "overrides_count": int(n_overrides),
+    }
+
+
+@app.get("/bookkeeping/overrides")
+def list_bookkeeping_overrides(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[dict]:
+    """Return all per-transaction tax-classification overrides with linked transaction details."""
+    from sqlalchemy import text
+    try:
+        rows = db.execute(text(
+            "SELECT o.id, o.bank_transaction_id, o.override_classification, o.override_notes, "
+            "o.loan_id, o.action_key, o.created_at, "
+            "bt.posted_date, bt.amount, bt.name "
+            "FROM bookkeeping_tx_overrides o "
+            "LEFT JOIN bank_transactions bt ON bt.id = o.bank_transaction_id "
+            "ORDER BY bt.posted_date DESC NULLS LAST, o.id DESC"
+        )).fetchall()
+    except Exception:
+        return []
+    return [dict(r._mapping) for r in rows]
 
 
 @app.get("/loans", response_model=list[LoanOut])
@@ -6121,6 +6245,153 @@ def unbilled_since_last_invoice(
     rows = _unbilled_since_last_invoice_by_client(db)
     by_project_rows = _unbilled_since_last_invoice_by_client_project(db)
     return {"as_of": date.today().isoformat(), "by_client": rows, "by_client_project": by_project_rows}
+
+
+@app.get("/reports/unbilled-hours")
+def unbilled_hours_report(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Two views of time entries that have NOT been billed yet:
+
+    - **Unbilled (billable)** — entries flagged is_billable=True on billable
+      projects that aren't on any non-void/non-draft invoice line. Counts toward
+      "work-in-progress to bill."
+    - **Non-billable** — entries flagged is_billable=False. Broken out by period
+      (current month + year-to-date) so overhead/admin time is visible separately.
+
+    Unbilled rule: TimeEntry.id NOT IN (SELECT InvoiceLine.source_time_entry_id
+    WHERE Invoice.status NOT IN ('void','draft')).
+    """
+    invoiced_ids = {
+        int(v) for v in db.scalars(
+            select(InvoiceLine.source_time_entry_id)
+            .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+            .where(and_(
+                InvoiceLine.source_time_entry_id.is_not(None),
+                Invoice.status.notin_(["void", "draft"]),
+            ))
+        ).all()
+        if v is not None
+    }
+
+    users = {u.id: u for u in db.scalars(select(User)).all()}
+    projects = {p.id: p for p in db.scalars(select(Project)).all()}
+
+    today = date.today()
+    month_start = today.replace(day=1)
+    year_start = today.replace(month=1, day=1)
+
+    # Aggregators — keyed by (user_id) or (project_id)
+    bill_emp_hrs: dict[int, float] = defaultdict(float)
+    bill_emp_val: dict[int, float] = defaultdict(float)
+    bill_prj_hrs: dict[int, float] = defaultdict(float)
+    bill_prj_val: dict[int, float] = defaultdict(float)
+    bill_tot_hrs = 0.0
+    bill_tot_val = 0.0
+
+    # Non-billable aggregators — split by period
+    nb_month_emp: dict[int, float] = defaultdict(float)
+    nb_month_prj: dict[int, float] = defaultdict(float)
+    nb_ytd_emp: dict[int, float] = defaultdict(float)
+    nb_ytd_prj: dict[int, float] = defaultdict(float)
+    nb_month_total = 0.0
+    nb_ytd_total = 0.0
+
+    for te in db.scalars(select(TimeEntry)).all():
+        if te.id in invoiced_ids:
+            continue
+        proj = projects.get(te.project_id)
+        if proj is None:
+            continue
+        hours = float(te.hours or 0.0)
+        rate = float(te.bill_rate_applied or 0.0)
+        value = hours * rate
+
+        # Billable bucket: per-entry is_billable=True AND project is billable & not overhead
+        if te.is_billable and not proj.is_overhead and proj.is_billable:
+            bill_emp_hrs[int(te.user_id)] += hours
+            bill_emp_val[int(te.user_id)] += value
+            bill_prj_hrs[int(te.project_id)] += hours
+            bill_prj_val[int(te.project_id)] += value
+            bill_tot_hrs += hours
+            bill_tot_val += value
+        else:
+            # Non-billable bucket — include overhead projects + non-billable entries
+            if te.work_date >= year_start:
+                nb_ytd_emp[int(te.user_id)] += hours
+                nb_ytd_prj[int(te.project_id)] += hours
+                nb_ytd_total += hours
+                if te.work_date >= month_start:
+                    nb_month_emp[int(te.user_id)] += hours
+                    nb_month_prj[int(te.project_id)] += hours
+                    nb_month_total += hours
+
+    def _employee_rows(emp_hrs: dict[int, float], emp_val: dict[int, float] | None = None) -> list[dict[str, object]]:
+        rows = []
+        for uid, hrs in emp_hrs.items():
+            if hrs < 0.001:
+                continue
+            u = users.get(uid)
+            row: dict[str, object] = {
+                "user_id": uid,
+                "name": u.full_name if u else f"user_{uid}",
+                "email": u.email if u else "",
+                "hours": round(hrs, 2),
+            }
+            if emp_val is not None:
+                row["value"] = round(emp_val.get(uid, 0.0), 2)
+            rows.append(row)
+        rows.sort(key=lambda r: float(r["hours"]), reverse=True)  # type: ignore[arg-type]
+        return rows
+
+    def _project_rows(prj_hrs: dict[int, float], prj_val: dict[int, float] | None = None) -> list[dict[str, object]]:
+        rows = []
+        for pid, hrs in prj_hrs.items():
+            if hrs < 0.001:
+                continue
+            p = projects.get(pid)
+            row: dict[str, object] = {
+                "project_id": pid,
+                "project_name": p.name if p else f"project_{pid}",
+                "client_name": p.client_name if p else "",
+                "hours": round(hrs, 2),
+            }
+            if prj_val is not None:
+                row["value"] = round(prj_val.get(pid, 0.0), 2)
+            rows.append(row)
+        rows.sort(key=lambda r: float(r["hours"]), reverse=True)  # type: ignore[arg-type]
+        return rows
+
+    return {
+        "as_of": today.isoformat(),
+        "billable": {
+            "totals": {
+                "hours": round(bill_tot_hrs, 2),
+                "value": round(bill_tot_val, 2),
+            },
+            "by_employee": _employee_rows(bill_emp_hrs, bill_emp_val),
+            "by_project": _project_rows(bill_prj_hrs, bill_prj_val),
+        },
+        "non_billable": {
+            "current_month": {
+                "period_start": month_start.isoformat(),
+                "period_end": today.isoformat(),
+                "label": today.strftime("%B %Y"),
+                "totals": {"hours": round(nb_month_total, 2)},
+                "by_employee": _employee_rows(nb_month_emp),
+                "by_project": _project_rows(nb_month_prj),
+            },
+            "ytd": {
+                "period_start": year_start.isoformat(),
+                "period_end": today.isoformat(),
+                "label": f"YTD {today.year}",
+                "totals": {"hours": round(nb_ytd_total, 2)},
+                "by_employee": _employee_rows(nb_ytd_emp),
+                "by_project": _project_rows(nb_ytd_prj),
+            },
+        },
+    }
 
 
 @app.get("/reports/project-performance.csv")

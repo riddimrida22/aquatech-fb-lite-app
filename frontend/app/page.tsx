@@ -18,6 +18,7 @@ import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
 import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
 import { AccountingWorkspace } from "./components/AccountingWorkspace";
+import { BookkeepingWorkspace } from "./components/BookkeepingWorkspace";
 import { CloudConnectionsPanel } from "./components/CloudConnectionsPanel";
 import { ReconciliationPanel } from "./components/ReconciliationPanel";
 import {
@@ -30,6 +31,7 @@ import {
   Invoice,
   InvoicePreview,
   InvoiceRevenueStatus,
+  UnbilledHoursReport,
   Project,
   ProjectExpense,
   ProjectPerformanceRange,
@@ -55,6 +57,7 @@ type WorkspaceKey =
   | "costs"
   | "payroll"
   | "accounting"
+  | "bookkeeping"
   | "reports"
   | "imports"
   | "settings";
@@ -71,6 +74,7 @@ const WORKSPACES: Array<{ key: WorkspaceKey; label: string; hint: string }> = [
   { key: "costs", label: "Costs", hint: "Expenses + tax" },
   { key: "payroll", label: "Payroll", hint: "Gusto journal · COGS" },
   { key: "accounting", label: "Accounting", hint: "P&L · Cash Flow · Loans" },
+  { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log" },
   { key: "reports", label: "Reports", hint: "Benchmarks" },
   { key: "imports", label: "Imports", hint: "FreshBooks transition" },
   { key: "settings", label: "Settings", hint: "Lean admin" },
@@ -119,6 +123,7 @@ export default function AquatechPmHome() {
   const [reportRange, setReportRange] = useState<ProjectPerformanceRange | null>(null);
   const [projectPerformance, setProjectPerformance] = useState<ProjectPerformanceRow[]>([]);
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceRevenueStatus | null>(null);
+  const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
   const [projectExpenses, setProjectExpenses] = useState<ProjectExpense[]>([]);
   const [bankCategorySummary, setBankCategorySummary] = useState<BankCategorySummaryRow[]>([]);
@@ -236,6 +241,7 @@ export default function AquatechPmHome() {
         requests.push(apiGet<BankCategorySummaryRow[]>("/bank/categories/summary?include_personal=false&unmatched_only=false"));
         requests.push(apiGet<BankExpenseSummaryRow[]>("/bank/summary?group_by=merchant&include_personal=false&unmatched_only=false&limit=10"));
         requests.push(apiGet<FreshBooksInbox>("/transition/freshbooks/inbox"));
+        requests.push(apiGet<UnbilledHoursReport>("/reports/unbilled-hours"));
       }
       const results = await Promise.all(requests);
       const canApproveTimesheets = deriveUserCapabilities(activeUser).canApproveTimesheets;
@@ -251,12 +257,14 @@ export default function AquatechPmHome() {
         const nextBankCategories = (results[financialOffset + 3] as BankCategorySummaryRow[]) ?? [];
         const nextBankMerchants = (results[financialOffset + 4] as BankExpenseSummaryRow[]) ?? [];
         const nextInbox = (results[financialOffset + 5] as FreshBooksInbox) ?? null;
+        const nextUnbilledHours = (results[financialOffset + 6] as UnbilledHoursReport) ?? null;
         setInvoices(nextInvoices);
         setReportRange(nextRange);
         setInvoiceStatus(nextInvoiceStatus);
         setBankCategorySummary(nextBankCategories);
         setBankMerchantSummary(nextBankMerchants);
         setFreshbooksInbox(nextInbox);
+        setUnbilledHours(nextUnbilledHours);
         if (nextRange?.has_data) {
           const performance = await apiGet<ProjectPerformanceResponse>(
             `/reports/project-performance?start=${nextRange.start}&end=${nextRange.end}`,
@@ -274,6 +282,7 @@ export default function AquatechPmHome() {
         setBankCategorySummary([]);
         setBankMerchantSummary([]);
         setFreshbooksInbox(null);
+        setUnbilledHours(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load workspace");
@@ -850,6 +859,125 @@ export default function AquatechPmHome() {
             <section className="aq-lite-panel">
               <div className="aq-lite-panel-head">
                 <div>
+                  <p className="aq-lite-eyebrow">Work in progress</p>
+                  <h3>Unbilled hours (billable)</h3>
+                  <p className="aq-lite-muted">
+                    Billable time entered in timesheets not yet on any invoice. As of {unbilledHours?.as_of ?? "—"}.
+                  </p>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <strong style={{ fontSize: 24 }}>
+                    {formatNumber(unbilledHours?.billable.totals.hours ?? 0, 1)} hrs
+                  </strong>
+                  <div className="aq-lite-muted">
+                    {formatCurrency(unbilledHours?.billable.totals.value ?? 0)} unbilled value
+                  </div>
+                </div>
+              </div>
+              <div className="aq-lite-grid aq-lite-grid-2">
+                <div>
+                  <p className="aq-lite-eyebrow" style={{ marginTop: 8 }}>By employee</p>
+                  <div className="aq-lite-list">
+                    {(unbilledHours?.billable.by_employee ?? []).map((row) => (
+                      <div key={row.user_id} className="aq-lite-list-row">
+                        <div>
+                          <strong>{row.name}</strong>
+                          <span>{formatCurrency(row.value ?? 0)}</span>
+                        </div>
+                        <strong>{formatNumber(row.hours, 1)}h</strong>
+                      </div>
+                    ))}
+                    {(unbilledHours?.billable.by_employee?.length ?? 0) === 0 ? (
+                      <p className="aq-lite-muted">No unbilled billable hours.</p>
+                    ) : null}
+                  </div>
+                </div>
+                <div>
+                  <p className="aq-lite-eyebrow" style={{ marginTop: 8 }}>By project</p>
+                  <div className="aq-lite-list">
+                    {(unbilledHours?.billable.by_project ?? []).map((row) => (
+                      <div key={row.project_id} className="aq-lite-list-row">
+                        <div>
+                          <strong>{row.project_name}</strong>
+                          <span>{row.client_name || "—"} · {formatCurrency(row.value ?? 0)}</span>
+                        </div>
+                        <strong>{formatNumber(row.hours, 1)}h</strong>
+                      </div>
+                    ))}
+                    {(unbilledHours?.billable.by_project?.length ?? 0) === 0 ? (
+                      <p className="aq-lite-muted">No unbilled billable hours.</p>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="aq-lite-panel">
+              <div className="aq-lite-panel-head">
+                <div>
+                  <p className="aq-lite-eyebrow">Overhead</p>
+                  <h3>Non-billable hours</h3>
+                  <p className="aq-lite-muted">
+                    Overhead, admin, internal work — time NOT eligible to be billed to a client.
+                  </p>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <strong style={{ fontSize: 20 }}>
+                    {formatNumber(unbilledHours?.non_billable.current_month.totals.hours ?? 0, 1)} hrs
+                  </strong>
+                  <div className="aq-lite-muted">
+                    {unbilledHours?.non_billable.current_month.label ?? "—"}
+                  </div>
+                  <div className="aq-lite-muted" style={{ marginTop: 4 }}>
+                    {formatNumber(unbilledHours?.non_billable.ytd.totals.hours ?? 0, 1)} hrs ·{" "}
+                    {unbilledHours?.non_billable.ytd.label ?? "—"}
+                  </div>
+                </div>
+              </div>
+              <div className="aq-lite-grid aq-lite-grid-2">
+                <div>
+                  <p className="aq-lite-eyebrow" style={{ marginTop: 8 }}>
+                    By employee · {unbilledHours?.non_billable.ytd.label ?? "—"}
+                  </p>
+                  <div className="aq-lite-list">
+                    {(unbilledHours?.non_billable.ytd.by_employee ?? []).map((row) => (
+                      <div key={row.user_id} className="aq-lite-list-row">
+                        <div>
+                          <strong>{row.name}</strong>
+                        </div>
+                        <strong>{formatNumber(row.hours, 1)}h</strong>
+                      </div>
+                    ))}
+                    {(unbilledHours?.non_billable.ytd.by_employee?.length ?? 0) === 0 ? (
+                      <p className="aq-lite-muted">No non-billable hours this year.</p>
+                    ) : null}
+                  </div>
+                </div>
+                <div>
+                  <p className="aq-lite-eyebrow" style={{ marginTop: 8 }}>
+                    By project · {unbilledHours?.non_billable.ytd.label ?? "—"}
+                  </p>
+                  <div className="aq-lite-list">
+                    {(unbilledHours?.non_billable.ytd.by_project ?? []).map((row) => (
+                      <div key={row.project_id} className="aq-lite-list-row">
+                        <div>
+                          <strong>{row.project_name}</strong>
+                          <span>{row.client_name || "—"}</span>
+                        </div>
+                        <strong>{formatNumber(row.hours, 1)}h</strong>
+                      </div>
+                    ))}
+                    {(unbilledHours?.non_billable.ytd.by_project?.length ?? 0) === 0 ? (
+                      <p className="aq-lite-muted">No non-billable hours this year.</p>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="aq-lite-panel">
+              <div className="aq-lite-panel-head">
+                <div>
                   <p className="aq-lite-eyebrow">Work capture</p>
                   <h3>Recent time entries</h3>
                 </div>
@@ -1137,6 +1265,10 @@ export default function AquatechPmHome() {
 
         {workspace === "accounting" ? (
           <AccountingWorkspace canManage={capabilities.canManageProjects} />
+        ) : null}
+
+        {workspace === "bookkeeping" ? (
+          <BookkeepingWorkspace />
         ) : null}
 
         {workspace === "reports" ? (
