@@ -28,6 +28,7 @@ services:
       - .env.prod
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      FRESHBOOKS_TRANSITION_DIR: /app/data/imports/AqtPM-Uploads
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
@@ -59,6 +60,10 @@ services:
       RECURRING_INVOICE_TIMEZONE: ${RECURRING_INVOICE_TIMEZONE:-America/New_York}
       PAYMENT_LINK_DEFAULT_EXPIRY_DAYS: ${PAYMENT_LINK_DEFAULT_EXPIRY_DAYS:-14}
       PAYMENT_LINKS_ENABLED: ${PAYMENT_LINKS_ENABLED:-false}
+    volumes:
+      # Watched inbox for folder-based imports (FreshBooks/Chase CSVs, Paychex/Gusto payroll).
+      # Host path is gitignored (holds financial PII); drop source files here, then Rescan in the UI.
+      - ./data/imports/AqtPM-Uploads:/app/data/imports/AqtPM-Uploads
     depends_on:
       db:
         condition: service_healthy
