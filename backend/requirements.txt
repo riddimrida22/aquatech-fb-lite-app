@@ -12,3 +12,5 @@ google-auth
 itsdangerous
 email-validator
 apscheduler
+pymupdf
+pypdf

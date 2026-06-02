@@ -2556,6 +2556,258 @@ def _parse_gusto_payroll_journal(text: str) -> dict[str, object]:
     return {"periods": periods, "employees": employees, "totals": ytd}
 
 
+_PAYCHEX_EARNING_TYPES = {
+    "Regular", "Hourly", "Overtime", "Salary", "Bonus", "Holiday",
+    "Vacation", "Sick", "PTO", "Commission", "Double Time",
+}
+_PAYCHEX_MERGED_NUM = re.compile(r"^\s*([\d,]+\.\d{2})")
+
+
+def _parse_paychex_payroll_journal(data: bytes) -> dict[str, object]:
+    """Parse a Paychex 'Payroll Journal' PDF into the same structured shape as
+    :func:`_parse_gusto_payroll_journal` so the accounting layer treats both
+    payroll sources identically.
+
+    Paychex reports the employer payroll-tax burden only at the COMPANY TOTALS
+    level (``TOTAL EMPLOYER LIABILITY``), not per employee, so per-employee
+    employer taxes are allocated pro-rata by gross earnings. Employer 401(k)
+    match (``401k ER``) and gross/net/hours ARE per-employee.
+
+    For an engineering consulting business the full Employer Cost
+    (gross + employer taxes + employer 401(k)) is COGS — same treatment as Gusto.
+
+    Returns ``{"periods": [...], "employees": {...}, "totals": {...}}``. On a
+    non-Paychex/unparseable PDF returns empty collections with an ``error`` key
+    (never raises) so callers can skip the file gracefully.
+    """
+    try:
+        import fitz  # PyMuPDF — pypdf returns empty text on these (malformed) PDFs
+    except Exception as exc:  # pragma: no cover - dependency guard
+        return {"periods": [], "employees": {}, "totals": {}, "error": f"PyMuPDF unavailable: {exc}"}
+
+    def _num(s: str) -> float | None:
+        s = (s or "").strip().replace(",", "").replace("$", "")
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+        lines: list[str] = []
+        for page in doc:
+            for ln in page.get_text().splitlines():
+                lines.append(ln.rstrip())
+    except Exception as exc:
+        return {"periods": [], "employees": {}, "totals": {}, "error": f"PDF read failed: {exc}"}
+
+    blob = "\n".join(lines).upper()
+    if "PAYROLL JOURNAL" not in blob or "PYRJRN" not in blob:
+        return {"periods": [], "employees": {}, "totals": {}, "error": "not a Paychex Payroll Journal"}
+
+    periods: list[dict] = []
+    by_period: dict[str, dict] = {}
+    cur: dict | None = None
+    in_company = False
+    pending_name: str | None = None
+
+    def newp(key: str) -> dict:
+        p = {
+            "period": key, "pay_day": "", "rows": [],
+            "totals": {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0,
+                       "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0},
+        }
+        by_period[key] = p
+        periods.append(p)
+        return p
+
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i].strip()
+
+        if ln == "Period Start - End Date":
+            j = i + 1
+            while j < n and not lines[j].strip():
+                j += 1
+            key = lines[j].strip() if j < n else ""
+            if key:
+                cur = by_period.get(key) or newp(key)
+                in_company = False
+            i = j + 1
+            continue
+
+        if ln == "Check Date":
+            j = i + 1
+            while j < n and not lines[j].strip():
+                j += 1
+            val = lines[j].strip() if j < n else ""
+            if cur is not None and val and re.match(r"\d{2}/\d{2}/\d{2,4}", val):
+                cur["pay_day"] = val
+            i = j + 1
+            continue
+
+        if ln.startswith("COMPANY TOTAL"):
+            in_company = True
+            pending_name = None
+
+        if in_company and ln.startswith("TOTAL EMPLOYER LIABILITY") and cur is not None:
+            m = re.search(r"([\d,]+\.\d{2})", ln)
+            if m:
+                cur["totals"]["employer_taxes"] = _num(m.group(1)) or 0.0
+            else:
+                j = i + 1
+                while j < n and not lines[j].strip():
+                    j += 1
+                cur["totals"]["employer_taxes"] = (_num(lines[j]) or 0.0) if j < n else 0.0
+
+        if ln == "401k ER" and cur is not None:
+            j = i + 1
+            while j < n and not lines[j].strip():
+                j += 1
+            val = _num(lines[j]) if j < n else None
+            if val is not None:
+                if in_company:
+                    cur["totals"]["employer_401k"] = val
+                elif cur["rows"]:
+                    cur["rows"][-1]["employer_401k"] = val
+            i = j + 1
+            continue
+
+        # Employee name = the line immediately before an earning-type line
+        if not in_company and i + 1 < n and lines[i + 1].strip() in _PAYCHEX_EARNING_TYPES:
+            if ln and "EMPLOYEE TOTAL" not in ln and "COMPANY" not in ln:
+                pending_name = ln
+
+        if ln.endswith("EMPLOYEE TOTAL") and cur is not None and not in_company:
+            # Consume EXACTLY 5 values: hours, earnings, withholdings, deductions, net.
+            # (Compact report variants put the next employee's name right after the
+            # net line — over-reading would skip that employee.)
+            seq: list[str] = []
+            j = i + 1
+            while j < n and len(seq) < 5:
+                raw = lines[j].strip()
+                if raw == "":
+                    j += 1
+                    continue
+                seq.append(raw)
+                j += 1
+            hours = _num(seq[0]) if len(seq) > 0 else 0.0
+            gross = _num(seq[1]) if len(seq) > 1 else 0.0
+            withh = _num(seq[2]) if len(seq) > 2 else 0.0
+            ded = None
+            net = None
+            if len(seq) > 3:
+                m = _PAYCHEX_MERGED_NUM.match(seq[3])
+                ded = _num(m.group(1)) if m else _num(seq[3])
+            if len(seq) > 4:
+                net = _num(seq[4])
+            cur["rows"].append({
+                "employee": (pending_name or "?").strip(),
+                "hours": hours or 0.0, "gross": gross or 0.0,
+                "withholdings": withh or 0.0, "deductions": ded or 0.0,
+                "net_pay": net or 0.0, "employer_401k": 0.0,
+                "employer_taxes": 0.0, "employer_cost": 0.0,
+            })
+            pending_name = None
+            i = j
+            continue
+
+        if in_company and ln == "COMPANY TOTAL" and cur is not None:
+            seq = []
+            j = i + 1
+            while j < n and len(seq) < 2:
+                raw = lines[j].strip()
+                if raw == "":
+                    j += 1
+                    continue
+                seq.append(raw)
+                j += 1
+            cur["totals"]["hours"] = (_num(seq[0]) or 0.0) if len(seq) > 0 else 0.0
+            cur["totals"]["gross"] = (_num(seq[1]) or 0.0) if len(seq) > 1 else 0.0
+            i = j
+            continue
+
+        i += 1
+
+    # Finalize: allocate employer taxes pro-rata, compute employer_cost, roll up.
+    employees: dict[str, dict] = {}
+    ytd = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0,
+           "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0, "period_count": 0}
+    warnings: list[str] = []
+    for p in periods:
+        t = p["totals"]
+        emp_gross = sum(r["gross"] for r in p["rows"]) or 0.0
+        if not t["gross"]:
+            t["gross"] = emp_gross
+        elif emp_gross and abs(emp_gross - t["gross"]) > 0.05:
+            warnings.append(
+                f"{p['period']}: employee gross sum {emp_gross:.2f} != company gross {t['gross']:.2f}"
+            )
+        emp_tax_total = t["employer_taxes"]
+        for r in p["rows"]:
+            share = (r["gross"] / emp_gross) if emp_gross else 0.0
+            r["employer_taxes"] = round(emp_tax_total * share, 2)
+            r["employer_cost"] = round(r["gross"] + r["employer_taxes"] + r["employer_401k"], 2)
+        t["net_pay"] = round(sum(r["net_pay"] for r in p["rows"]), 2)
+        t["employer_cost"] = round(t["gross"] + t["employer_taxes"] + t["employer_401k"], 2)
+        for k in ("gross", "employer_taxes", "employer_401k", "employer_cost", "net_pay", "hours"):
+            ytd[k] += t[k]
+        for r in p["rows"]:
+            e = employees.setdefault(r["employee"], {"gross": 0.0, "employer_taxes": 0.0,
+                "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0, "periods": 0})
+            for k in ("gross", "employer_taxes", "employer_401k", "employer_cost", "net_pay", "hours"):
+                e[k] += r[k]
+            e["periods"] += 1
+    ytd["period_count"] = len(periods)
+    out: dict[str, object] = {"periods": periods, "employees": employees, "totals": ytd}
+    if warnings:
+        out["warning"] = "; ".join(warnings)
+    return out
+
+
+def _payroll_year_label_from_parsed(parsed: dict) -> str:
+    """Best-effort 4-digit year for a parsed payroll dict (uses first period's
+    pay_day, then period-end date). Falls back to 'unknown'."""
+    for p in parsed.get("periods", []):
+        for src in (str(p.get("pay_day") or ""), str(p.get("period") or "").split(" - ")[-1]):
+            m = re.search(r"\d{1,2}/\d{1,2}/(\d{2,4})", src)
+            if m:
+                y = m.group(1)
+                return y if len(y) == 4 else f"20{y}"
+    return "unknown"
+
+
+def _iter_parsed_payroll(inbox: Path):
+    """Yield ``(filename, year_label, parsed)`` for every payroll journal in the
+    transition inbox, dispatching by format:
+
+    * ``*payroll-summary*.csv`` -> Gusto (legacy; kept for historical data)
+    * ``*.pdf`` that is a Paychex Payroll Journal -> Paychex (content-sniffed;
+      non-payroll PDFs in the inbox are skipped silently)
+
+    ``parsed`` always has the uniform ``{periods, employees, totals}`` shape.
+    """
+    if not inbox.exists():
+        return
+    for path in sorted(inbox.glob("*payroll-summary*.csv")):
+        try:
+            parsed = _parse_gusto_payroll_journal(path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            parsed = {"periods": [], "employees": {}, "totals": {}, "error": str(exc)[:200]}
+        m = re.search(r"(\d{4})-\d{2}-\d{2}-to-\d{4}-", path.name)
+        yield path.name, (m.group(1) if m else path.stem), parsed
+    for path in sorted(inbox.glob("*.pdf")):
+        try:
+            parsed = _parse_paychex_payroll_journal(path.read_bytes())
+        except Exception:
+            continue
+        if not parsed.get("periods"):
+            continue  # not a Paychex Payroll Journal (or unparseable) — skip
+        yield path.name, _payroll_year_label_from_parsed(parsed), parsed
+
+
 # =====================================================================
 # Loans + accounting (P&L, Cash Flow, Balance Sheet) endpoints
 # =====================================================================
@@ -2935,12 +3187,7 @@ def accounting_pl(
     try:
         inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
         if inbox.exists():
-            for f in sorted(inbox.glob("*payroll-summary*.csv")):
-                try:
-                    text = f.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
-                    continue
-                parsed = _parse_gusto_payroll_journal(text)
+            for _fname, _year, parsed in _iter_parsed_payroll(inbox):
                 for period in parsed.get("periods", []):
                     # Try pay_day first (preferred), fall back to period-end date
                     pd_str = (period.get("pay_day") or "").strip()
@@ -3335,9 +3582,11 @@ def payroll_journal_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
-    """Parse all Gusto payroll journal CSVs in the FB inbox and return a per-year summary.
+    """Parse all payroll journals in the FB inbox and return a per-year summary.
 
-    For an engineering consulting business: every dollar of Employer Cost is COGS.
+    Sources: legacy Gusto ``*payroll-summary*.csv`` files and Paychex
+    ``Payroll Journal`` PDFs (auto-detected). For an engineering consulting
+    business: every dollar of Employer Cost is COGS.
     """
     _ = current_user, db
     inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
@@ -3345,22 +3594,18 @@ def payroll_journal_summary(
         raise HTTPException(status_code=404, detail=f"Inbox folder not found: {inbox}")
 
     out: dict[str, object] = {"by_year": {}, "all_periods": [], "all_employees": {}, "yearly_ytd": {}}
-    for path in sorted(inbox.glob("*payroll-summary*.csv")):
-        # Try to extract year from filename (e.g., 2024-01-01-to-2024-12-31)
-        m = re.search(r"(\d{4})-\d{2}-\d{2}-to-\d{4}-", path.name)
-        year_label = m.group(1) if m else path.stem
-        try:
-            text = path.read_text(encoding="utf-8-sig")
-            parsed = _parse_gusto_payroll_journal(text)
-        except Exception as exc:
-            out["by_year"][year_label] = {"error": str(exc)[:200]}
+    for fname, year_label, parsed in _iter_parsed_payroll(inbox):
+        if parsed.get("error") and not parsed.get("periods"):
+            out["by_year"].setdefault(year_label, {})["error"] = str(parsed["error"])[:200]
             continue
         out["by_year"][year_label] = {
-            "file": path.name,
+            "file": fname,
             "period_count": len(parsed["periods"]),
             "employee_count": len(parsed["employees"]),
             "totals": parsed["totals"],
         }
+        if parsed.get("warning"):
+            out["by_year"][year_label]["warning"] = parsed["warning"]
         # Merge into year-aggregate yearly_ytd
         out["yearly_ytd"][year_label] = parsed["totals"]
         for emp, vals in parsed["employees"].items():
@@ -3375,7 +3620,7 @@ def payroll_journal_summary(
             cur["hours"] += vals["hours"]
             cur["by_year"][year_label] = vals
         for p in parsed["periods"]:
-            out["all_periods"].append({**p, "year": year_label, "file": path.name})
+            out["all_periods"].append({**p, "year": year_label, "file": fname})
 
     # Grand total across years
     grand = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0}

@@ -25,6 +25,9 @@ start_log.txt
 backend/aquatech.db*
 aquatech.db*
 *.backup_*
+# Payroll/finance import inbox — contains employee PII, payroll PDFs/CSVs
+data/imports/
+data/
 *.sqlite
 *.sqlite3
 backups/
