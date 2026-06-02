@@ -86,7 +86,7 @@ export function PayrollPortal() {
     return (
       <section className="aq-lite-panel">
         <p className="aq-lite-eyebrow">Payroll portal</p>
-        <p className="aq-lite-muted">Parsing Gusto journals…</p>
+        <p className="aq-lite-muted">Parsing payroll journals…</p>
       </section>
     );
   }

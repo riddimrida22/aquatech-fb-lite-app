@@ -53,15 +53,15 @@ export function PayrollExpenseSummary() {
   if (loading) {
     return (
       <section className="aq-lite-panel">
-        <p className="aq-lite-eyebrow">Payroll expense (from Gusto journal)</p>
-        <p className="aq-lite-muted">Parsing Gusto journals…</p>
+        <p className="aq-lite-eyebrow">Payroll expense (from payroll journal)</p>
+        <p className="aq-lite-muted">Parsing payroll journals…</p>
       </section>
     );
   }
   if (err || !data) {
     return (
       <section className="aq-lite-panel">
-        <p className="aq-lite-eyebrow">Payroll expense (from Gusto journal)</p>
+        <p className="aq-lite-eyebrow">Payroll expense (from payroll journal)</p>
         <p style={{ color: "var(--aq-red)" }}>{err || "No data"}</p>
       </section>
     );
@@ -76,7 +76,7 @@ export function PayrollExpenseSummary() {
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
         <div>
-          <p className="aq-lite-eyebrow">Payroll expense (Gusto journal · canonical COGS source)</p>
+          <p className="aq-lite-eyebrow">Payroll expense (payroll journal · canonical COGS source)</p>
           <h3>{formatCurrency(t.employer_cost)} total payroll cost = COGS</h3>
         </div>
         {ytdYear ? (
