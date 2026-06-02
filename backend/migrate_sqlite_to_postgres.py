@@ -43,7 +43,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 # Import models AFTER setting env so models pick up correct DB
 from app import models  # noqa: F401, E402
-from app.database import Base  # noqa: E402
+from app.db import Base  # noqa: E402
 
 print(f"Source SQLite : {SQLITE_PATH}")
 print(f"Target Postgres: {POSTGRES_URL}")

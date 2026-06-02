@@ -72,7 +72,7 @@ const WORKSPACES: Array<{ key: WorkspaceKey; label: string; hint: string }> = [
   { key: "timesheets", label: "Timesheets", hint: "Approval flow" },
   { key: "invoices", label: "Invoices", hint: "Billing + A/R" },
   { key: "costs", label: "Costs", hint: "Expenses + tax" },
-  { key: "payroll", label: "Payroll", hint: "Gusto journal · COGS" },
+  { key: "payroll", label: "Payroll", hint: "Payroll journal · COGS" },
   { key: "accounting", label: "Accounting", hint: "P&L · Cash Flow · Loans" },
   { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log" },
   { key: "reports", label: "Reports", hint: "Benchmarks" },
@@ -1797,7 +1797,7 @@ export default function AquatechPmHome() {
 
               <section className="aq-lite-panel">
                 <p className="aq-lite-eyebrow">Payroll</p>
-                <h3>Gusto journal CSVs</h3>
+                <h3>Payroll journals (Gusto CSV + Paychex PDF)</h3>
                 <ul style={{ marginTop: 6, fontSize: 12, lineHeight: 1.7, color: "var(--aq-muted)" }}>
                   <li>Drop the year-by-year <code>aquatech-engineering-p-c-payroll-summary-YYYY-...csv</code>{" "}
                     files in the same inbox folder.</li>
