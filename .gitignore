@@ -22,8 +22,9 @@ frontend/tsconfig.tsbuildinfo
 start_log.txt
 
 # Runtime data + backups (do not commit)
-backend/aquatech.db
-aquatech.db
+backend/aquatech.db*
+aquatech.db*
+*.backup_*
 *.sqlite
 *.sqlite3
 backups/
