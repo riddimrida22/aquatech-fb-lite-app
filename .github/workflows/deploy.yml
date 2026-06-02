@@ -79,7 +79,7 @@ jobs:
             echo "Skipping staging deploy: staging host/user/app-dir secrets are not fully configured."
             exit 0
           fi
-          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && git fetch --all --tags --prune && if [ -f .env.staging ]; then DEPLOY_ENV_FILE=.env.staging; else DEPLOY_ENV_FILE=.env.prod; fi && echo Using env file: \$DEPLOY_ENV_FILE && ALLOW_SKIP_CADDY_ON_443_CONFLICT=true FORCE_TAKEOVER_443=true RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' \"\$DEPLOY_ENV_FILE\""
+          ssh -o StrictHostKeyChecking=no "$STAGING_USER@$STAGING_HOST" "cd '$STAGING_APP_DIR' && git fetch --all --tags --prune && { git stash push --include-untracked -m pre-deploy-backup || true; } && git reset --hard '$TARGET_REF' && git clean -fd && if [ -f .env.staging ]; then DEPLOY_ENV_FILE=.env.staging; else DEPLOY_ENV_FILE=.env.prod; fi && echo Using env file: \$DEPLOY_ENV_FILE && ALLOW_SKIP_CADDY_ON_443_CONFLICT=true FORCE_TAKEOVER_443=true RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' \"\$DEPLOY_ENV_FILE\""
 
       - name: Staging runtime monitor
         env:
@@ -130,7 +130,7 @@ jobs:
           [ -n "${DEPLOY_HOST:-}" ] || { echo "Missing production host configuration"; exit 1; }
           [ -n "${DEPLOY_USER:-}" ] || { echo "Missing production user configuration"; exit 1; }
           [ -n "${DEPLOY_APP_DIR:-}" ] || { echo "Missing production app-dir configuration"; exit 1; }
-          ssh -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_APP_DIR' && git fetch --all --tags --prune && ALLOW_SKIP_CADDY_ON_443_CONFLICT=true FORCE_TAKEOVER_443=true RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
+          ssh -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_APP_DIR' && git fetch --all --tags --prune && { git stash push --include-untracked -m pre-deploy-backup || true; } && git reset --hard '$TARGET_REF' && git clean -fd && ALLOW_SKIP_CADDY_ON_443_CONFLICT=true FORCE_TAKEOVER_443=true RUN_GATE=false ./scripts/deploy_from_commit.sh '$TARGET_REF' .env.prod"
 
       - name: Production runtime monitor
         env:
