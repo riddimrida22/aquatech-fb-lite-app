@@ -3594,31 +3594,43 @@ def payroll_journal_summary(
         raise HTTPException(status_code=404, detail=f"Inbox folder not found: {inbox}")
 
     out: dict[str, object] = {"by_year": {}, "all_periods": [], "all_employees": {}, "yearly_ytd": {}}
+
+    def _zero() -> dict[str, float]:
+        return {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0,
+                "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0}
+
+    _year_emps: dict[str, set] = {}
+    # NOTE: a single year can have MULTIPLE source files (e.g. 2026 = Gusto CSV
+    # through the switch + Paychex PDF after). Accumulate across files per year —
+    # do NOT overwrite, or one source's totals get dropped from the summary.
     for fname, year_label, parsed in _iter_parsed_payroll(inbox):
         if parsed.get("error") and not parsed.get("periods"):
-            out["by_year"].setdefault(year_label, {})["error"] = str(parsed["error"])[:200]
+            by = out["by_year"].setdefault(year_label, {"file": "", "period_count": 0, "employee_count": 0, "totals": _zero()})
+            by["error"] = str(parsed["error"])[:200]
             continue
-        out["by_year"][year_label] = {
-            "file": fname,
-            "period_count": len(parsed["periods"]),
-            "employee_count": len(parsed["employees"]),
-            "totals": parsed["totals"],
-        }
+        by = out["by_year"].setdefault(year_label, {"file": "", "period_count": 0, "employee_count": 0, "totals": _zero()})
+        by["file"] = f'{by["file"]}, {fname}'.strip(", ") if by["file"] else fname
+        by["period_count"] += len(parsed["periods"])
+        ye = _year_emps.setdefault(year_label, set())
+        ye.update(parsed["employees"].keys())
+        by["employee_count"] = len(ye)
+        for k in by["totals"]:
+            by["totals"][k] += float(parsed["totals"].get(k, 0) or 0)
         if parsed.get("warning"):
-            out["by_year"][year_label]["warning"] = parsed["warning"]
-        # Merge into year-aggregate yearly_ytd
-        out["yearly_ytd"][year_label] = parsed["totals"]
+            by["warning"] = f'{by.get("warning", "")}; {parsed["warning"]}'.strip("; ")
+        # yearly_ytd: sum across all files for the year
+        ytd = out["yearly_ytd"].setdefault(year_label, _zero())
+        for k in ytd:
+            ytd[k] += float(parsed["totals"].get(k, 0) or 0)
         for emp, vals in parsed["employees"].items():
             cur = out["all_employees"].setdefault(
                 emp, {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0, "by_year": {}}
             )
-            cur["gross"] += vals["gross"]
-            cur["employer_taxes"] += vals["employer_taxes"]
-            cur["employer_401k"] += vals["employer_401k"]
-            cur["employer_cost"] += vals["employer_cost"]
-            cur["net_pay"] += vals["net_pay"]
-            cur["hours"] += vals["hours"]
-            cur["by_year"][year_label] = vals
+            for k in ("gross", "employer_taxes", "employer_401k", "employer_cost", "net_pay", "hours"):
+                cur[k] += float(vals.get(k, 0) or 0)
+            eby = cur["by_year"].setdefault(year_label, _zero())
+            for k in ("gross", "employer_taxes", "employer_401k", "employer_cost", "net_pay", "hours"):
+                eby[k] += float(vals.get(k, 0) or 0)
         for p in parsed["periods"]:
             out["all_periods"].append({**p, "year": year_label, "file": fname})
 
