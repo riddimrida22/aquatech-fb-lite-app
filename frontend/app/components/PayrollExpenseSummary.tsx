@@ -134,15 +134,15 @@ export function PayrollExpenseSummary() {
               ))}
               <td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Company contribution into Human Interest plan. Tax-deductible benefit.</td>
             </tr>
-            <tr style={{ background: "#e5f5ee" }}>
-              <td style={{ fontWeight: 700, color: "#235944" }}>TOTAL Employer Cost (COGS)</td>
-              <td style={{ textAlign: "right", fontWeight: 800, color: "#235944" }}>{formatCurrency(totalCompanyExpense)}</td>
+            <tr style={{ background: "var(--aq-row-total-bg)" }}>
+              <td style={{ fontWeight: 700, color: "var(--aq-row-total-fg)" }}>TOTAL Employer Cost (COGS)</td>
+              <td style={{ textAlign: "right", fontWeight: 800, color: "var(--aq-row-total-fg)" }}>{formatCurrency(totalCompanyExpense)}</td>
               {Object.keys(data.yearly_ytd).sort().map((y) => (
-                <td key={y} style={{ textAlign: "right", fontWeight: 700, color: "#235944" }}>
+                <td key={y} style={{ textAlign: "right", fontWeight: 700, color: "var(--aq-row-total-fg)" }}>
                   {formatCurrency(data.yearly_ytd[y].employer_cost)}
                 </td>
               ))}
-              <td style={{ fontSize: 11, color: "#235944", fontWeight: 600 }}>
+              <td style={{ fontSize: 11, color: "var(--aq-row-total-fg)", fontWeight: 600 }}>
                 The number that goes on your tax return as direct labor / COGS.
               </td>
             </tr>
@@ -179,9 +179,9 @@ export function PayrollExpenseSummary() {
           <span>Hours paid</span>
           <strong>{formatNumber(t.hours, 0)}</strong>
         </article>
-        <article className="aq-lite-kpi" style={{ background: "#e5f5ee", border: "1px solid #b8decf" }}>
-          <span style={{ color: "#235944" }}>Total Company COGS</span>
-          <strong style={{ color: "#235944" }}>{formatCurrency(t.employer_cost)}</strong>
+        <article className="aq-lite-kpi" style={{ background: "var(--aq-row-total-bg)", border: "1px solid #b8decf" }}>
+          <span style={{ color: "var(--aq-row-total-fg)" }}>Total Company COGS</span>
+          <strong style={{ color: "var(--aq-row-total-fg)" }}>{formatCurrency(t.employer_cost)}</strong>
         </article>
       </div>
     </section>

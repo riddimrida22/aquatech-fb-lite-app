@@ -351,7 +351,10 @@ def _persist_invoice(db: Session, inv: dict[str, Any]) -> str:
     row.subtotal_amount = total
     row.amount_paid = paid
     row.balance_due = outstanding
-    row.status = status
+    # Preserve a local write-off: 'written_off' is an AqtPM accounting decision that
+    # FreshBooks doesn't track, so never let an FB resync overwrite it back to partial/sent.
+    if str(getattr(row, "status", "") or "").lower() != "written_off":
+        row.status = status
     row.issue_date = create_d
     row.due_date = due_d
     if outcome == "inserted":
@@ -650,8 +653,14 @@ def sync_projects(db: Session, account_id: str, business_id: str) -> dict[str, A
         if p.name:
             aqt_by_name[p.name.strip().lower()] = p
 
+    _all_users = db.scalars(select(User)).all()
     aqt_user_by_email: dict[str, int] = {
-        (u.email or "").strip().lower(): u.id for u in db.scalars(select(User)).all() if u.email
+        (u.email or "").strip().lower(): u.id for u in _all_users if u.email
+    }
+    # Name-based fallback: AqtPM users carry placeholder emails (e.g. zachary.gilliam.placeholder@…)
+    # that don't match FreshBooks' real emails, so map FB members to AqtPM users by full name too.
+    aqt_user_by_name: dict[str, int] = {
+        (u.full_name or "").strip().lower(): u.id for u in _all_users if (u.full_name or "").strip()
     }
 
     for fb in fb_projects:
@@ -713,9 +722,11 @@ def sync_projects(db: Session, account_id: str, business_id: str) -> dict[str, A
             group = fb.get("group") or {}
             for member in (group.get("members") or []):
                 email = (member.get("email") or "").strip().lower()
-                if not email:
-                    continue
-                aqt_uid = aqt_user_by_email.get(email)
+                aqt_uid = aqt_user_by_email.get(email) if email else None
+                if not aqt_uid:
+                    # Fall back to full-name match (placeholder emails don't line up with FB).
+                    full = f"{(member.get('first_name') or '').strip()} {(member.get('last_name') or '').strip()}".strip().lower()
+                    aqt_uid = aqt_user_by_name.get(full)
                 if not aqt_uid:
                     continue
                 fb_role = (member.get("role") or "").strip().lower()
@@ -769,6 +780,26 @@ def sync_projects(db: Session, account_id: str, business_id: str) -> dict[str, A
         "sample": sample,
         "_identity_map": identity_map,  # internal handoff to sync_time_entries
     }
+
+
+def _project_bill_rate(db: Session, project_id: int | None, user_id: int | None) -> float | None:
+    """Per-project-per-employee bill rate from the project_bill_rates table.
+    Looks up (project, user) first, then the project's flat rate (user_id NULL).
+    Returns None if the project has no configured rate (caller falls back to UserRate).
+    """
+    if not project_id:
+        return None
+    from sqlalchemy import text
+    row = db.execute(
+        text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND user_id=:u"),
+        {"p": project_id, "u": user_id},
+    ).first()
+    if row is None:
+        row = db.execute(
+            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND user_id IS NULL"),
+            {"p": project_id},
+        ).first()
+    return float(row[0]) if row is not None else None
 
 
 def _user_rate_for(db: Session, user_id: int, work_date: date) -> tuple[float, float]:
@@ -826,8 +857,9 @@ def sync_time_entries(
         raise RuntimeError("sync_time_entries requires business_id")
 
     counts = {"inserted": 0, "updated": 0, "skipped_no_user": 0, "skipped_no_project": 0,
-              "skipped_no_subtask": 0, "errors": 0}
+              "skipped_no_subtask": 0, "errors": 0, "deleted_orphans": 0}
     sample: list[dict[str, Any]] = []
+    seen_fb_ids: set[str] = set()  # every external_id FB returned this run (for delete-reconcile)
     subtask_cache: dict[int, tuple[int, int]] = {}
 
     # FB project_id (int) → AqtPM project_id (int)
@@ -843,7 +875,9 @@ def sync_time_entries(
         resp = api_get(
             db,
             f"/timetracking/business/{business_id}/time_entries",
-            params={"page": page, "per_page": 100},
+            # team=true returns ALL team members' entries, not just the authenticated
+            # user's. Without it the endpoint is scoped to the token's own identity.
+            params={"page": page, "per_page": 100, "team": "true"},
         )
         items = resp.get("time_entries") or resp.get("result", {}).get("time_entries") or []
         if not items:
@@ -855,6 +889,7 @@ def sync_time_entries(
                 if not fb_id:
                     counts["errors"] += 1
                     continue
+                seen_fb_ids.add(fb_id)
 
                 identity_id = e.get("identity_id")
                 aqt_uid = identity_map.get(int(identity_id)) if identity_id else None
@@ -881,8 +916,16 @@ def sync_time_entries(
                 note = (e.get("note") or "")[:65000]
 
                 bill_rate, cost_rate = _user_rate_for(db, aqt_uid, work_date)
+                # Bill rate is PER-PROJECT-per-employee (FB team_member_rate). Prefer the
+                # project_bill_rates table (project+user, else project flat); only fall back
+                # to the per-user UserRate when no project rate exists. Cost rate stays
+                # per-employee (global). Keeps re-syncs from clobbering the per-project rates.
+                pr = _project_bill_rate(db, aqt_pid, aqt_uid)
+                if pr is not None:
+                    bill_rate = pr
 
                 is_billable = bool(e.get("billable"))
+                billed = bool(e.get("billed"))
 
                 row = db.scalar(
                     select(TimeEntry).where(
@@ -904,6 +947,7 @@ def sync_time_entries(
                         external_id=fb_id,
                         source="freshbooks_api",
                         is_billable=is_billable,
+                        billed=billed,
                     )
                     db.add(row)
                     outcome = "inserted"
@@ -918,6 +962,7 @@ def sync_time_entries(
                     row.bill_rate_applied = bill_rate
                     row.cost_rate_applied = cost_rate
                     row.is_billable = is_billable
+                    row.billed = billed
 
                 counts[outcome] = counts.get(outcome, 0) + 1
                 if len(sample) < 5:
@@ -938,6 +983,23 @@ def sync_time_entries(
         if page >= pages:
             break
         page += 1
+
+    # Reconcile deletions: FB is the system of record. A freshbooks_api entry whose
+    # external_id FB no longer returns was deleted in FB → remove it so it can't linger
+    # as phantom unbilled/logged time. Guarded by `seen_fb_ids` being non-empty so a
+    # failed/empty fetch never purges the table. (Python-side filter avoids SQLite's
+    # 999-variable IN() limit with ~2.7k ids.)
+    if seen_fb_ids:
+        for orphan in db.scalars(
+            select(TimeEntry).where(
+                TimeEntry.source == "freshbooks_api",
+                TimeEntry.external_id.isnot(None),
+            )
+        ).all():
+            if str(orphan.external_id) not in seen_fb_ids:
+                db.delete(orphan)
+                counts["deleted_orphans"] += 1
+        db.flush()
 
     return {
         "count": counts["inserted"] + counts["updated"],

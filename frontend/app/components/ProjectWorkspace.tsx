@@ -108,11 +108,15 @@ export function ProjectWorkspace({
 
   const invoicesByProject = useMemo(() => {
     const m = new Map<number, { count: number; outstanding: number }>();
+    const NON_AR = new Set(["void", "voided", "cancelled", "canceled", "written_off", "draft"]);
     for (const inv of invoices) {
       if (!inv.project_id) continue;
       const cur = m.get(inv.project_id) || { count: 0, outstanding: 0 };
       cur.count += 1;
-      cur.outstanding += inv.balance_due || 0;
+      // Written-off / void / draft invoices are not receivables — exclude from Open A/R.
+      if (!NON_AR.has((inv.status || "").toLowerCase())) {
+        cur.outstanding += inv.balance_due || 0;
+      }
       m.set(inv.project_id, cur);
     }
     return m;

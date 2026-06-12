@@ -508,7 +508,7 @@ export function WeeklyTimeEntry({
                           padding: "6px 4px",
                           border: "1px solid var(--aq-border)",
                           borderRadius: 4,
-                          background: readOnly ? "#f4f4f4" : "var(--aq-card)",
+                          background: readOnly ? "var(--aq-subtle)" : "var(--aq-card)",
                         }}
                       />
                     </td>

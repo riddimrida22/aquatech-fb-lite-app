@@ -14,6 +14,8 @@ const PRESETS: Record<string, StatusKind> = {
   voided: "mute",
   cancelled: "mute",
   canceled: "mute",
+  written_off: "bad",
+  "written off": "bad",
   unpaid: "warn",
   // Timesheet statuses
   unsubmitted: "mute",

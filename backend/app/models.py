@@ -130,6 +130,10 @@ class TimeEntry(Base):
     # Per-entry billable flag. For FB-sourced entries, mirrors FB's `billable` field.
     # For manual entries, defaults to True. Drives unbilled-vs-non-billable reporting.
     is_billable: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # FreshBooks' authoritative `billed` flag — True once the entry has been put on an
+    # invoice in FB. Source of truth for "earned, not billed" (FB is the billing system
+    # of record). Null/False for manual entries (which are excluded from that metric).
+    billed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
 class Timesheet(Base):
