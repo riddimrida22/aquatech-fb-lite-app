@@ -138,9 +138,9 @@ export function PayrollPortal() {
             <span>Employer 401(k) match</span>
             <strong>{formatCurrency(data.grand_total.employer_401k)}</strong>
           </article>
-          <article className="aq-lite-kpi" style={{ background: "#e5f5ee", border: "1px solid #b8decf" }}>
-            <span style={{ color: "#235944" }}>Total Employer Cost (COGS)</span>
-            <strong style={{ color: "#235944" }}>{formatCurrency(data.grand_total.employer_cost)}</strong>
+          <article className="aq-lite-kpi" style={{ background: "var(--aq-row-total-bg)", border: "1px solid #b8decf" }}>
+            <span style={{ color: "var(--aq-row-total-fg)" }}>Total Employer Cost (COGS)</span>
+            <strong style={{ color: "var(--aq-row-total-fg)" }}>{formatCurrency(data.grand_total.employer_cost)}</strong>
           </article>
         </div>
       </section>

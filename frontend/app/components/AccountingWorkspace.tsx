@@ -13,6 +13,7 @@ type PL = {
   cogs_breakdown?: { gusto_employer_cost: number; benefits_workers_comp: number };
   payroll_breakdown: { gross: number; employer_taxes: number; employer_401k: number };
   opex: number;
+  opex_breakdown?: { category: string; amount: number }[];
   interest_expense: number;
   fees_expense: number;
   net_income_cash: number;
@@ -89,6 +90,32 @@ export function AccountingWorkspace({ canManage }: { canManage: boolean }) {
 }
 
 
+// Standalone Profit & Loss report with its own period controls — used by the
+// Reports tab so the P&L is reachable there the way FreshBooks surfaces it.
+export function PLReport() {
+  const today = new Date().toISOString().slice(0, 10);
+  const yearStart = `${new Date().getFullYear()}-01-01`;
+  const [start, setStart] = useState(yearStart);
+  const [end, setEnd] = useState(today);
+  return (
+    <div className="aq-lite-stack">
+      <section className="aq-lite-panel" style={{ paddingTop: 12, paddingBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <p className="aq-lite-eyebrow" style={{ margin: 0 }}>Profit &amp; Loss statement</p>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label style={{ fontSize: 12, color: "var(--aq-muted)" }}>From <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></label>
+            <label style={{ fontSize: 12, color: "var(--aq-muted)" }}>To <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
+            <button type="button" onClick={() => { setStart(yearStart); setEnd(today); }} style={{ padding: "4px 10px", fontSize: 12, background: "transparent", color: "var(--aq-primary-dark)", border: "1px solid var(--aq-border)", boxShadow: "none" }}>YTD</button>
+            <button type="button" onClick={() => { setStart(`${new Date().getFullYear() - 1}-01-01`); setEnd(`${new Date().getFullYear() - 1}-12-31`); }} style={{ padding: "4px 10px", fontSize: 12, background: "transparent", color: "var(--aq-primary-dark)", border: "1px solid var(--aq-border)", boxShadow: "none" }}>Last year</button>
+          </div>
+        </div>
+      </section>
+      <PLView start={start} end={end} />
+    </div>
+  );
+}
+
+
 function PLView({ start, end }: { start: string; end: string }) {
   const [pl, setPl] = useState<PL | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -138,16 +165,23 @@ function PLView({ start, end }: { start: string; end: string }) {
               ) : null}
             </td>
           </tr>
-          <tr style={{ background: "#f1f5f9", fontWeight: 700 }}>
+          <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}>
             <td>= Gross Profit</td>
             <td style={{ textAlign: "right" }}>{formatCurrency(grossProfit)}</td>
             <td style={{ color: "var(--aq-muted)", fontWeight: 400, fontSize: 11 }}>Gross margin {(grossMargin * 100).toFixed(1)}%</td>
           </tr>
-          <tr>
-            <td>− Operating expenses (OPEX from bank/CC, excl. loan payments &amp; transfers)</td>
+          <tr style={{ fontWeight: 600 }}>
+            <td>− Operating expenses (by category)</td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.opex)})</td>
-            <td></td>
+            <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>From bank/CC, excl. loan payments &amp; transfers</td>
           </tr>
+          {(pl.opex_breakdown ?? []).map((row) => (
+            <tr key={row.category}>
+              <td style={{ paddingLeft: 24, color: "var(--aq-muted)" }}>{row.category}</td>
+              <td style={{ textAlign: "right", color: "var(--aq-muted)" }}>({formatCurrency(row.amount)})</td>
+              <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>{pl.opex > 0 ? `${((row.amount / pl.opex) * 100).toFixed(1)}%` : ""}</td>
+            </tr>
+          ))}
           <tr>
             <td>− Interest expense (from Loans tab)</td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.interest_expense)})</td>
@@ -158,15 +192,15 @@ function PLView({ start, end }: { start: string; end: string }) {
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.fees_expense)})</td>
             <td></td>
           </tr>
-          <tr style={{ background: "#e5f5ee", fontWeight: 800, color: "#235944" }}>
+          <tr style={{ background: "var(--aq-row-total-bg)", fontWeight: 800, color: "var(--aq-row-total-fg)" }}>
             <td>= Net Income (cash)</td>
             <td style={{ textAlign: "right" }}>{formatCurrency(pl.net_income_cash)}</td>
-            <td style={{ color: "#235944", fontWeight: 600, fontSize: 11 }}>Net margin {(netMargin * 100).toFixed(1)}% · accrual {formatCurrency(pl.net_income_accrual)}</td>
+            <td style={{ color: "var(--aq-row-total-fg)", fontWeight: 600, fontSize: 11 }}>Net margin {(netMargin * 100).toFixed(1)}% · accrual {formatCurrency(pl.net_income_accrual)}</td>
           </tr>
         </tbody>
       </table>
 
-      <div style={{ marginTop: 10, padding: 10, background: "#fafcfd", border: "1px solid var(--aq-border)", borderRadius: 8 }}>
+      <div style={{ marginTop: 10, padding: 10, background: "var(--aq-subtle)", border: "1px solid var(--aq-border)", borderRadius: 8 }}>
         <p className="aq-lite-eyebrow" style={{ marginBottom: 6 }}>How this is computed</p>
         <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: "var(--aq-muted)", lineHeight: 1.6 }}>
           {pl.notes.map((n, i) => <li key={i}>{n}</li>)}
@@ -205,16 +239,16 @@ function CashflowView({ start, end }: { start: string; end: string }) {
       </div>
       <table className="aq-lite-table">
         <tbody>
-          <tr style={{ background: "#f1f5f9", fontWeight: 700 }}>
+          <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}>
             <td>Operating activities</td>
             <td></td><td></td>
           </tr>
           <tr><td>&nbsp;&nbsp;Cash in — invoices paid</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.operating.cash_in_invoices)}</td><td></td></tr>
           <tr><td>&nbsp;&nbsp;Cash out — OPEX + payroll cash</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.operating.cash_out_opex_and_payroll)})</td><td></td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Net operating cash flow</td><td style={{ textAlign: "right", color: cf.operating.net >= 0 ? "var(--aq-green)" : "var(--aq-red)" }}>{formatCurrency(cf.operating.net)}</td><td></td></tr>
-          <tr style={{ background: "#f1f5f9", fontWeight: 700 }}><td>Investing activities</td><td></td><td></td></tr>
+          <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td>Investing activities</td><td></td><td></td></tr>
           <tr><td>&nbsp;&nbsp;Capex</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.investing.capex)})</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>{cf.investing.note}</td></tr>
-          <tr style={{ background: "#f1f5f9", fontWeight: 700 }}><td>Financing activities</td><td></td><td></td></tr>
+          <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td>Financing activities</td><td></td><td></td></tr>
           {cf.financing.loan_proceeds_boc !== undefined && cf.financing.loan_proceeds_boc > 0 ? (
             <tr><td>&nbsp;&nbsp;Cash in — BOC factoring proceeds</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.financing.loan_proceeds_boc)}</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Working capital advances on factored invoices</td></tr>
           ) : null}
@@ -226,7 +260,7 @@ function CashflowView({ start, end }: { start: string; end: string }) {
           ) : null}
           <tr><td>&nbsp;&nbsp;Cash out — Loan payments</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.financing.loan_payments_total)})</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Principal + interest + fees</td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Net financing cash flow</td><td style={{ textAlign: "right", color: cf.financing.net >= 0 ? "var(--aq-green)" : "var(--aq-red)" }}>{formatCurrency(cf.financing.net)}</td><td></td></tr>
-          <tr style={{ background: "#e5f5ee", fontWeight: 800, color: "#235944" }}>
+          <tr style={{ background: "var(--aq-row-total-bg)", fontWeight: 800, color: "var(--aq-row-total-fg)" }}>
             <td>Net change in cash</td>
             <td style={{ textAlign: "right" }}>{formatCurrency(cf.net_change_in_cash)}</td>
             <td></td>
@@ -271,17 +305,17 @@ function BalanceView() {
       </div>
       <table className="aq-lite-table" style={{ marginTop: 12 }}>
         <tbody>
-          <tr style={{ background: "#f1f5f9", fontWeight: 700 }}><td colSpan={2}>Assets</td></tr>
+          <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td colSpan={2}>Assets</td></tr>
           <tr><td>&nbsp;&nbsp;Cash</td><td style={{ textAlign: "right" }}>{formatCurrency(b.assets.cash)}</td></tr>
           <tr><td>&nbsp;&nbsp;Accounts receivable</td><td style={{ textAlign: "right" }}>{formatCurrency(b.assets.accounts_receivable)}</td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Total assets</td><td style={{ textAlign: "right" }}>{formatCurrency(b.assets.total)}</td></tr>
-          <tr style={{ background: "#f1f5f9", fontWeight: 700 }}><td colSpan={2}>Liabilities</td></tr>
+          <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td colSpan={2}>Liabilities</td></tr>
           <tr><td>&nbsp;&nbsp;Loans outstanding</td><td style={{ textAlign: "right" }}>{formatCurrency(b.liabilities.loans_outstanding)}</td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Total liabilities</td><td style={{ textAlign: "right" }}>{formatCurrency(b.liabilities.total)}</td></tr>
-          <tr style={{ background: "#e5f5ee", fontWeight: 800, color: "#235944" }}><td>Equity = Assets − Liabilities</td><td style={{ textAlign: "right" }}>{formatCurrency(b.equity)}</td></tr>
+          <tr style={{ background: "var(--aq-row-total-bg)", fontWeight: 800, color: "var(--aq-row-total-fg)" }}><td>Equity = Assets − Liabilities</td><td style={{ textAlign: "right" }}>{formatCurrency(b.equity)}</td></tr>
         </tbody>
       </table>
-      <div style={{ marginTop: 10, padding: 10, background: "#fafcfd", border: "1px solid var(--aq-border)", borderRadius: 8 }}>
+      <div style={{ marginTop: 10, padding: 10, background: "var(--aq-subtle)", border: "1px solid var(--aq-border)", borderRadius: 8 }}>
         <p className="aq-lite-eyebrow" style={{ marginBottom: 6 }}>Caveats</p>
         <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: "var(--aq-muted)", lineHeight: 1.6 }}>
           {b.notes.map((n, i) => <li key={i}>{n}</li>)}

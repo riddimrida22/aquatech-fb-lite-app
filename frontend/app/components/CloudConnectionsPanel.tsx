@@ -271,7 +271,7 @@ function ProviderCardShell({
         border: "1px solid var(--aq-border)",
         borderRadius: 10,
         padding: 14,
-        background: "#fff",
+        background: "var(--aq-card)",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -349,7 +349,7 @@ function ProviderCardShell({
           <summary style={{ fontSize: 11, color: "var(--aq-muted)", cursor: "pointer" }}>
             Last sync details · {status.last_sync_status}
           </summary>
-          <pre style={{ fontSize: 10, marginTop: 4, background: "#fafcfd", padding: 8, borderRadius: 6, color: "var(--aq-muted)", maxHeight: 240, overflow: "auto" }}>
+          <pre style={{ fontSize: 10, marginTop: 4, background: "var(--aq-subtle)", padding: 8, borderRadius: 6, color: "var(--aq-muted)", maxHeight: 240, overflow: "auto" }}>
             {JSON.stringify(status.last_sync_summary, null, 2)}
           </pre>
         </details>

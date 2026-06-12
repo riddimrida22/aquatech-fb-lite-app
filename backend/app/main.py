@@ -68,6 +68,10 @@ CC_TRANSFER_KEYWORDS = (
     "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
     "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK",
     "PAYMENT TO CHASE CARD", "AUTOMATIC PAYMENT",
+    # Wires (to own / foreign-currency-business / brokerage accounts) + Amex card
+    # payments — these move money or pay a card, they are NOT operating expenses.
+    # (Per user 2026-06-07: 2026 wires are all transfers, not vendor payments.)
+    "WIRE TRANSFER", "DOMESTIC WIRE", "INTERNATIONAL WIRE", "AMERICAN EXPRESS ACH",
 )
 
 PAYROLL_KEYWORDS = (
@@ -85,9 +89,15 @@ BENEFITS_TO_COGS_KEYWORDS = ("NYSIF", "NU ERA", "NUERA", "HUMAN INTEREST")
 PERSONAL_OVERRIDE_KEYWORDS = (
     "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
     "RH BROKERAGE", "RHS BROKERAGE", "ROBINHOOD",
+    "INTERACTIVEBROKERS", "INTERACTIVE BROKER", "PUBLIC.COM",  # brokerage/investing transfers (not OPEX)
     "MANUAL DB-BKRG", "MANUAL CR-BKRG",
     "BERTRAND LOAN REPAYMENT",
 )
+
+# Merchant-cash-advance / short-term business financing. The payment is debt
+# servicing (principal + baked-in fee), NOT an operating expense — exclude from OPEX.
+# (Interest portion is not separately modeled; revisit via Loans if it becomes material.)
+FINANCING_EXCLUDE_KEYWORDS = ("FUNDBOX", "FORWARD FIN", "KAPITUS", "ONDECK", "BLUEVINE")
 
 # Personal-account items that ARE business per user directive:
 #   1. Computer hardware purchases at major retailers
@@ -3134,6 +3144,84 @@ def delete_loan_payment(
 
 # ----- Accounting summaries -----
 
+# Keyword → FreshBooks-style OPEX bucket. First match wins; order matters
+# (specific buckets before generic). Used to break the OPEX line into categories.
+_OPEX_BUCKET_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Software & Subscriptions", ("MICROSOFT", "ADOBE", "GOOGLE", "GSUITE", "ZOOM", "SLACK", "DROPBOX",
+        "GITHUB", "AUTODESK", "BLUEBEAM", "ESRI", "INTUIT", "QUICKBOOKS", "DOCUSIGN", "NOTION", "ATLASSIAN",
+        "OPENAI", "ANTHROPIC", "CANVA", "GODADDY", "SQUARESPACE", "WIX", "MAILCHIMP", "ZAPIER", "AWS",
+        "AMAZON WEB", "DIGITALOCEAN", "HEROKU", "NETLIFY", "VERCEL", "SUBSCRIPTION", "APPLE.COM/BILL", "ICLOUD")),
+    ("Computer Hardware & Equipment", ("BEST BUY", "BESTBUY", "APPLE STORE", "B&H PHOTO", "BHPHOTO", "DELL",
+        "HP ", "HEWLETT", "LENOVO", "NEWEGG", "MICRO CENTER", "MICROCENTER", "CDW")),
+    ("Insurance", ("INSURANCE", "HISCOX", "HARTFORD", "GEICO", "STATE FARM", "NYSIF", "LIBERTY MUTUAL",
+        "TRAVELERS", "CHUBB", "BERKSHIRE", "PROGRESSIVE", "METLIFE")),
+    ("Telecom & Internet", ("VERIZON", "AT&T", "ATT ", "T-MOBILE", "TMOBILE", "SPECTRUM", "COMCAST", "XFINITY",
+        "OPTIMUM", "RCN", "EARTHLINK", "GOOGLE FIBER", "INTERNET")),
+    ("Rent & Utilities", ("RENT", "WEWORK", "REGUS", "CON ED", "CONED", "CONSOLIDATED EDISON", "NATIONAL GRID",
+        "PSEG", "UTILITY", "LANDLORD", "PROPERTY MGMT", "MANAGEMENT OFFICE")),
+    ("Travel & Transport", ("AIRLINE", "AIR LINE", "DELTA AIR", "UNITED AIR", "AMERICAN AIR", "JETBLUE",
+        "SOUTHWEST", "AMTRAK", "UBER", "LYFT", "TAXI", "MTA", "METROCARD", "HOTEL", "MARRIOTT", "HILTON",
+        "HYATT", "AIRBNB", "EXPEDIA", "AVIS", "HERTZ", "ENTERPRISE RENT", "PARKING", "TOLL", "E-ZPASS", "EZPASS")),
+    ("Meals & Entertainment", ("RESTAURANT", "CAFE", "COFFEE", "STARBUCKS", "DUNKIN", "DOORDASH", "UBER EATS",
+        "GRUBHUB", "SEAMLESS", "DINER", "PIZZA", "BAR ", "GRILL", "DELI", "CATERING")),
+    ("Office Supplies & Postage", ("STAPLES", "OFFICE DEPOT", "OFFICEMAX", "AMAZON", "AMZN", "USPS", "FEDEX",
+        "UPS ", "UPS STORE", "POSTAGE", "SHIPPING", "W.B. MASON", "WB MASON", "ULINE")),
+    ("Professional Services", ("LEGAL", "ATTORNEY", "LAW ", "ACCOUNT", "CPA", "BOOKKEEP", "PAYROLL SERVICE",
+        "CONSULT", "ADP", "PAYCHEX", "GUSTO FEE", "NOTARY", "ENGINEER")),
+    ("Dues, Licenses & Education", ("LICENSE", "PERMIT", "DUES", "MEMBERSHIP", "ASCE", "NSPE", "PE LICENSE",
+        "STATE OF NY", "DEPT OF STATE", "COURSE", "TRAINING", "SEMINAR", "CONFERENCE", "UDEMY", "COURSERA")),
+    ("Marketing & Advertising", ("ADVERTIS", "GOOGLE ADS", "FACEBOOK", "META PLATFORMS", "LINKEDIN", "MARKETING",
+        "PRINTING", "VISTAPRINT", "FIVERR", "UPWORK")),
+    ("Bank & Merchant Fees", ("BANK FEE", "SERVICE FEE", "SERVICE CHARGE", "WIRE FEE", "OVERDRAFT", "NSF FEE",
+        "MONTHLY FEE", "MAINTENANCE FEE", "STRIPE", "SQUARE INC", "PAYPAL FEE", "MERCHANT FEE", "ANALYSIS CHARGE")),
+)
+
+
+# Collapse Plaid PFC slugs (GENERAL_SERVICES) and raw FreshBooks category names
+# into the same canonical buckets so the breakdown doesn't fragment into synonyms.
+_OPEX_LABEL_SYNONYMS: dict[str, str] = {
+    "utilities": "Rent & Utilities",
+    "office rent": "Rent & Utilities",
+    "rent": "Rent & Utilities",
+    "bank fees": "Bank & Merchant Fees",
+    "bank fees & service charges": "Bank & Merchant Fees",
+    "travel": "Travel & Transport",
+    "transportation": "Travel & Transport",
+    "business travel & lodging": "Travel & Transport",
+    "car & truck expenses": "Travel & Transport",
+    "office expenses & postage": "Office Supplies & Postage",
+    "office expenses": "Office Supplies & Postage",
+    "supplies": "Office Supplies & Postage",
+    "entertainment": "Meals & Entertainment",
+    "food and drink": "Meals & Entertainment",
+    "general services": "Professional Services",
+    "business operations expense": "Other / Uncategorized",
+    "uncategorized": "Other / Uncategorized",
+    "general": "Other / Uncategorized",
+    "double check manual": "⚠ Needs review (manual)",
+    "general merchandise": "Office Supplies & Postage",
+}
+
+
+def _normalize_opex_label(raw: str | None) -> str:
+    if not raw:
+        return "Other / Uncategorized"
+    clean = str(raw).replace("_", " ").strip()
+    key = clean.lower()
+    if key in _OPEX_LABEL_SYNONYMS:
+        return _OPEX_LABEL_SYNONYMS[key]
+    # Title-case but keep short joiners lowercase for readability.
+    return " ".join(w if w in ("and", "or", "of", "&") else w.capitalize() for w in clean.split())
+
+
+def _opex_category_bucket(name_upper: str, plaid_cat: str | None) -> str:
+    """Classify an OPEX transaction into a FreshBooks-style category for the P&L breakdown."""
+    for label, kws in _OPEX_BUCKET_RULES:
+        if any(k in name_upper for k in kws):
+            return label
+    return _normalize_opex_label(plaid_cat)
+
+
 def _accounting_period(start_iso: str | None, end_iso: str | None) -> tuple[date, date]:
     today = date.today()
     if end_iso:
@@ -3258,6 +3346,7 @@ def accounting_pl(
             if pat:
                 loan_keywords.append(pat)
     opex = 0.0
+    opex_by_cat: dict[str, float] = defaultdict(float)
     interest_in_loans = 0.0
     cc_payments = 0.0
     # Internal-transfer + CC-payment keywords. These move money between user-owned
@@ -3336,19 +3425,30 @@ def accounting_pl(
             continue  # loan principal/interest — already counted via LoanPayment lines
         if any(k in nm_upper for k in personal_overrides):
             continue  # personal trading/transfers misposted to business account
-        # Zelle-to-staff salary detection
-        if "ZELLE" in nm_upper and any(tok in nm_upper for tok in staff_name_tokens):
+        if any(k in nm_upper for k in FINANCING_EXCLUDE_KEYWORDS):
+            continue  # MCA / short-term business financing — debt servicing, not OPEX
+        # Zelle to individuals: per user (2026-06-07) these are personal or staff-pay
+        # already counted in COGS — either way not OPEX. (Was staff-name-only.)
+        if "ZELLE" in nm_upper:
             continue
         if "payroll" in cat_lower and "tax" not in cat_lower:
             continue
-        opex += -float(tx.amount or 0)
+        amt = -float(tx.amount or 0)
+        opex += amt
+        opex_by_cat[_opex_category_bucket(nm_upper, cats[0] if cats else None)] += amt
     # Pass 2: hardware/travel purchases on personal account that are actually business
     for tx in personal_outflows:
         nm_upper = (tx.name or "").upper()
         if any(k in nm_upper for k in personal_to_business_exclude):
             continue  # carved-out: not a computer purchase
         if any(k in nm_upper for k in personal_to_business_keywords):
-            opex += -float(tx.amount or 0)
+            amt = -float(tx.amount or 0)
+            opex += amt
+            try:
+                pcats = json.loads(tx.category_json or "[]")
+            except Exception:
+                pcats = []
+            opex_by_cat[_opex_category_bucket(nm_upper, pcats[0] if pcats else None)] += amt
 
     # Pass 3: FB-only business expenses (paid on a personal card not linked to AqtPM,
     # so the bank-side rows we have don't see them). Pull from active csv_fb_expenses
@@ -3370,7 +3470,13 @@ def accounting_pl(
         nm_upper = (tx.name or "").upper()
         if any(k in nm_upper for k in personal_overrides):
             continue
-        fb_only_opex += float(tx.amount or 0)
+        amt = float(tx.amount or 0)
+        fb_only_opex += amt
+        # FB rows carry their curated FreshBooks category in account_id — normalize it
+        # into the canonical bucket set (falls back to the keyword classifier on the name).
+        raw_fb = (tx.account_id or "").strip()
+        fb_label = _normalize_opex_label(raw_fb) if raw_fb else _opex_category_bucket(nm_upper, None)
+        opex_by_cat[fb_label] += amt
     opex += fb_only_opex
 
     # Interest expense from LoanPayment
@@ -3392,11 +3498,21 @@ def accounting_pl(
         "revenue_accrual": revenue_accrual,
         "cogs": cogs,
         "cogs_breakdown": {
-            "gusto_employer_cost": cogs - benefits_cogs,
-            "benefits_workers_comp": benefits_cogs,
+            # Itemized from the payroll journal (engineering consulting: full loaded
+            # labor cost is COGS — gross + employer taxes + employer 401(k) + benefits).
+            "gross_wages": round(payroll_breakdown["gross"], 2),
+            "employer_payroll_taxes": round(payroll_breakdown["employer_taxes"], 2),
+            "employer_401k_match": round(payroll_breakdown["employer_401k"], 2),
+            "benefits_workers_comp": round(benefits_cogs, 2),
+            "total_employer_cost": round(cogs - benefits_cogs, 2),
         },
         "payroll_breakdown": payroll_breakdown,
         "opex": opex,
+        "opex_breakdown": [
+            {"category": k, "amount": round(v, 2)}
+            for k, v in sorted(opex_by_cat.items(), key=lambda kv: kv[1], reverse=True)
+            if round(v, 2) != 0
+        ],
         "interest_expense": interest_expense,
         "fees_expense": fees_expense,
         "net_income_cash": net_income_cash,
@@ -3548,6 +3664,7 @@ def accounting_balance_sheet(
     ar = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.balance_due), 0.0))
         .where(Invoice.balance_due > 0)
+        .where(Invoice.status.notin_(["void", "draft", "written_off"]))
     ) or 0.0)
     loans_principal = float(db.scalar(
         select(func.coalesce(func.sum(Loan.principal_current), 0.0))
@@ -5875,23 +5992,28 @@ def list_time_entries(
     project_id: int | None = None,
     task_id: int | None = None,
     subtask_id: int | None = None,
+    team: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[TimeEntryOut]:
     target_user_id = current_user.id
+    perms = permissions_for_role(current_user.role)
+    # team=true → all users' entries (company-wide), for managers/finance. Used by the
+    # dashboard "month hours" metric so it reflects the whole team, not just the viewer.
+    company_wide = bool(team) and bool(
+        {"MANAGE_USERS", "APPROVE_TIMESHEETS", "VIEW_FINANCIALS"} & set(perms)
+    )
     if user_id is not None and user_id != current_user.id:
-        perms = permissions_for_role(current_user.role)
         if "MANAGE_USERS" not in perms and "APPROVE_TIMESHEETS" not in perms:
             raise HTTPException(status_code=403, detail="Missing permission to view another user's entries")
         target_user_id = user_id
     elif user_id is not None:
         target_user_id = user_id
 
-    q = (
-        select(TimeEntry)
-        .where(and_(TimeEntry.user_id == target_user_id, TimeEntry.work_date >= start, TimeEntry.work_date <= end))
-        .order_by(TimeEntry.work_date.asc(), TimeEntry.id.asc())
-    )
+    q = select(TimeEntry).where(and_(TimeEntry.work_date >= start, TimeEntry.work_date <= end))
+    if not company_wide:
+        q = q.where(TimeEntry.user_id == target_user_id)
+    q = q.order_by(TimeEntry.work_date.asc(), TimeEntry.id.asc())
     if project_id is not None:
         q = q.where(TimeEntry.project_id == project_id)
     if task_id is not None:
@@ -6438,15 +6560,38 @@ def project_margin(
     expenses = db.scalars(
         select(ProjectExpense).where(and_(ProjectExpense.expense_date >= start, ProjectExpense.expense_date <= end))
     ).all()
+    # Revenue = actual BILLED invoices (real historical rates baked in) + unbilled WIP at
+    # current rates. This matches FreshBooks' Profitability (billed + unbilled − costs) and
+    # avoids mis-pricing historical hours that were billed at older (e.g. 2025) rates.
+    billed_by_project: dict[int, float] = defaultdict(float)
+    for inv in db.scalars(
+        select(Invoice).where(
+            Invoice.project_id.isnot(None),
+            Invoice.status.notin_(["void", "draft", "written_off"]),
+            Invoice.issue_date >= start,
+            Invoice.issue_date <= end,
+        )
+    ).all():
+        billed_by_project[int(inv.project_id)] += float(inv.subtotal_amount or 0.0)
+
     actual_by_project: dict[int, dict[str, float]] = {}
     for te in entries:
         project_ref = project_by_id.get(te.project_id)
         task_ref = task_by_id.get(te.task_id)
         is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False)
-        row = actual_by_project.setdefault(te.project_id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0})
+        row = actual_by_project.setdefault(te.project_id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0, "unbilled_wip": 0.0})
         row["actual_hours"] += float(te.hours)
-        row["actual_revenue"] += float(te.hours * te.bill_rate_applied) if is_billable else 0.0
         row["actual_cost"] += float(te.hours * te.cost_rate_applied)
+        # Unbilled WIP: billable, FB-synced, not yet on an invoice → value at current rate.
+        if is_billable and te.source == "freshbooks_api" and not bool(getattr(te, "billed", False)):
+            row["unbilled_wip"] += float(te.hours * te.bill_rate_applied)
+    # revenue = billed invoices + unbilled WIP
+    for pid, row in actual_by_project.items():
+        row["actual_revenue"] = billed_by_project.get(pid, 0.0) + row["unbilled_wip"]
+    # projects with invoices but no time entries in range
+    for pid, amt in billed_by_project.items():
+        if pid not in actual_by_project:
+            actual_by_project[pid] = {"actual_hours": 0.0, "actual_revenue": amt, "actual_cost": 0.0, "unbilled_wip": 0.0}
 
     rows = []
     for p in projects:
@@ -6558,6 +6703,9 @@ def unbilled_hours_report(
     for te in db.scalars(select(TimeEntry)).all():
         if te.id in invoiced_ids:
             continue
+        # FreshBooks is the billing system of record — exclude legacy manual entries.
+        if te.source != "freshbooks_api":
+            continue
         proj = projects.get(te.project_id)
         if proj is None:
             continue
@@ -6565,8 +6713,13 @@ def unbilled_hours_report(
         rate = float(te.bill_rate_applied or 0.0)
         value = hours * rate
 
+        is_billable_entry = bool(te.is_billable) and not proj.is_overhead and bool(proj.is_billable)
+        # A billable entry already billed in FB is not "unbilled" — drop it entirely.
+        if is_billable_entry and bool(getattr(te, "billed", False)):
+            continue
+
         # Billable bucket: per-entry is_billable=True AND project is billable & not overhead
-        if te.is_billable and not proj.is_overhead and proj.is_billable:
+        if is_billable_entry:
             bill_emp_hrs[int(te.user_id)] += hours
             bill_emp_val[int(te.user_id)] += value
             bill_prj_hrs[int(te.project_id)] += hours
@@ -6865,7 +7018,7 @@ def ar_summary(
         return max(stored, derived)
 
     today = date.today()
-    candidate_invoices = db.scalars(select(Invoice).where(Invoice.status.notin_(["void", "draft"]))).all()
+    candidate_invoices = db.scalars(select(Invoice).where(Invoice.status.notin_(["void", "draft", "written_off"]))).all()
     invoices = [i for i in candidate_invoices if _invoice_open_balance(i) > 0.0001]
     total_invoiced = float(sum(float(i.subtotal_amount or 0.0) for i in candidate_invoices))
     total_paid_to_date = float(sum(float(i.amount_paid or 0.0) for i in candidate_invoices))
@@ -8239,6 +8392,9 @@ def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[
         project["actual_revenue"] = float(project["actual_revenue"]) + revenue
         project["actual_cost"] = float(project["actual_cost"]) + cost
         project["actual_profit"] = float(project["actual_profit"]) + profit
+        # Unbilled WIP (billable, FB-synced, not yet invoiced) valued at current rate.
+        if is_billable and te.source == "freshbooks_api" and not bool(getattr(te, "billed", False)):
+            project["unbilled_wip"] = float(project.get("unbilled_wip", 0.0)) + revenue
 
         emp_key = te.user_id
         by_emp = project["by_employee"]
@@ -8293,18 +8449,36 @@ def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[
         by_subtask[sub_key]["cost"] += cost
         by_subtask[sub_key]["profit"] += profit
 
+    # Project cost = LABOR only (hours × cost rate), matching FreshBooks Profitability.
+    # Company-wide expenses (the FB expense import) live in the P&L OpEx, NOT in project
+    # cost — keep expense_cost as an informational field but exclude it from cost/profit.
     for ex in expenses:
         project = by_project.get(ex.project_id)
         if not project:
             continue
-        ex_cost = float(ex.amount or 0.0)
-        project["expense_cost"] = float(project["expense_cost"]) + ex_cost
-        project["actual_cost"] = float(project["actual_cost"]) + ex_cost
-        project["actual_profit"] = float(project["actual_profit"]) - ex_cost
+        project["expense_cost"] = float(project["expense_cost"]) + float(ex.amount or 0.0)
+
+    # Billed revenue per project from actual invoices (real historical rates baked in).
+    billed_by_project: dict[int, float] = defaultdict(float)
+    for inv in db.scalars(
+        select(Invoice).where(
+            Invoice.project_id.isnot(None),
+            Invoice.status.notin_(["void", "draft", "written_off"]),
+            Invoice.issue_date >= start,
+            Invoice.issue_date <= end,
+        )
+    ).all():
+        billed_by_project[int(inv.project_id)] += float(inv.subtotal_amount or 0.0)
 
     rows: list[dict[str, object]] = []
     for p in projects:
         row = by_project[p.id]
+        # Revenue = billed invoices + unbilled WIP — matches FreshBooks Profitability and
+        # avoids pricing historical (e.g. 2025) hours at current rates. by_employee/by_task
+        # stay at hours×rate as a productivity view.
+        if bool(p.is_billable):
+            row["actual_revenue"] = billed_by_project.get(p.id, 0.0) + float(row.get("unbilled_wip", 0.0))
+            row["actual_profit"] = float(row["actual_revenue"]) - float(row["actual_cost"])
         revenue = float(row["actual_revenue"])
         row["margin_pct"] = (float(row["actual_profit"]) / revenue * 100.0) if revenue > 0 else 0.0
         target_gross_margin_pct = float(row["target_gross_margin_pct"])
@@ -8384,13 +8558,25 @@ def _unbilled_since_last_invoice_by_client_project(db: Session) -> list[dict[str
         if not project_ref:
             continue
         task_ref = tasks_by_id.get(te.task_id)
-        is_billable = bool(project_ref.is_billable) and bool(task_ref.is_billable if task_ref else False)
+        # Billable requires the project, the task, AND the entry's own flag (which mirrors
+        # FreshBooks' per-entry `billable`). A billable project can still have non-billable
+        # entries, so all three must hold.
+        is_billable = (
+            bool(project_ref.is_billable)
+            and bool(task_ref.is_billable if task_ref else False)
+            and bool(getattr(te, "is_billable", True))
+        )
         if not is_billable:
             continue
-        if te.id in invoiced_time_entry_ids:
+        # FreshBooks is the billing system of record: only FB-synced time counts toward
+        # "earned, not billed". Manual/legacy entries are excluded from this metric.
+        if te.source != "freshbooks_api":
             continue
-        cutoff = last_invoice_end_by_project.get(int(te.project_id))
-        if cutoff is not None and te.work_date <= cutoff:
+        # FB's authoritative `billed` flag (True once the entry is on an FB invoice)
+        # supersedes the old invoice-date cutoff, which mis-counted billed work.
+        if bool(getattr(te, "billed", False)):
+            continue
+        if te.id in invoiced_time_entry_ids:
             continue
         week_status = timesheet_status_by_week.get((int(te.user_id), _week_start(te.work_date)))
         if week_status and week_status not in COMPLETED_TIMESHEET_STATUS_VALUES:

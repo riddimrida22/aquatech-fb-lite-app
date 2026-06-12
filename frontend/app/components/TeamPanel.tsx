@@ -131,7 +131,7 @@ export function TeamPanel({ projectId, canManage, staffOptions, onChange }: Team
             borderRadius: 8,
             padding: 10,
             marginBottom: 8,
-            background: "#fafcfd",
+            background: "var(--aq-subtle)",
             display: "grid",
             gridTemplateColumns: "1fr 1fr 90px",
             gap: 8,

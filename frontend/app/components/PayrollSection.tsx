@@ -96,7 +96,7 @@ export function PayrollSection({
         </div>
       </div>
 
-      <div style={{ border: "1px solid #e6edf5", borderRadius: 8, padding: 10, marginBottom: 10, background: "#f8fbff" }}>
+      <div style={{ border: "1px solid #e6edf5", borderRadius: 8, padding: 10, marginBottom: 10, background: "var(--aq-subtle)" }}>
         <strong>Selected Period</strong>: {payrollHoursReport?.selected_period_start || "-"} to {payrollHoursReport?.selected_period_end || "-"} |{" "}
         <strong>Total Hours</strong>: {periodHoursTotal.toFixed(2)}
       </div>

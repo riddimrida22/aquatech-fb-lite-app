@@ -112,7 +112,7 @@ export function DetailDrawer({ open, onClose, title, subtitle, width = 720, chil
             style={{
               padding: "12px 20px",
               borderTop: "1px solid var(--aq-border)",
-              background: "#fafcfd",
+              background: "var(--aq-subtle)",
               flexShrink: 0,
             }}
           >

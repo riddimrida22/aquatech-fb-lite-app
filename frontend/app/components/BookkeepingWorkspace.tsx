@@ -82,7 +82,7 @@ export function BookkeepingWorkspace() {
     <section className="aq-lite-stack">
       <div className="aq-lite-hero">
         <h2 style={{ margin: 0 }}>Bookkeeping — Tax Remediation Log</h2>
-        <p style={{ margin: "4px 0 0", color: "#6b7083", fontSize: 13 }}>
+        <p style={{ margin: "4px 0 0", color: "var(--aq-muted)", fontSize: 13 }}>
           Audit trail of CPA-remediation actions taken for the 2025 1120-S filing. Includes loan
           documentation, transaction reclassifications, M-1 adjustments, and CPA action flags.
         </p>
@@ -100,7 +100,7 @@ export function BookkeepingWorkspace() {
           {/* Summary tiles */}
           <div className="aq-lite-grid aq-lite-grid-4">
             <div className="aq-lite-panel">
-              <div style={{ fontSize: 11, color: "#6b7083", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 11, color: "var(--aq-muted)", textTransform: "uppercase" }}>
                 Total actions
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, color: "#21295c" }}>
@@ -108,7 +108,7 @@ export function BookkeepingWorkspace() {
               </div>
             </div>
             <div className="aq-lite-panel">
-              <div style={{ fontSize: 11, color: "#6b7083", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 11, color: "var(--aq-muted)", textTransform: "uppercase" }}>
                 Completed
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, color: "#065a82" }}>
@@ -116,7 +116,7 @@ export function BookkeepingWorkspace() {
               </div>
             </div>
             <div className="aq-lite-panel">
-              <div style={{ fontSize: 11, color: "#6b7083", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 11, color: "var(--aq-muted)", textTransform: "uppercase" }}>
                 Pending CPA
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, color: "#e29f2a" }}>
@@ -124,7 +124,7 @@ export function BookkeepingWorkspace() {
               </div>
             </div>
             <div className="aq-lite-panel">
-              <div style={{ fontSize: 11, color: "#6b7083", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 11, color: "var(--aq-muted)", textTransform: "uppercase" }}>
                 Transaction overrides
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, color: "#1c7293" }}>
@@ -171,7 +171,7 @@ export function BookkeepingWorkspace() {
                 border: "none",
                 borderBottom: tab === "actions" ? "3px solid #065a82" : "3px solid transparent",
                 fontWeight: tab === "actions" ? 700 : 400,
-                color: tab === "actions" ? "#065a82" : "#6b7083",
+                color: tab === "actions" ? "#065a82" : "var(--aq-muted)",
                 cursor: "pointer",
               }}
             >
@@ -186,7 +186,7 @@ export function BookkeepingWorkspace() {
                 border: "none",
                 borderBottom: tab === "overrides" ? "3px solid #065a82" : "3px solid transparent",
                 fontWeight: tab === "overrides" ? 700 : 400,
-                color: tab === "overrides" ? "#065a82" : "#6b7083",
+                color: tab === "overrides" ? "#065a82" : "var(--aq-muted)",
                 cursor: "pointer",
               }}
             >
@@ -216,7 +216,7 @@ export function BookkeepingWorkspace() {
                       <td style={{ padding: "8px 4px", color: "#1c7293" }}>{a.category}</td>
                       <td style={{ padding: "8px 4px" }}>
                         <div style={{ fontWeight: 600 }}>{a.title}</div>
-                        <div style={{ color: "#6b7083", marginTop: 4 }}>{a.description}</div>
+                        <div style={{ color: "var(--aq-muted)", marginTop: 4 }}>{a.description}</div>
                       </td>
                       <td style={{ padding: "8px 4px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                         {formatCurrency(a.dollar_impact)}
@@ -236,7 +236,7 @@ export function BookkeepingWorkspace() {
                           {a.status}
                         </span>
                       </td>
-                      <td style={{ padding: "8px 4px", color: "#6b7083", fontSize: 11 }}>
+                      <td style={{ padding: "8px 4px", color: "var(--aq-muted)", fontSize: 11 }}>
                         {a.artifact_refs || "—"}
                       </td>
                     </tr>
@@ -248,7 +248,7 @@ export function BookkeepingWorkspace() {
 
           {tab === "overrides" ? (
             <section className="aq-lite-panel">
-              <p style={{ fontSize: 12, color: "#6b7083", marginTop: 0 }}>
+              <p style={{ fontSize: 12, color: "var(--aq-muted)", marginTop: 0 }}>
                 Tax-classification overrides applied to specific bank transactions during the
                 2026-05-11 CPA remediation. These supplement the live P&L categorization to
                 reflect the correct tax treatment on Form 1120-S.
@@ -278,7 +278,7 @@ export function BookkeepingWorkspace() {
                         {o.override_classification}
                       </td>
                       <td style={{ padding: "8px 4px" }}>{o.loan_id ?? "—"}</td>
-                      <td style={{ padding: "8px 4px", color: "#6b7083", fontSize: 11 }}>
+                      <td style={{ padding: "8px 4px", color: "var(--aq-muted)", fontSize: 11 }}>
                         {o.override_notes?.slice(0, 120) ?? "—"}
                       </td>
                     </tr>

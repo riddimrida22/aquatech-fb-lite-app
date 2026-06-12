@@ -192,7 +192,7 @@ export function ReconciliationPanel() {
           border: "1px solid var(--aq-border)",
           borderRadius: 10,
           padding: 14,
-          background: "#fff",
+          background: "var(--aq-card)",
         }}
       >
         <h4 style={{ margin: 0 }}>Bank transactions overlap window</h4>
@@ -392,7 +392,7 @@ function FullReportSection({
         {showOpexList && activeOpex ? (
           <div style={{ marginTop: 10, maxHeight: 360, overflow: "auto", border: "1px solid var(--aq-border)", borderRadius: 6 }}>
             <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-              <thead style={{ position: "sticky", top: 0, background: "#fff" }}>
+              <thead style={{ position: "sticky", top: 0, background: "var(--aq-card)" }}>
                 <tr style={{ borderBottom: "1px solid var(--aq-border)" }}>
                   <th style={{ textAlign: "left", padding: 4 }}>Date</th>
                   <th style={{ textAlign: "right", padding: 4 }}>Amount</th>
@@ -465,7 +465,7 @@ function SourceCard({ title, rows }: { title: string; rows: SourceCount[] }) {
         border: "1px solid var(--aq-border)",
         borderRadius: 10,
         padding: 12,
-        background: "#fff",
+        background: "var(--aq-card)",
       }}
     >
       <h4 style={{ margin: 0, fontSize: 13 }}>{title}</h4>

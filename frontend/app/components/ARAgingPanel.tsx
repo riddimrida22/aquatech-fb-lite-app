@@ -49,7 +49,7 @@ export function ARAgingPanel({ invoices }: { invoices: Invoice[] }) {
     for (const inv of invoices) {
       if (!inv.balance_due || inv.balance_due <= 0.01) continue;
       const status = (inv.status || "").toLowerCase();
-      if (status === "void" || status === "voided" || status === "cancelled" || status === "canceled") continue;
+      if (status === "void" || status === "voided" || status === "cancelled" || status === "canceled" || status === "written_off" || status === "draft") continue;
       const client = (inv.client_name || "Unassigned").trim() || "Unassigned";
       const days = inv.due_date ? daysBetween(today, inv.due_date) : 0;
       const bucket = bucketForDaysOverdue(days);

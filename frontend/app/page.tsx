@@ -17,7 +17,7 @@ import { TimesheetsWorkspace } from "./components/TimesheetsWorkspace";
 import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
 import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
-import { AccountingWorkspace } from "./components/AccountingWorkspace";
+import { AccountingWorkspace, PLReport } from "./components/AccountingWorkspace";
 import { BookkeepingWorkspace } from "./components/BookkeepingWorkspace";
 import { CloudConnectionsPanel } from "./components/CloudConnectionsPanel";
 import { ReconciliationPanel } from "./components/ReconciliationPanel";
@@ -116,6 +116,7 @@ export default function AquatechPmHome() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [timeEntries, setTimeEntries] = useState<TimeEntry[]>([]);
+  const [companyMonthHours, setCompanyMonthHours] = useState<number | null>(null);
   const [timesheets, setTimesheets] = useState<Timesheet[]>([]);
   const [adminTimesheets, setAdminTimesheets] = useState<AdminTimesheet[]>([]);
   const [staffList, setStaffList] = useState<User[]>([]);
@@ -233,6 +234,13 @@ export default function AquatechPmHome() {
         requests.push(apiGet<AdminTimesheet[]>("/timesheets/all?include_pending=true"));
         // Best-effort fetch of staff list for admin "view as employee" feature
         apiGet<User[]>("/users").then((u) => setStaffList(u || [])).catch(() => setStaffList([]));
+      }
+      if (canApproveTimesheetsLocal || deriveUserCapabilities(activeUser).canViewFinancials) {
+        // Company-wide hours this month for the dashboard tile (whole team, not just the viewer).
+        const msIso = startOfMonthIso();
+        apiGet<TimeEntry[]>(`/time-entries?start=${msIso}&end=${monthEnd}&team=true`)
+          .then((rows) => setCompanyMonthHours((rows || []).reduce((s, r) => s + (r.hours || 0), 0)))
+          .catch(() => setCompanyMonthHours(null));
       }
       if (deriveUserCapabilities(activeUser).canViewFinancials) {
         requests.push(apiGet<Invoice[]>("/invoices"));
@@ -683,6 +691,22 @@ export default function AquatechPmHome() {
           <button
             type="button"
             className="aq-lite-signed-in-out"
+            onClick={() => {
+              const el = document.documentElement;
+              const dark = el.getAttribute("data-theme") === "dark";
+              if (dark) el.removeAttribute("data-theme");
+              else el.setAttribute("data-theme", "dark");
+              try {
+                localStorage.setItem("aqt-theme", dark ? "light" : "dark");
+              } catch {}
+            }}
+            title="Toggle light / dark mode"
+          >
+            ◑ Theme
+          </button>
+          <button
+            type="button"
+            className="aq-lite-signed-in-out"
             onClick={async () => {
               await apiPost("/auth/logout");
               window.location.reload();
@@ -767,7 +791,7 @@ export default function AquatechPmHome() {
                 </article>
                 <article className="aq-lite-kpi">
                   <span>Month hours logged</span>
-                  <strong>{formatNumber(headlineMetrics.monthHours, 1)}</strong>
+                  <strong>{formatNumber(companyMonthHours ?? headlineMetrics.monthHours, 1)}</strong>
                 </article>
                 <article className="aq-lite-kpi">
                   <span>Total invoiced</span>
@@ -1272,6 +1296,8 @@ export default function AquatechPmHome() {
         ) : null}
 
         {workspace === "reports" ? (
+          <div className="aq-lite-stack">
+          <PLReport />
           <div className="aq-lite-grid aq-lite-grid-2">
             <section className="aq-lite-panel">
               <div className="aq-lite-panel-head">
@@ -1406,6 +1432,7 @@ export default function AquatechPmHome() {
                 initiallyOpen="all"
               />
             </section>
+          </div>
           </div>
         ) : null}
 

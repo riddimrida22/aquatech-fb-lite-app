@@ -19,6 +19,37 @@
   --aq-button-scale: 0.92;
   --aq-content-max: 1360px;
   --aq-content-tight: 1180px;
+  /* Semantic surface tokens — used by inline component styles so dark mode flips wholesale. */
+  --aq-row-head: #f1f5f9;     /* section / header table rows */
+  --aq-row-total-bg: #e5f5ee; /* green "total" row background */
+  --aq-row-total-fg: #235944; /* green "total" row text */
+  --aq-subtle: #fafcfd;       /* subtle inset panel background */
+  --aq-input-bg: #ffffff;     /* form control background */
+}
+
+/* Dark mode — overrides the palette variables; the rest of the sheet uses var(--aq-*) so it flips wholesale. */
+[data-theme="dark"] {
+  --aq-bg-a: #0e1620;
+  --aq-bg-b: #16212f;
+  --aq-card: #1b2734;
+  --aq-border: #30404f;
+  --aq-text: #e7eef6;
+  --aq-muted: #9bacc0;
+  --aq-green: #3fb6a8;
+  --aq-red: #e07559;
+  --aq-primary: #5d8ac4;
+  --aq-primary-dark: #41699c;
+  --aq-primary-soft: #233247;
+  --aq-accent: #f3a35f;
+  --aq-accent-soft: #3a2b1b;
+  --aq-shell: #0a1320;
+  --aq-shell-dark: #060d16;
+  --aq-row-head: #222f3e;
+  --aq-row-total-bg: #17352b;
+  --aq-row-total-fg: #79d6bb;
+  --aq-subtle: #151e29;
+  --aq-input-bg: #131c27;
+  color-scheme: dark;
 }
 
 * {
@@ -39,10 +70,11 @@ input,
 select,
 textarea {
   font: inherit;
-  border: 1px solid #bdc9d5;
+  border: 1px solid var(--aq-border);
   border-radius: 8px;
   padding: 6px 10px;
-  background: #fff;
+  background: var(--aq-input-bg);
+  color: var(--aq-text);
 }
 
 button {
@@ -86,7 +118,7 @@ button:disabled {
 }
 
 table th {
-  background: #f1f5f9;
+  background: var(--aq-row-head);
 }
 
 table th.aq-sortable-header {
@@ -215,7 +247,7 @@ table th.aq-sortable-header.aq-sortable-desc::after {
   max-width: var(--aq-content-max);
   margin: 0 auto;
   padding: 14px 18px 26px;
-  background: #f1f4f8;
+  background: var(--aq-subtle);
 }
 
 .aq-shell-timesheet-only .aq-main-pane {
@@ -229,8 +261,8 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 }
 
 .aq-topbar {
-  background: #ffffff;
-  border: 1px solid #d5dfe9;
+  background: var(--aq-card);
+  border: 1px solid var(--aq-border);
   border-radius: 14px;
   padding: 12px 14px;
   margin-bottom: 14px;
@@ -1168,3 +1200,92 @@ table th.aq-sortable-header.aq-sortable-desc::after {
     font-size: 18px;
   }
 }
+
+/* ============================================================
+   Dark mode — content-surface overrides for the aq-lite design
+   system. Base rules hardcode light backgrounds; these flip the
+   content chrome when [data-theme="dark"] is active. The sidebar /
+   shell already use white-on-dark overlays, so they're left alone.
+   ============================================================ */
+[data-theme="dark"] .aq-lite-topbar {
+  background: var(--aq-card);
+  border-color: var(--aq-border);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.40);
+}
+[data-theme="dark"] .aq-lite-topbar h1 { color: var(--aq-text); }
+[data-theme="dark"] .aq-lite-user-chip {
+  background: var(--aq-subtle);
+  border-color: var(--aq-border);
+}
+[data-theme="dark"] .aq-lite-muted,
+[data-theme="dark"] .aq-lite-sidebar-label,
+[data-theme="dark"] .aq-lite-user-chip span { color: var(--aq-muted); }
+
+[data-theme="dark"] .aq-lite-panel,
+[data-theme="dark"] .aq-lite-hero {
+  background: var(--aq-card);
+  border-color: var(--aq-border);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+}
+[data-theme="dark"] .aq-lite-hero h2,
+[data-theme="dark"] .aq-lite-panel h3 { color: var(--aq-text); }
+[data-theme="dark"] .aq-lite-hero p:not(.aq-lite-eyebrow) { color: var(--aq-muted); }
+
+[data-theme="dark"] .aq-lite-kpi {
+  background: linear-gradient(180deg, var(--aq-card), var(--aq-subtle));
+  border-color: var(--aq-border);
+}
+[data-theme="dark"] .aq-lite-kpi span,
+[data-theme="dark"] .aq-lite-stat-list span { color: var(--aq-muted); }
+[data-theme="dark"] .aq-lite-kpi strong,
+[data-theme="dark"] .aq-lite-stat-list strong { color: var(--aq-text); }
+
+[data-theme="dark"] .aq-lite-list-row,
+[data-theme="dark"] .aq-lite-note,
+[data-theme="dark"] .aq-lite-stat-list > div {
+  background: var(--aq-subtle);
+  border-color: var(--aq-border);
+}
+
+[data-theme="dark"] .aq-lite-form label,
+[data-theme="dark"] .aq-lite-inline-check { color: var(--aq-text); }
+
+[data-theme="dark"] .aq-lite-segmented button {
+  background: var(--aq-subtle);
+  color: var(--aq-text);
+  border-color: var(--aq-border);
+}
+
+[data-theme="dark"] .aq-lite-table th,
+[data-theme="dark"] .aq-lite-table td { border-bottom-color: var(--aq-border); }
+[data-theme="dark"] .aq-lite-table th { color: var(--aq-muted); background: var(--aq-row-head); }
+[data-theme="dark"] .aq-lite-table tbody tr:hover td { background: var(--aq-row-head); }
+
+[data-theme="dark"] .aq-lite-auth-card {
+  background: var(--aq-card);
+  border-color: var(--aq-border);
+}
+
+[data-theme="dark"] .aq-lite-flash {
+  background: var(--aq-row-total-bg);
+  color: var(--aq-row-total-fg);
+  border-color: var(--aq-border);
+}
+[data-theme="dark"] .aq-lite-error-banner,
+[data-theme="dark"] .aq-lite-toast-error {
+  background: #3a1f1a;
+  color: #f0b3a3;
+  border-color: #6f3a30;
+}
+
+[data-theme="dark"] .aq-lite-badge {
+  background: var(--aq-subtle);
+  border-color: var(--aq-border);
+  color: var(--aq-muted);
+}
+[data-theme="dark"] .aq-lite-badge-good { background: #16352b; border-color: #2c5e4c; color: #7fd8bf; }
+[data-theme="dark"] .aq-lite-badge-warn { background: #3a2e18; border-color: #6b5526; color: #e2b877; }
+[data-theme="dark"] .aq-lite-badge-bad  { background: #3a1f1a; border-color: #6f3a30; color: #e8a092; }
+[data-theme="dark"] .aq-lite-badge-info { background: #1c2c44; border-color: #34507a; color: #9cc0ef; }
+[data-theme="dark"] .aq-lite-badge-neutral,
+[data-theme="dark"] .aq-lite-badge-mute { background: var(--aq-subtle); border-color: var(--aq-border); color: var(--aq-muted); }

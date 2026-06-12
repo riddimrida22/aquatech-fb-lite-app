@@ -112,10 +112,10 @@ export function DedupPanel() {
           <h3 style={{ color: "#8b5a1d" }}>{data.unmatched_count.toLocaleString()}</h3>
           <p className="aq-lite-muted" style={{ fontSize: 12, color: "#8b5a1d" }}>{formatCurrency(data.unmatched_total)}</p>
         </div>
-        <div className="aq-lite-panel" style={{ padding: 12, background: "#e5f5ee", border: "1px solid #b8decf" }}>
-          <p className="aq-lite-eyebrow" style={{ color: "#235944" }}>Chase rows (source of truth)</p>
-          <h3 style={{ color: "#235944" }}>{data.chase_count.toLocaleString()}</h3>
-          <p className="aq-lite-muted" style={{ fontSize: 12, color: "#235944" }}>Bank cash flow</p>
+        <div className="aq-lite-panel" style={{ padding: 12, background: "var(--aq-row-total-bg)", border: "1px solid #b8decf" }}>
+          <p className="aq-lite-eyebrow" style={{ color: "var(--aq-row-total-fg)" }}>Chase rows (source of truth)</p>
+          <h3 style={{ color: "var(--aq-row-total-fg)" }}>{data.chase_count.toLocaleString()}</h3>
+          <p className="aq-lite-muted" style={{ fontSize: 12, color: "var(--aq-row-total-fg)" }}>Bank cash flow</p>
         </div>
       </div>
 

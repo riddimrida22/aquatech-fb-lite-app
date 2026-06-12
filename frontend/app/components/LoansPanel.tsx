@@ -215,7 +215,7 @@ export function LoansPanel({ canManage }: { canManage: boolean }) {
           onSubmit={save}
           style={{
             border: "1px solid var(--aq-border)", borderRadius: 10, padding: 14,
-            marginBottom: 12, background: "#fafcfd", display: "grid",
+            marginBottom: 12, background: "var(--aq-subtle)", display: "grid",
             gridTemplateColumns: "1fr 1fr 1fr", gap: 10,
           }}
         >

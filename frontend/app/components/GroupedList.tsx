@@ -221,7 +221,7 @@ export function GroupedList<T>({
               border: "1px solid var(--aq-border)",
               borderRadius: 8,
               marginBottom: 6,
-              background: "#fff",
+              background: "var(--aq-card)",
             }}
           >
             <button
