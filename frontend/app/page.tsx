@@ -19,6 +19,7 @@ import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
 import { AccountingWorkspace, PLReport } from "./components/AccountingWorkspace";
 import { BookkeepingWorkspace } from "./components/BookkeepingWorkspace";
+import { CategorizationWorkspace } from "./components/CategorizationWorkspace";
 import { CloudConnectionsPanel } from "./components/CloudConnectionsPanel";
 import { ReconciliationPanel } from "./components/ReconciliationPanel";
 import {
@@ -55,6 +56,7 @@ type WorkspaceKey =
   | "timesheets"
   | "invoices"
   | "costs"
+  | "categorize"
   | "payroll"
   | "accounting"
   | "bookkeeping"
@@ -72,6 +74,7 @@ const WORKSPACES: Array<{ key: WorkspaceKey; label: string; hint: string }> = [
   { key: "timesheets", label: "Timesheets", hint: "Approval flow" },
   { key: "invoices", label: "Invoices", hint: "Billing + A/R" },
   { key: "costs", label: "Costs", hint: "Expenses + tax" },
+  { key: "categorize", label: "Categorize", hint: "Sort transactions" },
   { key: "payroll", label: "Payroll", hint: "Payroll journal · COGS" },
   { key: "accounting", label: "Accounting", hint: "P&L · Cash Flow · Loans" },
   { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log" },
@@ -124,6 +127,7 @@ export default function AquatechPmHome() {
   const [reportRange, setReportRange] = useState<ProjectPerformanceRange | null>(null);
   const [projectPerformance, setProjectPerformance] = useState<ProjectPerformanceRow[]>([]);
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceRevenueStatus | null>(null);
+  const [dashPl, setDashPl] = useState<{ revenue_cash: number; net_income_cash: number; net_margin_cash?: number; gross_margin_cash?: number } | null>(null);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
   const [projectExpenses, setProjectExpenses] = useState<ProjectExpense[]>([]);
@@ -243,6 +247,9 @@ export default function AquatechPmHome() {
           .catch(() => setCompanyMonthHours(null));
       }
       if (deriveUserCapabilities(activeUser).canViewFinancials) {
+        // Fire-and-forget YTD P&L for the dashboard net-income / margin tiles.
+        apiGet<{ revenue_cash: number; net_income_cash: number; net_margin_cash?: number; gross_margin_cash?: number }>("/accounting/pl")
+          .then((d) => setDashPl(d)).catch(() => setDashPl(null));
         requests.push(apiGet<Invoice[]>("/invoices"));
         requests.push(apiGet<ProjectPerformanceRange>("/reports/project-performance-range"));
         requests.push(apiGet<InvoiceRevenueStatus>("/reports/invoice-revenue-status"));
@@ -801,6 +808,18 @@ export default function AquatechPmHome() {
                   <span>Open invoices</span>
                   <strong>{headlineMetrics.openInvoices}</strong>
                 </article>
+                {dashPl ? (
+                  <>
+                    <article className="aq-lite-kpi">
+                      <span>Net income (YTD)</span>
+                      <strong>{formatCurrency(dashPl.net_income_cash)}</strong>
+                    </article>
+                    <article className="aq-lite-kpi">
+                      <span>Net margin (YTD)</span>
+                      <strong>{dashPl.net_margin_cash != null ? `${(dashPl.net_margin_cash * 100).toFixed(1)}%` : "—"}</strong>
+                    </article>
+                  </>
+                ) : null}
               </div>
             </div>
 
@@ -1435,6 +1454,8 @@ export default function AquatechPmHome() {
           </div>
           </div>
         ) : null}
+
+        {workspace === "categorize" ? <CategorizationWorkspace /> : null}
 
         {workspace === "costs" ? (
           <div className="aq-lite-stack">

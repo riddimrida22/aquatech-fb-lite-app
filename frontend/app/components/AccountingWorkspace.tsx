@@ -10,14 +10,29 @@ type PL = {
   revenue_cash: number;
   revenue_accrual: number;
   cogs: number;
-  cogs_breakdown?: { gusto_employer_cost: number; benefits_workers_comp: number };
+  cogs_breakdown?: {
+    gross_wages: number;
+    employer_payroll_taxes: number;
+    employer_401k_match: number;
+    benefits_workers_comp: number;
+    direct_project_costs: number;
+    total_employer_cost: number;
+  };
+  cogs_direct_project_by_group?: { group: string; amount: number }[];
   payroll_breakdown: { gross: number; employer_taxes: number; employer_401k: number };
+  gross_profit_cash?: number;
+  gross_profit_accrual?: number;
+  gross_margin_cash?: number;
+  gross_margin_accrual?: number;
   opex: number;
   opex_breakdown?: { category: string; amount: number }[];
+  opex_by_group?: { group: string; amount: number }[];
   interest_expense: number;
   fees_expense: number;
   net_income_cash: number;
   net_income_accrual: number;
+  net_margin_cash?: number;
+  net_margin_accrual?: number;
   notes: string[];
 };
 
@@ -134,10 +149,10 @@ function PLView({ start, end }: { start: string; end: string }) {
   if (loading) return <section className="aq-lite-panel"><p className="aq-lite-muted">Computing P&amp;L…</p></section>;
   if (err || !pl) return <section className="aq-lite-panel"><p style={{ color: "var(--aq-red)" }}>{err || "No data"}</p></section>;
 
-  const grossProfit = pl.revenue_cash - pl.cogs;
-  const grossMargin = pl.revenue_cash > 0 ? grossProfit / pl.revenue_cash : 0;
-  const opexAndOther = pl.opex + pl.interest_expense + pl.fees_expense;
-  const netMargin = pl.revenue_cash > 0 ? pl.net_income_cash / pl.revenue_cash : 0;
+  const grossProfit = pl.gross_profit_cash ?? (pl.revenue_cash - pl.cogs);
+  const grossMargin = pl.gross_margin_cash ?? (pl.revenue_cash > 0 ? grossProfit / pl.revenue_cash : 0);
+  const netMargin = pl.net_margin_cash ?? (pl.revenue_cash > 0 ? pl.net_income_cash / pl.revenue_cash : 0);
+  const cb = pl.cogs_breakdown;
 
   return (
     <section className="aq-lite-panel">
@@ -156,13 +171,12 @@ function PLView({ start, end }: { start: string; end: string }) {
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Accrual basis: {formatCurrency(pl.revenue_accrual)} (issued)</td>
           </tr>
           <tr>
-            <td>− COGS (Gusto + Benefits/WC)</td>
+            <td>− COGS (loaded labor + benefits + direct project)</td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.cogs)})</td>
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>
-              Gusto: gross {formatCurrency(pl.payroll_breakdown.gross)} · ER taxes {formatCurrency(pl.payroll_breakdown.employer_taxes)} · 401k {formatCurrency(pl.payroll_breakdown.employer_401k)}
-              {pl.cogs_breakdown && pl.cogs_breakdown.benefits_workers_comp > 0 ? (
-                <> · Benefits/WC (NYSIF + Nu Era) {formatCurrency(pl.cogs_breakdown.benefits_workers_comp)}</>
-              ) : null}
+              Labor: gross {formatCurrency(pl.payroll_breakdown.gross)} · ER taxes {formatCurrency(pl.payroll_breakdown.employer_taxes)} · 401k {formatCurrency(pl.payroll_breakdown.employer_401k)}
+              {cb && cb.benefits_workers_comp > 0 ? <> · Benefits/WC {formatCurrency(cb.benefits_workers_comp)}</> : null}
+              {cb && cb.direct_project_costs > 0 ? <> · Direct project {formatCurrency(cb.direct_project_costs)}</> : null}
             </td>
           </tr>
           <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}>
@@ -171,15 +185,22 @@ function PLView({ start, end }: { start: string; end: string }) {
             <td style={{ color: "var(--aq-muted)", fontWeight: 400, fontSize: 11 }}>Gross margin {(grossMargin * 100).toFixed(1)}%</td>
           </tr>
           <tr style={{ fontWeight: 600 }}>
-            <td>− Operating expenses (by category)</td>
+            <td>− Operating expenses (indirect)</td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.opex)})</td>
-            <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>From bank/CC, excl. loan payments &amp; transfers</td>
+            <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Grouped: Admin / Marketing / Business Development</td>
           </tr>
+          {(pl.opex_by_group ?? []).map((row) => (
+            <tr key={row.group} style={{ fontWeight: 600 }}>
+              <td style={{ paddingLeft: 24 }}>{row.group}</td>
+              <td style={{ textAlign: "right" }}>({formatCurrency(row.amount)})</td>
+              <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>{pl.opex > 0 ? `${((row.amount / pl.opex) * 100).toFixed(1)}%` : ""}</td>
+            </tr>
+          ))}
           {(pl.opex_breakdown ?? []).map((row) => (
             <tr key={row.category}>
-              <td style={{ paddingLeft: 24, color: "var(--aq-muted)" }}>{row.category}</td>
-              <td style={{ textAlign: "right", color: "var(--aq-muted)" }}>({formatCurrency(row.amount)})</td>
-              <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>{pl.opex > 0 ? `${((row.amount / pl.opex) * 100).toFixed(1)}%` : ""}</td>
+              <td style={{ paddingLeft: 44, color: "var(--aq-muted)", fontSize: 12 }}>{row.category}</td>
+              <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>({formatCurrency(row.amount)})</td>
+              <td></td>
             </tr>
           ))}
           <tr>
