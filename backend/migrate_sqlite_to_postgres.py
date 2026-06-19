@@ -54,9 +54,10 @@ src_engine = create_engine(f"sqlite:///{SQLITE_PATH}")
 src_meta = MetaData()
 src_meta.reflect(bind=src_engine)
 print(f"Source tables ({len(src_meta.tables)}):")
-for name in sorted(src_meta.tables.keys()):
-    n = src_engine.connect().execute(text(f"SELECT COUNT(*) FROM {name}")).scalar()
-    print(f"  {name}: {n} rows")
+with src_engine.connect() as _count_conn:
+    for name in sorted(src_meta.tables.keys()):
+        n = _count_conn.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar()
+        print(f"  {name}: {n} rows")
 
 # ---- Target: Postgres ----
 print("\nConnecting to Postgres...")

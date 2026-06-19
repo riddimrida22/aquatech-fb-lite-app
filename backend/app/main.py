@@ -1528,6 +1528,88 @@ BANK_CATEGORY_KEYWORD_RULES: list[tuple[list[str], tuple[str, str, float]]] = [
     (["owner draw", "draw"], ("Other", "Owner Draw", 0.94)),
     (["loan payment", "principal payment"], ("Other", "Loan Payment", 0.92)),
 ]
+# --- Consulting chart of accounts (APPROVED 2026-06-12) -----------------------
+# Maps every expense category (existing labels + new finer ones) to:
+#   section: "COGS" (cost of delivering services = all labor + burden + direct
+#            project costs), "INDIRECT" (operating overhead), or "OTHER" (below
+#            the operating line — excluded from gross/net margin).
+#   group:   the P&L rollup parent. INDIRECT rolls up under Admin / Marketing / BD.
+# Firm rule: ALL labor (wages + employer taxes + retirement/401k + benefits) = COGS.
+# Used by the P&L to roll up Revenue - COGS = Gross Profit; - Indirect = Net Income.
+CHART_OF_ACCOUNTS: dict[str, tuple[str, str]] = {
+    # COGS — cost of delivering work
+    "Labor": ("COGS", "Direct Labor"),
+    "Direct Labor": ("COGS", "Direct Labor"),
+    "Payroll Taxes And Processing": ("COGS", "Labor Burden"),
+    "Employer Payroll Taxes": ("COGS", "Labor Burden"),
+    "Retirement / 401(k)": ("COGS", "Labor Burden"),
+    "Benefits & Health": ("COGS", "Labor Burden"),
+    "Workers' Comp": ("COGS", "Labor Burden"),
+    "Subconsultants": ("COGS", "Direct Project Costs"),
+    "Materials": ("COGS", "Direct Project Costs"),
+    "Field Services": ("COGS", "Direct Project Costs"),
+    "Permits And Fees": ("COGS", "Direct Project Costs"),
+    "Equipment Rental": ("COGS", "Direct Project Costs"),
+    "Reimbursables": ("COGS", "Direct Project Costs"),
+    # INDIRECT — Admin / G&A
+    "Rent": ("INDIRECT", "Admin / G&A"),
+    "Utilities": ("INDIRECT", "Admin / G&A"),
+    "Rent & Utilities": ("INDIRECT", "Admin / G&A"),
+    "Software And Subscriptions": ("INDIRECT", "Admin / G&A"),
+    "Software & Subscriptions": ("INDIRECT", "Admin / G&A"),
+    "Insurance": ("INDIRECT", "Admin / G&A"),
+    "Telecom & Internet": ("INDIRECT", "Admin / G&A"),
+    "Office Supplies": ("INDIRECT", "Admin / G&A"),
+    "Office & Postage": ("INDIRECT", "Admin / G&A"),
+    "Professional Services": ("INDIRECT", "Admin / G&A"),
+    "Bank Fees": ("INDIRECT", "Admin / G&A"),
+    "Bank & Merchant Fees": ("INDIRECT", "Admin / G&A"),
+    "Dues, Licenses & Education": ("INDIRECT", "Admin / G&A"),
+    "Computer Hardware & Equipment": ("INDIRECT", "Admin / G&A"),
+    # INDIRECT — Marketing
+    "Marketing & Advertising": ("INDIRECT", "Marketing"),
+    "Advertising": ("INDIRECT", "Marketing"),
+    "Website": ("INDIRECT", "Marketing"),
+    "Marketing Materials": ("INDIRECT", "Marketing"),
+    # INDIRECT — Business Development
+    "Travel": ("INDIRECT", "Business Development"),
+    "BD Travel": ("INDIRECT", "Business Development"),
+    "Meals": ("INDIRECT", "Business Development"),
+    "Client Meals": ("INDIRECT", "Business Development"),
+    "Conferences & Events": ("INDIRECT", "Business Development"),
+    "Memberships": ("INDIRECT", "Business Development"),
+    # Exact labels emitted by the keyword classifier (_OPEX_BUCKET_RULES) — keep in sync
+    "Travel & Transport": ("INDIRECT", "Business Development"),
+    "Meals & Entertainment": ("INDIRECT", "Business Development"),
+    "Office Supplies & Postage": ("INDIRECT", "Admin / G&A"),
+    "Computer Hardware & Equipment ": ("INDIRECT", "Admin / G&A"),
+    "Dues, Licenses & Education": ("INDIRECT", "Admin / G&A"),
+    "Marketing & Advertising": ("INDIRECT", "Marketing"),
+    "Other / Uncategorized": ("INDIRECT", "⚠ Needs review (manual)"),
+    "⚠ Needs review (manual)": ("INDIRECT", "⚠ Needs review (manual)"),
+    # OTHER — below the operating line (excluded from margin)
+    "Interest Expense": ("OTHER", "Interest"),
+    "Taxes": ("OTHER", "Income Taxes"),
+    "Loan Payment": ("OTHER", "Financing"),
+    "Loan Principal": ("OTHER", "Financing"),
+    "Transfer": ("OTHER", "Transfer"),
+    "Equity Transfer In/Out (...6611 / ...0273)": ("OTHER", "Transfer"),
+    "Owner Draw": ("OTHER", "Owner Draw"),
+    "Uncategorized": ("OTHER", "Uncategorized"),
+}
+# Ordered display structure for the P&L / categorization UI.
+COA_INDIRECT_GROUPS = ["Admin / G&A", "Marketing", "Business Development"]
+COA_COGS_GROUPS = ["Direct Labor", "Labor Burden", "Direct Project Costs"]
+
+
+def coa_section(category: str | None) -> tuple[str, str]:
+    """Map a stored expense category to (section, rollup_group). Unknown business
+    categories default to a visible review bucket, never silently into a real line."""
+    if not category:
+        return ("OTHER", "Uncategorized")
+    return CHART_OF_ACCOUNTS.get(category.strip(), ("INDIRECT", "⚠ Needs review (manual)"))
+
+
 DATE_COLUMNS = ["Date", "Posted Date", "Posting Date", "Transaction Date"]
 DESC_COLUMNS = ["Description", "Transaction Description", "Memo", "Details", "Payee", "Name"]
 AMOUNT_COLUMNS = ["Amount"]
@@ -3347,6 +3429,15 @@ def accounting_pl(
                 loan_keywords.append(pat)
     opex = 0.0
     opex_by_cat: dict[str, float] = defaultdict(float)
+    # Consulting chart-of-accounts rollups. INDIRECT spend rolls up by group
+    # (Admin / Marketing / Business Development). Transactions whose assigned category
+    # is a COGS account (subconsultants, materials, direct project costs) route to COGS,
+    # not OPEX; OTHER categories (transfers/owner draws/financing) are excluded from the
+    # operating margin entirely. Authoritative source = each tx's assigned category
+    # (_tx_category_from_json); the keyword classifier is only a fallback for uncategorized.
+    opex_by_group: dict[str, float] = defaultdict(float)
+    cogs_from_tx = 0.0
+    cogs_tx_by_group: dict[str, float] = defaultdict(float)
     interest_in_loans = 0.0
     cc_payments = 0.0
     # Internal-transfer + CC-payment keywords. These move money between user-owned
@@ -3434,8 +3525,18 @@ def accounting_pl(
         if "payroll" in cat_lower and "tax" not in cat_lower:
             continue
         amt = -float(tx.amount or 0)
-        opex += amt
-        opex_by_cat[_opex_category_bucket(nm_upper, cats[0] if cats else None)] += amt
+        _grp, _cat = _tx_category_from_json(tx)  # assigned category wins; keyword = fallback
+        cat = _cat or _opex_category_bucket(nm_upper, cats[0] if cats else None)
+        section, group = coa_section(cat)
+        if section == "COGS":  # subconsultants / materials / direct project costs
+            cogs_from_tx += amt
+            cogs_tx_by_group[group] += amt
+        elif section == "OTHER":  # transfers / owner draws / financing — not an expense
+            continue
+        else:
+            opex += amt
+            opex_by_cat[cat] += amt
+            opex_by_group[group] += amt
     # Pass 2: hardware/travel purchases on personal account that are actually business
     for tx in personal_outflows:
         nm_upper = (tx.name or "").upper()
@@ -3443,12 +3544,20 @@ def accounting_pl(
             continue  # carved-out: not a computer purchase
         if any(k in nm_upper for k in personal_to_business_keywords):
             amt = -float(tx.amount or 0)
-            opex += amt
             try:
                 pcats = json.loads(tx.category_json or "[]")
             except Exception:
                 pcats = []
-            opex_by_cat[_opex_category_bucket(nm_upper, pcats[0] if pcats else None)] += amt
+            _pgrp, _pcat = _tx_category_from_json(tx)
+            cat = _pcat or _opex_category_bucket(nm_upper, pcats[0] if pcats else None)
+            section, group = coa_section(cat)
+            if section == "COGS":
+                cogs_from_tx += amt
+                cogs_tx_by_group[group] += amt
+            elif section != "OTHER":
+                opex += amt
+                opex_by_cat[cat] += amt
+                opex_by_group[group] += amt
 
     # Pass 3: FB-only business expenses (paid on a personal card not linked to AqtPM,
     # so the bank-side rows we have don't see them). Pull from active csv_fb_expenses
@@ -3471,13 +3580,18 @@ def accounting_pl(
         if any(k in nm_upper for k in personal_overrides):
             continue
         amt = float(tx.amount or 0)
-        fb_only_opex += amt
         # FB rows carry their curated FreshBooks category in account_id — normalize it
         # into the canonical bucket set (falls back to the keyword classifier on the name).
         raw_fb = (tx.account_id or "").strip()
         fb_label = _normalize_opex_label(raw_fb) if raw_fb else _opex_category_bucket(nm_upper, None)
-        opex_by_cat[fb_label] += amt
-    opex += fb_only_opex
+        section, group = coa_section(fb_label)
+        if section == "COGS":
+            cogs_from_tx += amt
+            cogs_tx_by_group[group] += amt
+        elif section != "OTHER":
+            opex += amt
+            opex_by_cat[fb_label] += amt
+            opex_by_group[group] += amt
 
     # Interest expense from LoanPayment
     interest_expense = float(db.scalar(
@@ -3489,8 +3603,16 @@ def accounting_pl(
         .where(LoanPayment.payment_date >= s, LoanPayment.payment_date <= e)
     ) or 0.0)
 
+    # Direct-project costs categorized on transactions (subconsultants, materials, field
+    # services) join the loaded-labor COGS computed from the payroll journal above.
+    cogs += cogs_from_tx
+    gross_profit_cash = revenue - cogs
+    gross_profit_accrual = revenue_accrual - cogs
     net_income_cash = revenue - cogs - opex - interest_expense - fees_expense
     net_income_accrual = revenue_accrual - cogs - opex - interest_expense - fees_expense
+
+    def _margin(num: float, den: float) -> float:
+        return round(num / den, 4) if den else 0.0
 
     return {
         "period": {"start": s.isoformat(), "end": e.isoformat()},
@@ -3498,25 +3620,42 @@ def accounting_pl(
         "revenue_accrual": revenue_accrual,
         "cogs": cogs,
         "cogs_breakdown": {
-            # Itemized from the payroll journal (engineering consulting: full loaded
-            # labor cost is COGS — gross + employer taxes + employer 401(k) + benefits).
+            # Loaded labor (gross + employer taxes + 401(k)) + benefits + categorized
+            # direct-project costs (subconsultants / materials / field services).
             "gross_wages": round(payroll_breakdown["gross"], 2),
             "employer_payroll_taxes": round(payroll_breakdown["employer_taxes"], 2),
             "employer_401k_match": round(payroll_breakdown["employer_401k"], 2),
             "benefits_workers_comp": round(benefits_cogs, 2),
-            "total_employer_cost": round(cogs - benefits_cogs, 2),
+            "direct_project_costs": round(cogs_from_tx, 2),
+            "total_employer_cost": round(cogs - benefits_cogs - cogs_from_tx, 2),
         },
+        "cogs_direct_project_by_group": [
+            {"group": g, "amount": round(v, 2)}
+            for g, v in sorted(cogs_tx_by_group.items(), key=lambda kv: kv[1], reverse=True)
+            if round(v, 2) != 0
+        ],
         "payroll_breakdown": payroll_breakdown,
+        "gross_profit_cash": round(gross_profit_cash, 2),
+        "gross_profit_accrual": round(gross_profit_accrual, 2),
+        "gross_margin_cash": _margin(gross_profit_cash, revenue),
+        "gross_margin_accrual": _margin(gross_profit_accrual, revenue_accrual),
         "opex": opex,
         "opex_breakdown": [
             {"category": k, "amount": round(v, 2)}
             for k, v in sorted(opex_by_cat.items(), key=lambda kv: kv[1], reverse=True)
             if round(v, 2) != 0
         ],
+        "opex_by_group": [
+            {"group": g, "amount": round(v, 2)}
+            for g, v in sorted(opex_by_group.items(), key=lambda kv: kv[1], reverse=True)
+            if round(v, 2) != 0
+        ],
         "interest_expense": interest_expense,
         "fees_expense": fees_expense,
         "net_income_cash": net_income_cash,
         "net_income_accrual": net_income_accrual,
+        "net_margin_cash": _margin(net_income_cash, revenue),
+        "net_margin_accrual": _margin(net_income_accrual, revenue_accrual),
         "notes": [
             "Revenue (cash) = paid invoices in period; Revenue (accrual) = invoices issued in period.",
             "COGS = Gusto employer cost (gross + employer taxes + 401(k) match) + Benefits/Workers Comp (NYSIF + Nu Era).",
