@@ -2735,7 +2735,12 @@ def _parse_paychex_payroll_journal(data: bytes) -> dict[str, object]:
             while j < n and not lines[j].strip():
                 j += 1
             val = lines[j].strip() if j < n else ""
-            if cur is not None and val and re.match(r"\d{2}/\d{2}/\d{2,4}", val):
+            # The first Check Date after a period header is the real one. Multi-period
+            # reports append a forward-looking TIMESHEET section carrying the NEXT
+            # period's check date *before* the next period header, so honour only the
+            # first value per period (never overwrite) to avoid an off-by-one shift
+            # that would push each run's pay-date a cycle into the future.
+            if cur is not None and val and not cur["pay_day"] and re.match(r"\d{2}/\d{2}/\d{2,4}", val):
                 cur["pay_day"] = val
             i = j + 1
             continue
