@@ -136,6 +136,9 @@ export type ProjectPerformanceRange = {
 };
 
 export type InvoiceRevenueStatus = {
+  invoiced_period?: number;
+  collected_period?: number;
+  period?: { start: string; end: string };
   total_invoiced: number;
   total_paid_to_date: number;
   total_outstanding: number;

@@ -166,6 +166,8 @@ export default function AquatechPmHome() {
     const qs = `?start=${finPeriod.start}&end=${finPeriod.end}&basis=${accountingBasis}`;
     apiGet<BusinessHealth>(`/accounting/business-health${qs}`)
       .then((d) => setBusinessHealth(d)).catch(() => setBusinessHealth(null));
+    apiGet<InvoiceRevenueStatus>(`/reports/invoice-revenue-status?start=${finPeriod.start}&end=${finPeriod.end}`)
+      .then((d) => setInvoiceStatus(d)).catch(() => undefined);
   }, [finPeriod.start, finPeriod.end, accountingBasis, user]);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
@@ -895,11 +897,11 @@ export default function AquatechPmHome() {
                   <strong>{formatNumber(companyMonthHours ?? headlineMetrics.monthHours, 1)}</strong>
                 </article>
                 <article className="aq-lite-kpi">
-                  <span>Total invoiced</span>
-                  <strong>{formatCurrency(invoiceStatus?.total_invoiced)}</strong>
+                  <span>{accountingBasis === "cash" ? "Collected" : "Invoiced"} ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"})</span>
+                  <strong>{formatCurrency(accountingBasis === "cash" ? invoiceStatus?.collected_period : invoiceStatus?.invoiced_period)}</strong>
                 </article>
                 <article className="aq-lite-kpi">
-                  <span>Open invoices</span>
+                  <span>Open invoices (now)</span>
                   <strong>{headlineMetrics.openInvoices}</strong>
                 </article>
                 {businessHealth ? (
@@ -923,17 +925,27 @@ export default function AquatechPmHome() {
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
                   <div>
-                    <p className="aq-lite-eyebrow">Cash</p>
+                    <p className="aq-lite-eyebrow">Billing</p>
                     <h3>Invoice pipeline</h3>
                   </div>
                 </div>
                 <div className="aq-lite-stat-list">
-                  <div>
-                    <span>Paid to date</span>
-                    <strong>{formatCurrency(invoiceStatus?.total_paid_to_date)}</strong>
+                  <div style={{ opacity: 0.55, fontSize: "0.72em", textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: "1px solid rgba(128,128,128,0.2)", paddingBottom: "0.2rem" }}>
+                    <span>This period — {PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}</span>
                   </div>
                   <div>
-                    <span>Outstanding</span>
+                    <span>Invoiced (billed)</span>
+                    <strong>{formatCurrency(invoiceStatus?.invoiced_period)}</strong>
+                  </div>
+                  <div>
+                    <span>Collected (paid)</span>
+                    <strong>{formatCurrency(invoiceStatus?.collected_period)}</strong>
+                  </div>
+                  <div style={{ opacity: 0.55, fontSize: "0.72em", textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: "1px solid rgba(128,128,128,0.2)", paddingBottom: "0.2rem", marginTop: "0.5rem" }}>
+                    <span>As of today — balances</span>
+                  </div>
+                  <div>
+                    <span>Outstanding (all open)</span>
                     <strong>{formatCurrency(invoiceStatus?.total_outstanding)}</strong>
                   </div>
                   <div>
