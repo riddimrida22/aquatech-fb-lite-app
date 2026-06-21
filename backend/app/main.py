@@ -3876,6 +3876,7 @@ def accounting_cashflow(
 def accounting_business_health(
     start: str | None = None,
     end: str | None = None,
+    basis: str = "cash",
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
@@ -3926,14 +3927,19 @@ def accounting_business_health(
     interest = float(pl.get("interest_expense", 0.0) or 0.0)
     fees = float(pl.get("fees_expense", 0.0) or 0.0)
     financing_cost = round(interest + fees, 2)
-    revenue = float(pl.get("revenue_cash", 0.0) or 0.0)
+    accrual = (basis or "cash").strip().lower() == "accrual"
+    _sfx = "accrual" if accrual else "cash"
+    revenue = float(pl.get(f"revenue_{_sfx}", 0.0) or 0.0)
     cogs = float(pl.get("cogs", 0.0) or 0.0)
-    gross_profit = float(pl.get("gross_profit_cash", revenue - cogs) or 0.0)
+    gross_profit = float(pl.get(f"gross_profit_{_sfx}", revenue - cogs) or 0.0)
+    gross_margin = pl.get(f"gross_margin_{_sfx}", 0.0)
     opex = float(pl.get("opex", 0.0) or 0.0)
-    net_income = float(pl.get("net_income_cash", 0.0) or 0.0)
+    net_income = float(pl.get(f"net_income_{_sfx}", 0.0) or 0.0)
+    net_margin = pl.get(f"net_margin_{_sfx}", 0.0)
 
     return {
         "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "basis": _sfx,
         "cash_in": {
             "business_revenue": round(revenue, 2),
             "borrowed_boc": round(boc_in, 2),
@@ -3952,13 +3958,13 @@ def accounting_business_health(
             "cogs": round(cogs, 2),
             "cogs_breakdown": pl.get("cogs_breakdown", {}),
             "gross_profit": round(gross_profit, 2),
-            "gross_margin": pl.get("gross_margin_cash", 0.0),
+            "gross_margin": gross_margin,
             "indirect_total": round(opex, 2),
             "indirect_by_group": pl.get("opex_by_group", []),
             "operating_income": round(gross_profit - opex, 2),
             "financing_cost": financing_cost,
             "net_income": round(net_income, 2),
-            "net_margin": pl.get("net_margin_cash", 0.0),
+            "net_margin": net_margin,
         },
         "shareholder": {
             "distributions_out": round(dist_out, 2),

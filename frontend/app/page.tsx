@@ -157,18 +157,16 @@ export default function AquatechPmHome() {
   const [reportRange, setReportRange] = useState<ProjectPerformanceRange | null>(null);
   const [projectPerformance, setProjectPerformance] = useState<ProjectPerformanceRow[]>([]);
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceRevenueStatus | null>(null);
-  const [dashPl, setDashPl] = useState<{ revenue_cash: number; net_income_cash: number; net_margin_cash?: number; gross_margin_cash?: number } | null>(null);
   const [businessHealth, setBusinessHealth] = useState<BusinessHealth | null>(null);
   const [finPeriod, setFinPeriod] = useState<{ preset: PeriodPreset; start: string; end: string }>(() => ({ preset: "ytd", ...periodRange("ytd") }));
+  const [accountingBasis, setAccountingBasis] = useState<"cash" | "accrual">("cash");
   useEffect(() => {
     if (!user || !deriveUserCapabilities(user).canViewFinancials) return;
     if (!finPeriod.start || !finPeriod.end) return;
-    const qs = `?start=${finPeriod.start}&end=${finPeriod.end}`;
-    apiGet<{ revenue_cash: number; net_income_cash: number; net_margin_cash?: number; gross_margin_cash?: number }>(`/accounting/pl${qs}`)
-      .then((d) => setDashPl(d)).catch(() => setDashPl(null));
+    const qs = `?start=${finPeriod.start}&end=${finPeriod.end}&basis=${accountingBasis}`;
     apiGet<BusinessHealth>(`/accounting/business-health${qs}`)
       .then((d) => setBusinessHealth(d)).catch(() => setBusinessHealth(null));
-  }, [finPeriod.start, finPeriod.end, user]);
+  }, [finPeriod.start, finPeriod.end, accountingBasis, user]);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
   const [projectExpenses, setProjectExpenses] = useState<ProjectExpense[]>([]);
@@ -855,7 +853,28 @@ export default function AquatechPmHome() {
                     <input type="date" value={finPeriod.end} min={finPeriod.start} onChange={(e) => setFinPeriod((s) => ({ ...s, end: e.target.value }))} style={{ fontSize: "0.82em" }} />
                   </span>
                 ) : null}
-                <span style={{ opacity: 0.5, fontSize: "0.78em", marginLeft: "auto" }}>{finPeriod.start} → {finPeriod.end}</span>
+                <span style={{ marginLeft: "auto", display: "inline-flex", gap: "0.35rem", alignItems: "center" }}>
+                  {(["cash", "accrual"] as const).map((b) => (
+                    <button
+                      key={b}
+                      type="button"
+                      onClick={() => setAccountingBasis(b)}
+                      title={b === "cash" ? "Cash basis — revenue recognized when collected (matches your tax filing)" : "Accrual basis — revenue recognized when invoiced"}
+                      style={{
+                        padding: "0.2rem 0.55rem",
+                        borderRadius: "999px",
+                        cursor: "pointer",
+                        border: "1px solid rgba(128,128,128,0.35)",
+                        fontSize: "0.78em",
+                        background: accountingBasis === b ? "rgba(150,120,90,0.3)" : "transparent",
+                        fontWeight: accountingBasis === b ? 700 : 400,
+                      }}
+                    >
+                      {b === "cash" ? "Cash" : "Accrual"}
+                    </button>
+                  ))}
+                  <span style={{ opacity: 0.5, fontSize: "0.78em" }}>{finPeriod.start} → {finPeriod.end}</span>
+                </span>
               </div>
             ) : null}
             <div className="aq-lite-hero">
@@ -883,15 +902,15 @@ export default function AquatechPmHome() {
                   <span>Open invoices</span>
                   <strong>{headlineMetrics.openInvoices}</strong>
                 </article>
-                {dashPl ? (
+                {businessHealth ? (
                   <>
                     <article className="aq-lite-kpi">
                       <span>Net income ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"})</span>
-                      <strong>{formatCurrency(dashPl.net_income_cash)}</strong>
+                      <strong>{formatCurrency(businessHealth.waterfall.net_income)}</strong>
                     </article>
                     <article className="aq-lite-kpi">
                       <span>Net margin ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"})</span>
-                      <strong>{dashPl.net_margin_cash != null ? `${(dashPl.net_margin_cash * 100).toFixed(1)}%` : "—"}</strong>
+                      <strong>{businessHealth.waterfall.net_margin != null ? `${(businessHealth.waterfall.net_margin * 100).toFixed(1)}%` : "—"}</strong>
                     </article>
                   </>
                 ) : null}
