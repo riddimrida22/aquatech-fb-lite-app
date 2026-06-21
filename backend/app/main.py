@@ -3908,7 +3908,12 @@ def accounting_business_health(
             BankTransaction.posted_date >= s,
             BankTransaction.posted_date <= e,
             ~BankTransaction.source.in_(superseded_sources),
-            BankTransaction.name.ilike("%0273%"),
+            # Match the account-transfer pattern ONLY. Exclude international wires
+            # (their reference numbers contain "0273") and rows recorded ON the 0273
+            # account itself — both are false positives that inflate the draw figure.
+            BankTransaction.name.ilike("%transfer%0273%"),
+            ~BankTransaction.name.ilike("%wire%"),
+            BankTransaction.account_id != "Chase0273_Activity",
         )
     ).all()
     dist_out = sum(-float(t.amount or 0) for t in txns if float(t.amount or 0) < 0)
