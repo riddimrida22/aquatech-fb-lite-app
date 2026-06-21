@@ -3324,6 +3324,70 @@ def _accounting_period(start_iso: str | None, end_iso: str | None) -> tuple[date
     return start, end
 
 
+def _parse_fundbox_ledger(path: Path) -> list[dict]:
+    """Parse a Fundbox 'Transaction History' CSV export — the lender's authoritative
+    ledger. Columns: Year, Month, Day, Date, Type, Draw ID, Description,
+    Direct Draw, Direct Draw Repayment, Fees, Discount. Returns one dict per row
+    with a real ``date`` plus numeric draw/repayment/fees/discount. Returns ``[]``
+    for any non-Fundbox CSV (sniffed via the header), so it is safe to point at the
+    whole inbox (Gusto ``*payroll-summary*.csv`` files are ignored)."""
+    import csv as _csv
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            rdr = _csv.DictReader(fh)
+            cols = rdr.fieldnames or []
+            if "Direct Draw" not in cols or "Draw ID" not in cols:
+                return []
+
+            def _n(s: str) -> float:
+                s = (s or "").replace("$", "").replace(",", "").strip()
+                try:
+                    return float(s)
+                except ValueError:
+                    return 0.0
+
+            rows: list[dict] = []
+            for r in rdr:
+                try:
+                    d = date(int(r["Year"]), int(r["Month"]), int(r["Day"]))
+                except (TypeError, ValueError, KeyError):
+                    continue
+                rows.append({
+                    "date": d,
+                    "draw": _n(r.get("Direct Draw")),
+                    "repayment": _n(r.get("Direct Draw Repayment")),
+                    "fees": _n(r.get("Fees")),
+                    "discount": _n(r.get("Discount")),
+                })
+            return rows
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def _fundbox_ledger_cost(start: date, end: date) -> tuple[float, float, float]:
+    """Authoritative Fundbox financing cost over ``[start, end]`` from the ledger in
+    the transition inbox. Returns ``(fees, discount, principal_repaid)``.
+
+    Fundbox is paid sometimes from checking and sometimes on the company credit card
+    (to earn points), so bank-derived loan payments are noisy and incomplete — they
+    book repayment principal as "interest" and miss the card-paid runs. The lender's
+    own ledger records every draw/repayment/fee regardless of how it was paid, so it
+    is the single source of truth for the Fundbox cost (fees + discount)."""
+    inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+    if not inbox.exists():
+        return 0.0, 0.0, 0.0
+    fees = discount = principal = 0.0
+    for p in sorted(inbox.iterdir()):
+        if not p.is_file() or p.suffix.lower() != ".csv":
+            continue
+        for r in _parse_fundbox_ledger(p):
+            if start <= r["date"] <= end:
+                fees += r["fees"]
+                discount += r["discount"]
+                principal += r["repayment"]
+    return round(fees, 2), round(discount, 2), round(principal, 2)
+
+
 @app.get("/accounting/pl")
 def accounting_pl(
     start: str | None = None,
@@ -3598,15 +3662,31 @@ def accounting_pl(
             opex_by_cat[fb_label] += amt
             opex_by_group[group] += amt
 
-    # Interest expense from LoanPayment
+    # Interest + fees from LoanPayment records — but EXCLUDE Fundbox. Fundbox is
+    # paid sometimes from checking, sometimes on the company credit card (for the
+    # points), so its bank-derived loan payments are noisy: they book repayment
+    # principal as "interest" and miss the card-paid runs entirely. We take the real
+    # Fundbox cost from its authoritative ledger instead (see below).
+    fundbox_loan_ids = [
+        r[0] for r in db.execute(
+            select(Loan.id).where(func.lower(Loan.name).like("%fundbox%"))
+        ).all()
+    ]
+    _lp_where = [LoanPayment.payment_date >= s, LoanPayment.payment_date <= e]
+    if fundbox_loan_ids:
+        _lp_where.append(~LoanPayment.loan_id.in_(fundbox_loan_ids))
     interest_expense = float(db.scalar(
-        select(func.coalesce(func.sum(LoanPayment.interest_amount), 0.0))
-        .where(LoanPayment.payment_date >= s, LoanPayment.payment_date <= e)
+        select(func.coalesce(func.sum(LoanPayment.interest_amount), 0.0)).where(*_lp_where)
     ) or 0.0)
     fees_expense = float(db.scalar(
-        select(func.coalesce(func.sum(LoanPayment.fees_amount), 0.0))
-        .where(LoanPayment.payment_date >= s, LoanPayment.payment_date <= e)
+        select(func.coalesce(func.sum(LoanPayment.fees_amount), 0.0)).where(*_lp_where)
     ) or 0.0)
+    # Authoritative Fundbox financing cost (fees + discount) from the ledger —
+    # method-agnostic (checking OR credit card), replacing the excluded bank-derived
+    # Fundbox interest above. Principal repayments are debt servicing, not expense.
+    _fb_fees, _fb_discount, _fb_principal = _fundbox_ledger_cost(s, e)
+    fundbox_financing_cost = round(_fb_fees + _fb_discount, 2)
+    fees_expense += fundbox_financing_cost
 
     # Direct-project costs categorized on transactions (subconsultants, materials, field
     # services) join the loaded-labor COGS computed from the payroll journal above.
@@ -3657,6 +3737,7 @@ def accounting_pl(
         ],
         "interest_expense": interest_expense,
         "fees_expense": fees_expense,
+        "fundbox_financing_cost": fundbox_financing_cost,
         "net_income_cash": net_income_cash,
         "net_income_accrual": net_income_accrual,
         "net_margin_cash": _margin(net_income_cash, revenue),
