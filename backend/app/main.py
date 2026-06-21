@@ -7395,6 +7395,8 @@ def ar_summary(
 
 @app.get("/reports/invoice-revenue-status")
 def invoice_revenue_status(
+    start: str | None = None,
+    end: str | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
@@ -7402,8 +7404,23 @@ def invoice_revenue_status(
     unbilled_rows = _unbilled_since_last_invoice_by_client(db)
     unbilled_project_rows = _unbilled_since_last_invoice_by_client_project(db)
     unbilled_total = float(sum(float(r.get("unbilled", 0.0)) for r in unbilled_rows))
+    # Period-scoped FLOWS (distinct from the lifetime/current balances below):
+    #   invoiced_period  = subtotals of invoices issued in the period (accrual)
+    #   collected_period = payments received in the period (cash)
+    s, e = _accounting_period(start, end)
+    invoiced_period = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.subtotal_amount), 0.0))
+        .where(Invoice.issue_date.isnot(None), Invoice.issue_date >= s, Invoice.issue_date <= e)
+    ) or 0.0)
+    collected_period = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
+        .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
+    ) or 0.0)
     return {
         "as_of": date.today().isoformat(),
+        "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "invoiced_period": invoiced_period,
+        "collected_period": collected_period,
         "invoice_count_total": int(summary.get("invoice_count_total", 0)),
         "invoice_count_open": int(summary.get("invoice_count_open", 0)),
         "total_invoiced": float(summary.get("total_invoiced", 0.0)),
