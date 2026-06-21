@@ -138,6 +138,8 @@ export type ProjectPerformanceRange = {
 export type InvoiceRevenueStatus = {
   invoiced_period?: number;
   collected_period?: number;
+  boc_financed_advances?: number;
+  outstanding_net_of_boc?: number;
   period?: { start: string; end: string };
   total_invoiced: number;
   total_paid_to_date: number;
