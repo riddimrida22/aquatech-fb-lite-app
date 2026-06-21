@@ -948,6 +948,18 @@ export default function AquatechPmHome() {
                     <span>Outstanding (all open)</span>
                     <strong>{formatCurrency(invoiceStatus?.total_outstanding)}</strong>
                   </div>
+                  {invoiceStatus?.boc_financed_advances ? (
+                    <>
+                      <div style={{ opacity: 0.6 }}>
+                        <span>− BOC advances (financed invoices)</span>
+                        <strong>({formatCurrency(invoiceStatus?.boc_financed_advances)})</strong>
+                      </div>
+                      <div style={{ borderTop: "1px solid rgba(128,128,128,0.28)", paddingTop: "0.35rem", fontWeight: 700 }}>
+                        <span>= Net receivable (truly owed to you)</span>
+                        <strong>{formatCurrency(invoiceStatus?.outstanding_net_of_boc)}</strong>
+                      </div>
+                    </>
+                  ) : null}
                   <div>
                     <span>Overdue</span>
                     <strong>{formatCurrency(invoiceStatus?.overdue_total)}</strong>

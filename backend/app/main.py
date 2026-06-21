@@ -7421,11 +7421,25 @@ def invoice_revenue_status(
         select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
         .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
     ) or 0.0)
+    # BOC-financed receivables: BOC advances ~70% against these invoices (a recourse
+    # LOAN per BOC's loan statements, not a client payment). The client still owes the
+    # full amount, but the firm's NET receivable is the ~30% reserve. We expose AR net
+    # of the BOC advances (matches FreshBooks' "outstanding") WITHOUT booking loan
+    # proceeds as revenue. Financed set per Bertrand 2026-06; extend as new invoices
+    # are financed.
+    BOC_FINANCED = ("HDRAQ-013B", "HDRAQ13-A", "HDRAQ-014", "HDRAQ-015", "WSMV009")
+    boc_advances = float(db.scalar(
+        select(func.coalesce(func.sum(Invoice.balance_due * 0.70), 0.0))
+        .where(Invoice.invoice_number.in_(BOC_FINANCED))
+    ) or 0.0)
+    _total_out = float(summary.get("total_outstanding", 0.0))
     return {
         "as_of": date.today().isoformat(),
         "period": {"start": s.isoformat(), "end": e.isoformat()},
         "invoiced_period": invoiced_period,
         "collected_period": collected_period,
+        "boc_financed_advances": round(boc_advances, 2),
+        "outstanding_net_of_boc": round(_total_out - boc_advances, 2),
         "invoice_count_total": int(summary.get("invoice_count_total", 0)),
         "invoice_count_open": int(summary.get("invoice_count_open", 0)),
         "total_invoiced": float(summary.get("total_invoiced", 0.0)),
