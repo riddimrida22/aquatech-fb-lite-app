@@ -9,6 +9,7 @@ import { WeeklyTimeEntry } from "./components/WeeklyTimeEntry";
 import { Toast } from "./components/Toast";
 import { StatusBadge } from "./components/StatusBadge";
 import { ARAgingPanel } from "./components/ARAgingPanel";
+import { BusinessHealthPanel, BusinessHealth } from "./components/BusinessHealthPanel";
 import { TransfersPanel } from "./components/TransfersPanel";
 import { DedupPanel } from "./components/DedupPanel";
 import { PayrollPortal } from "./components/PayrollPortal";
@@ -128,6 +129,7 @@ export default function AquatechPmHome() {
   const [projectPerformance, setProjectPerformance] = useState<ProjectPerformanceRow[]>([]);
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceRevenueStatus | null>(null);
   const [dashPl, setDashPl] = useState<{ revenue_cash: number; net_income_cash: number; net_margin_cash?: number; gross_margin_cash?: number } | null>(null);
+  const [businessHealth, setBusinessHealth] = useState<BusinessHealth | null>(null);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
   const [projectExpenses, setProjectExpenses] = useState<ProjectExpense[]>([]);
@@ -250,6 +252,8 @@ export default function AquatechPmHome() {
         // Fire-and-forget YTD P&L for the dashboard net-income / margin tiles.
         apiGet<{ revenue_cash: number; net_income_cash: number; net_margin_cash?: number; gross_margin_cash?: number }>("/accounting/pl")
           .then((d) => setDashPl(d)).catch(() => setDashPl(null));
+        apiGet<BusinessHealth>("/accounting/business-health")
+          .then((d) => setBusinessHealth(d)).catch(() => setBusinessHealth(null));
         requests.push(apiGet<Invoice[]>("/invoices"));
         requests.push(apiGet<ProjectPerformanceRange>("/reports/project-performance-range"));
         requests.push(apiGet<InvoiceRevenueStatus>("/reports/invoice-revenue-status"));
@@ -822,6 +826,8 @@ export default function AquatechPmHome() {
                 ) : null}
               </div>
             </div>
+
+            <BusinessHealthPanel data={businessHealth} />
 
             <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">

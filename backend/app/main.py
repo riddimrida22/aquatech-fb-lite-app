@@ -3872,6 +3872,104 @@ def accounting_cashflow(
     }
 
 
+@app.get("/accounting/business-health")
+def accounting_business_health(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Clean "how is the business actually doing" view that separates:
+      (1) real business revenue from borrowed cash (financing draws are NOT revenue);
+      (2) the cost of that financing (interest + fees);
+      (3) a clean P&L waterfall to net income (COGS + indirect breakdown);
+      (4) shareholder distributions/contributions (S-corp, sole owner — equity, NOT
+          P&L), kept strictly below the line.
+    Reuses /accounting/pl + /accounting/cashflow and adds owner-distribution + debt."""
+    s, e = _accounting_period(start, end)
+    pl = accounting_pl(start=start, end=end, db=db, _=_)
+    cf = accounting_cashflow(start=start, end=end, db=db, _=_)
+    inb = cf.get("inflow_breakdown", {}) if isinstance(cf, dict) else {}
+
+    boc_in = float(inb.get("boc_factoring", 0.0) or 0.0)
+    fundbox_in = float(inb.get("fundbox_draw", 0.0) or 0.0)
+    contributions_in = float(inb.get("owner_contribution", 0.0) or 0.0)
+
+    # Shareholder distributions = net cash drawn to the owner's PERSONAL Chase
+    # account (...0273). S-corp, sole shareholder: money out beyond W-2 salary is a
+    # DISTRIBUTION (reduces equity) — NOT an expense and NOT a loan. Money in = a
+    # capital contribution. Read the ...0273 transfer legs (recorded on the other
+    # accounts) and net the two directions.
+    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded")
+    txns = db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            ~BankTransaction.source.in_(superseded_sources),
+            BankTransaction.name.ilike("%0273%"),
+        )
+    ).all()
+    dist_out = sum(-float(t.amount or 0) for t in txns if float(t.amount or 0) < 0)
+    contrib_0273 = sum(float(t.amount or 0) for t in txns if float(t.amount or 0) > 0)
+
+    # External debt outstanding (exclude shareholder-loan lines — those are equity-ish
+    # for a sole-shareholder S-corp and shown under "shareholder" instead).
+    debt_lines = []
+    for l in db.scalars(select(Loan)).all():
+        bal = float(getattr(l, "principal_current", 0.0) or 0.0)
+        nm = l.name or ""
+        if bal > 0 and "shareholder" not in nm.lower():
+            debt_lines.append({"name": nm, "balance": round(bal, 2)})
+    debt_total = round(sum(d["balance"] for d in debt_lines), 2)
+
+    interest = float(pl.get("interest_expense", 0.0) or 0.0)
+    fees = float(pl.get("fees_expense", 0.0) or 0.0)
+    financing_cost = round(interest + fees, 2)
+    revenue = float(pl.get("revenue_cash", 0.0) or 0.0)
+    cogs = float(pl.get("cogs", 0.0) or 0.0)
+    gross_profit = float(pl.get("gross_profit_cash", revenue - cogs) or 0.0)
+    opex = float(pl.get("opex", 0.0) or 0.0)
+    net_income = float(pl.get("net_income_cash", 0.0) or 0.0)
+
+    return {
+        "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "cash_in": {
+            "business_revenue": round(revenue, 2),
+            "borrowed_boc": round(boc_in, 2),
+            "borrowed_fundbox": round(fundbox_in, 2),
+            "borrowed_total": round(boc_in + fundbox_in, 2),
+            "owner_contributions": round(contributions_in, 2),
+        },
+        "financing_cost": {
+            "interest": round(interest, 2),
+            "fees": round(fees, 2),
+            "total": financing_cost,
+            "note": "Cost of the borrowed money (BOC 3%/yr + 1%/draw, Fundbox fees, Forward MCA).",
+        },
+        "waterfall": {
+            "revenue": round(revenue, 2),
+            "cogs": round(cogs, 2),
+            "cogs_breakdown": pl.get("cogs_breakdown", {}),
+            "gross_profit": round(gross_profit, 2),
+            "gross_margin": pl.get("gross_margin_cash", 0.0),
+            "indirect_total": round(opex, 2),
+            "indirect_by_group": pl.get("opex_by_group", []),
+            "operating_income": round(gross_profit - opex, 2),
+            "financing_cost": financing_cost,
+            "net_income": round(net_income, 2),
+            "net_margin": pl.get("net_margin_cash", 0.0),
+        },
+        "shareholder": {
+            "distributions_out": round(dist_out, 2),
+            "contributions_in": round(contrib_0273, 2),
+            "net_distributions": round(dist_out - contrib_0273, 2),
+            "note": "S-corp, sole shareholder: distributions reduce equity — not an expense, not a loan.",
+        },
+        "debt_outstanding": {"lines": debt_lines, "total": debt_total},
+    }
+
+
 @app.get("/accounting/balance-sheet")
 def accounting_balance_sheet(
     db: Session = Depends(get_db),
