@@ -95,6 +95,19 @@ export function ProfitLossPanel({
   const elapsed2026 = Math.min(365, daysBetween("2026-01-01", data.period.end));
   const owedSoFar = annual * (elapsed2026 / 365);
   const remaining2026 = Math.max(0, annual - owedSoFar);
+  // Compensation plan (CPA): split owner draws into W-2 salary vs distribution,
+  // with 401(k) deferral + FICA. (Figures flagged — confirm against official 2026.)
+  const SS_BASE_2026 = 183600; // 2026 Social Security wage base (estimate)
+  const K401_LIMIT_2026 = 24500; // 2026 employee 401(k) elective-deferral cap (estimate; +$7,500 if 50+)
+  const K401_RATE = 0.8; // owner's elective deferral rate
+  const ssTaxable = Math.min(impPeriod, SS_BASE_2026);
+  const ficaTotal = ssTaxable * 0.124 + impPeriod * 0.029;
+  const ficaEmployer = ssTaxable * 0.062 + impPeriod * 0.0145;
+  const ficaEmployee = ficaTotal - ficaEmployer;
+  const k401 = Math.min(impPeriod * K401_RATE, K401_LIMIT_2026);
+  const taxableWages = Math.max(0, impPeriod - k401);
+  const netDraws = data.shareholder?.net_distributions || 0;
+  const distributionPortion = Math.max(0, netDraws - impPeriod);
   return (
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
@@ -198,6 +211,53 @@ export function ProfitLossPanel({
           </p>
         )}
       </div>
+
+      {/* Compensation plan — split draws into W-2 salary vs distribution (CPA view) */}
+      {annual ? (
+        <div style={{ marginTop: "0.6rem", padding: "0.6rem 0.7rem", borderRadius: 8, background: "rgba(90,120,150,0.10)" }}>
+          <p className="aq-lite-eyebrow" style={{ marginBottom: "0.4rem" }}>
+            Compensation plan — salary vs distribution ({periodDays}-day period)
+          </p>
+          <div className="aq-lite-stat-list">
+            <div style={dimRow}>
+              <span>Total owner cash drawn (net)</span>
+              <strong>{money(netDraws)}</strong>
+            </div>
+            <div>
+              <span>→ W-2 salary (reasonable comp)</span>
+              <strong>{money(impPeriod)}</strong>
+            </div>
+            <div style={subRow}>
+              <span>
+                401(k) deferral (80%, capped {money(K401_LIMIT_2026)}) {money(k401)} · taxable wages{" "}
+                {money(taxableWages)}
+              </span>
+            </div>
+            <div>
+              <span>→ Distribution (remainder of draws)</span>
+              <strong>{money(distributionPortion)}</strong>
+            </div>
+            <div style={totalRow}>
+              <span>Payroll tax — FICA 15.3%</span>
+              <strong>{money(ficaTotal)}</strong>
+            </div>
+            <div style={subRow}>
+              <span>
+                company pays {money(ficaEmployer)} · withheld from you {money(ficaEmployee)}
+              </span>
+            </div>
+            <div style={{ ...grandRow, borderTopColor: "rgba(90,120,150,0.45)" }}>
+              <span>= Real added cost of payroll (employer FICA)</span>
+              <strong>{money(ficaEmployer)}</strong>
+            </div>
+          </div>
+          <p style={{ ...subRow, marginTop: "0.4rem" }}>
+            Employee FICA + income tax come out of the same cash you already drew — only the employer
+            FICA is genuinely new. 401(k) cuts income tax, not FICA. Confirm 2026 figures: SS wage base
+            ~{money(SS_BASE_2026)}, 401(k) cap {money(K401_LIMIT_2026)} (+$7,500 catch-up if 50+).
+          </p>
+        </div>
+      ) : null}
     </section>
   );
 }
