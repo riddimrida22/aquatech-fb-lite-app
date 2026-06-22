@@ -1,5 +1,7 @@
 "use client";
 
+import { CashFlow } from "./workspaceShared";
+
 type Grp = { group: string; amount: number };
 type CogsBreak = {
   gross_wages?: number;
@@ -11,6 +13,7 @@ type CogsBreak = {
 
 export type BusinessHealth = {
   period: { start: string; end: string };
+  basis?: string;
   cash_in: {
     business_revenue: number;
     borrowed_boc: number;
@@ -56,141 +59,232 @@ const BORDER = "1px solid rgba(128,128,128,0.28)";
 const dimRow = { opacity: 0.6 } as const;
 const subRow = { opacity: 0.55, fontSize: "0.82em" } as const;
 const totalRow = { borderTop: BORDER, paddingTop: "0.35rem", fontWeight: 700 } as const;
+const grandRow = { borderTop: "2px solid rgba(128,128,128,0.45)", paddingTop: "0.4rem", fontWeight: 700, fontSize: "1.05em" } as const;
 const negStrong = { opacity: 0.85 } as const;
 
-export function BusinessHealthPanel({ data }: { data: BusinessHealth | null }) {
+/* ─────────────────────────────────────────────────────────────
+   PANEL 1 — PROFIT & LOSS
+   Pure operating profitability: client revenue → COGS → indirect → net.
+   No borrowed cash here (that lives in the Cash Flow panel).
+   ───────────────────────────────────────────────────────────── */
+export function ProfitLossPanel({
+  data,
+  ownerComp,
+  onOwnerCompChange,
+}: {
+  data: BusinessHealth | null;
+  ownerComp: number;
+  onOwnerCompChange: (n: number) => void;
+}) {
   if (!data) return null;
   const w = data.waterfall;
   const cb = w.cogs_breakdown || {};
+  const basisLabel = (data.basis || "cash") === "accrual" ? "Accrual — invoiced" : "Cash — collected from clients";
+  const adjNet = w.net_income - (ownerComp || 0);
+  const adjMargin = w.revenue ? adjNet / w.revenue : null;
   return (
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
         <div>
-          <p className="aq-lite-eyebrow">Business health</p>
-          <h3>How the business is actually doing</h3>
+          <p className="aq-lite-eyebrow">Profit &amp; Loss</p>
+          <h3>What the business earned</h3>
         </div>
-        <span style={{ opacity: 0.6, fontSize: "0.85em" }}>
-          {data.period.start} → {data.period.end}
+        <span style={{ opacity: 0.6, fontSize: "0.82em" }}>
+          {basisLabel} · {data.period.start} → {data.period.end}
         </span>
       </div>
 
-      <div className="aq-lite-grid aq-lite-grid-2">
-        {/* ① Cash in — real revenue vs borrowed */}
+      <div className="aq-lite-stat-list">
         <div>
-          <p className="aq-lite-eyebrow">① Cash in — what&apos;s really revenue</p>
-          <div className="aq-lite-stat-list">
-            <div>
-              <span>Business revenue (earned)</span>
-              <strong>{money(data.cash_in.business_revenue)}</strong>
-            </div>
-            <div style={dimRow}>
-              <span>Borrowed — BOC (not revenue)</span>
-              <strong>{money(data.cash_in.borrowed_boc)}</strong>
-            </div>
-            <div style={dimRow}>
-              <span>Borrowed — Fundbox (not revenue)</span>
-              <strong>{money(data.cash_in.borrowed_fundbox)}</strong>
-            </div>
-            <div style={dimRow}>
-              <span>Owner contributions (your cash)</span>
-              <strong>{money(data.cash_in.owner_contributions)}</strong>
-            </div>
+          <span>Revenue — client invoicing</span>
+          <strong>{money(w.revenue)}</strong>
+        </div>
+        <div>
+          <span>− Total COGS (direct cost of work)</span>
+          <strong style={negStrong}>({money(w.cogs)})</strong>
+        </div>
+        <div style={subRow}>
+          <span>
+            wages {money(cb.gross_wages)} · payroll tax {money(cb.employer_payroll_taxes)} · 401k{" "}
+            {money(cb.employer_401k_match)} · benefits {money(cb.benefits_workers_comp)} · direct{" "}
+            {money(cb.direct_project_costs)}
+          </span>
+        </div>
+        <div style={totalRow}>
+          <span>= Gross profit</span>
+          <strong>
+            {money(w.gross_profit)} · {pct(w.gross_margin)}
+          </strong>
+        </div>
+        <div>
+          <span>− Total indirect expenses</span>
+          <strong style={negStrong}>({money(w.indirect_total)})</strong>
+        </div>
+        {(w.indirect_by_group || []).map((g) => (
+          <div style={subRow} key={g.group}>
+            <span>{g.group}</span>
+            <span>{money(g.amount)}</span>
           </div>
-          <p style={{ ...subRow, marginTop: "0.5rem" }}>
-            Borrowed cash isn&apos;t income — it&apos;s repaid with the financing cost below.
+        ))}
+        <div style={totalRow}>
+          <span>= Operating income</span>
+          <strong>{money(w.operating_income)}</strong>
+        </div>
+        <div>
+          <span>− Financing cost (loan interest &amp; fees)</span>
+          <strong style={negStrong}>({money(w.financing_cost)})</strong>
+        </div>
+        <div style={grandRow}>
+          <span>= Net income</span>
+          <strong>
+            {money(w.net_income)} · {pct(w.net_margin)}
+          </strong>
+        </div>
+      </div>
+
+      {/* Owner-comp imputation — the true operating margin once the principal's
+          labor is valued (currently taken as distributions, not W-2 salary). */}
+      <div style={{ marginTop: "0.85rem", padding: "0.6rem 0.7rem", borderRadius: 8, background: "rgba(150,120,90,0.10)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "0.82em", opacity: 0.8 }}>Impute owner salary (your labor isn&apos;t in COGS):</span>
+          <span style={{ fontSize: "0.85em" }}>$</span>
+          <input
+            type="number"
+            value={ownerComp || 0}
+            min={0}
+            step={5000}
+            onChange={(e) => onOwnerCompChange(Number(e.target.value) || 0)}
+            style={{ width: 110, fontSize: "0.85em", padding: "0.15rem 0.35rem" }}
+          />
+        </div>
+        {ownerComp ? (
+          <div style={{ ...grandRow, marginTop: "0.45rem", borderTopColor: "rgba(150,120,90,0.45)" }}>
+            <span>= Net after owner comp</span>
+            <strong>
+              {money(adjNet)} · {pct(adjMargin)}
+            </strong>
+          </div>
+        ) : (
+          <p style={{ ...subRow, marginTop: "0.35rem" }}>
+            Set a market salary to see your real operating margin (e.g. $150K/yr ≈ $75K for 6 mo).
           </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   PANEL 2 — CASH FLOW STATEMENT (separate)
+   Where cash actually moved: operating, financing (borrowing), owner.
+   Always cash basis by definition.
+   ───────────────────────────────────────────────────────────── */
+export function CashFlowPanel({
+  data,
+  debt,
+}: {
+  data: CashFlow | null;
+  debt?: BusinessHealth["debt_outstanding"] | null;
+}) {
+  if (!data) return null;
+  const op = data.operating;
+  const fin = data.financing;
+  const own = data.owner;
+  return (
+    <section className="aq-lite-panel">
+      <div className="aq-lite-panel-head">
+        <div>
+          <p className="aq-lite-eyebrow">Cash Flow</p>
+          <h3>Where the cash actually moved</h3>
+        </div>
+        <span style={{ opacity: 0.6, fontSize: "0.82em" }}>
+          cash basis · {data.period.start} → {data.period.end}
+        </span>
+      </div>
+
+      <div className="aq-lite-stat-list">
+        {/* Operating */}
+        <div style={{ fontWeight: 600, opacity: 0.75 }}>
+          <span>OPERATING</span>
+          <span />
+        </div>
+        <div style={dimRow}>
+          <span>Collected from clients</span>
+          <strong>{money(op.cash_in_invoices)}</strong>
+        </div>
+        <div style={dimRow}>
+          <span>− Paid out (OpEx + payroll)</span>
+          <strong style={negStrong}>({money(op.cash_out_opex_and_payroll)})</strong>
+        </div>
+        <div style={totalRow}>
+          <span>= Operating cash flow</span>
+          <strong>{money(op.net)}</strong>
         </div>
 
-        {/* ③ Shareholder distributions + debt */}
-        <div>
-          <p className="aq-lite-eyebrow">③ Shareholder (S-corp, sole owner)</p>
+        {/* Financing */}
+        <div style={{ fontWeight: 600, opacity: 0.75, marginTop: "0.5rem" }}>
+          <span>FINANCING (borrowing — not revenue)</span>
+          <span />
+        </div>
+        <div style={dimRow}>
+          <span>+ Borrowed — BOC</span>
+          <strong>{money(fin.loan_proceeds_boc)}</strong>
+        </div>
+        <div style={dimRow}>
+          <span>+ Borrowed — Fundbox</span>
+          <strong>{money(fin.loan_proceeds_fundbox)}</strong>
+        </div>
+        <div style={dimRow}>
+          <span>− Loan payments (incl. Forward MCA)</span>
+          <strong style={negStrong}>({money(fin.loan_payments_total)})</strong>
+        </div>
+        <div style={totalRow}>
+          <span>= Financing cash flow</span>
+          <strong>{money(fin.net)}</strong>
+        </div>
+
+        {/* Owner */}
+        <div style={{ fontWeight: 600, opacity: 0.75, marginTop: "0.5rem" }}>
+          <span>OWNER (S-corp equity)</span>
+          <span />
+        </div>
+        <div style={dimRow}>
+          <span>+ Capital contributions in</span>
+          <strong>{money(own.contributions_in)}</strong>
+        </div>
+        <div style={dimRow}>
+          <span>− Distributions to personal</span>
+          <strong style={negStrong}>({money(own.distributions_out)})</strong>
+        </div>
+        <div style={totalRow}>
+          <span>= Owner cash flow</span>
+          <strong>{money(own.net)}</strong>
+        </div>
+
+        {/* Net change */}
+        <div style={grandRow}>
+          <span>= Net change in cash</span>
+          <strong>{money(data.net_change_in_cash)}</strong>
+        </div>
+      </div>
+
+      {debt && (debt.lines || []).length > 0 ? (
+        <div style={{ marginTop: "1rem" }}>
+          <p className="aq-lite-eyebrow">External debt outstanding (as of today)</p>
           <div className="aq-lite-stat-list">
-            <div>
-              <span>Distributions — drawn to personal</span>
-              <strong>{money(data.shareholder.distributions_out)}</strong>
-            </div>
-            <div style={dimRow}>
-              <span>Put back in (contributions)</span>
-              <strong>({money(data.shareholder.contributions_in)})</strong>
-            </div>
+            {(debt.lines || []).map((d) => (
+              <div style={dimRow} key={d.name}>
+                <span>{d.name}</span>
+                <strong>{money(d.balance)}</strong>
+              </div>
+            ))}
             <div style={totalRow}>
-              <span>= Net distributions</span>
-              <strong>{money(data.shareholder.net_distributions)}</strong>
+              <span>= Total debt</span>
+              <strong>{money(debt.total)}</strong>
             </div>
           </div>
-          <p style={{ ...subRow, marginTop: "0.5rem" }}>
-            Equity draw — not an expense, not a loan; doesn&apos;t touch net income.
-          </p>
         </div>
-      </div>
-
-      {/* ② Clean P&L waterfall */}
-      <div style={{ marginTop: "1rem" }}>
-        <p className="aq-lite-eyebrow">② Clean P&amp;L — revenue down to what&apos;s left</p>
-        <div className="aq-lite-stat-list">
-          <div>
-            <span>Business revenue</span>
-            <strong>{money(w.revenue)}</strong>
-          </div>
-          <div>
-            <span>− COGS (direct labor)</span>
-            <strong style={negStrong}>({money(w.cogs)})</strong>
-          </div>
-          <div style={subRow}>
-            <span>
-              wages {money(cb.gross_wages)} · payroll tax {money(cb.employer_payroll_taxes)} · 401k{" "}
-              {money(cb.employer_401k_match)} · benefits {money(cb.benefits_workers_comp)}
-            </span>
-          </div>
-          <div style={totalRow}>
-            <span>= Gross profit</span>
-            <strong>
-              {money(w.gross_profit)} · {pct(w.gross_margin)}
-            </strong>
-          </div>
-          <div>
-            <span>− Indirect costs</span>
-            <strong style={negStrong}>({money(w.indirect_total)})</strong>
-          </div>
-          {(w.indirect_by_group || []).map((g) => (
-            <div style={subRow} key={g.group}>
-              <span>{g.group}</span>
-              <span>{money(g.amount)}</span>
-            </div>
-          ))}
-          <div style={totalRow}>
-            <span>= Operating income</span>
-            <strong>{money(w.operating_income)}</strong>
-          </div>
-          <div>
-            <span>− Financing cost (loans &amp; fees)</span>
-            <strong style={negStrong}>({money(w.financing_cost)})</strong>
-          </div>
-          <div style={{ ...totalRow, borderTop: "2px solid rgba(128,128,128,0.45)", fontSize: "1.05em" }}>
-            <span>= Net business income</span>
-            <strong>
-              {money(w.net_income)} · {pct(w.net_margin)}
-            </strong>
-          </div>
-        </div>
-      </div>
-
-      {/* Debt outstanding strip */}
-      <div style={{ marginTop: "1rem" }}>
-        <p className="aq-lite-eyebrow">External debt outstanding</p>
-        <div className="aq-lite-stat-list">
-          {(data.debt_outstanding.lines || []).map((d) => (
-            <div style={dimRow} key={d.name}>
-              <span>{d.name}</span>
-              <strong>{money(d.balance)}</strong>
-            </div>
-          ))}
-          <div style={totalRow}>
-            <span>= Total debt</span>
-            <strong>{money(data.debt_outstanding.total)}</strong>
-          </div>
-        </div>
-      </div>
+      ) : null}
     </section>
   );
 }

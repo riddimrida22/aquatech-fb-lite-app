@@ -3848,29 +3848,53 @@ def accounting_cashflow(
         else:
             inflow_breakdown["other"] += amt
 
-    # Financing inflows = BOC + FundBox draws + owner contributions
-    financing_in = inflow_breakdown["boc_factoring"] + inflow_breakdown["fundbox_draw"] + inflow_breakdown["owner_contribution"]
+    # Financing inflows = BOC + FundBox draws (owner contributions shown under owner, below)
+    financing_in = inflow_breakdown["boc_factoring"] + inflow_breakdown["fundbox_draw"]
     financing_net = financing_in - loan_payments_total
+
+    # Owner / equity cash flows: net cash drawn to the owner's personal account (...0273).
+    # Distributions out reduce cash; contributions in add cash. Same detection as
+    # business-health (account-transfer pattern only; exclude intl wires + the 0273 leg).
+    owner_txns = db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            ~BankTransaction.source.in_(superseded_sources),
+            BankTransaction.name.ilike("%transfer%0273%"),
+            ~BankTransaction.name.ilike("%wire%"),
+            BankTransaction.account_id != "Chase0273_Activity",
+        )
+    ).all()
+    distributions_out = sum(-float(t.amount or 0) for t in owner_txns if float(t.amount or 0) < 0)
+    contributions_in = sum(float(t.amount or 0) for t in owner_txns if float(t.amount or 0) > 0)
+    owner_net = contributions_in - distributions_out  # +ve = net cash in from owner
+
+    operating_net = cash_in_invoices - cash_out_opex
+    net_change = operating_net + financing_net + owner_net
 
     return {
         "period": {"start": s.isoformat(), "end": e.isoformat()},
         "operating": {
-            "cash_in_invoices": cash_in_invoices,
-            "cash_out_opex_and_payroll": cash_out_opex,
-            "net": cash_in_invoices - cash_out_opex,
+            "cash_in_invoices": round(cash_in_invoices, 2),
+            "cash_out_opex_and_payroll": round(cash_out_opex, 2),
+            "net": round(operating_net, 2),
         },
         "investing": {"capex": 0.0, "net": 0.0, "note": "Capex not tracked yet."},
         "financing": {
-            "loan_proceeds_boc": inflow_breakdown["boc_factoring"],
-            "loan_proceeds_fundbox": inflow_breakdown["fundbox_draw"],
-            "owner_contributions": inflow_breakdown["owner_contribution"],
-            "loan_payments_total": loan_payments_total,
-            "net": financing_net,
-            "note": "BOC factoring proceeds and owner contributions auto-detected from bank inflows.",
+            "loan_proceeds_boc": round(inflow_breakdown["boc_factoring"], 2),
+            "loan_proceeds_fundbox": round(inflow_breakdown["fundbox_draw"], 2),
+            "loan_payments_total": round(loan_payments_total, 2),
+            "net": round(financing_net, 2),
+            "note": "BOC + Fundbox draws in, all loan payments out (incl. Forward MCA daily holdbacks).",
+        },
+        "owner": {
+            "contributions_in": round(contributions_in, 2),
+            "distributions_out": round(distributions_out, 2),
+            "net": round(owner_net, 2),
+            "note": "S-corp owner draws to personal ...0273 (out) and capital put back (in).",
         },
         "inflow_breakdown": inflow_breakdown,
-        "net_change_in_cash":
-            (cash_in_invoices - cash_out_opex) + financing_net,
+        "net_change_in_cash": round(net_change, 2),
     }
 
 

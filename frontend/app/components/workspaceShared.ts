@@ -135,6 +135,14 @@ export type ProjectPerformanceRange = {
   has_data: boolean;
 };
 
+export type CashFlow = {
+  period: { start: string; end: string };
+  operating: { cash_in_invoices: number; cash_out_opex_and_payroll: number; net: number };
+  financing: { loan_proceeds_boc: number; loan_proceeds_fundbox: number; loan_payments_total: number; net: number };
+  owner: { contributions_in: number; distributions_out: number; net: number };
+  net_change_in_cash: number;
+};
+
 export type InvoiceRevenueStatus = {
   invoiced_period?: number;
   collected_period?: number;
