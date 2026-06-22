@@ -4057,6 +4057,98 @@ def accounting_business_health(
     }
 
 
+# DEP direct SALARY rates (Aquatech_Updated_LTCP_Rates_2026). Used for the
+# reasonable-comp "earned vs paid" reconciliation. Wang/Courtney are estimates.
+SALARY_RATES = {
+    "bertrand": 99.23, "courtney": 35.0, "gilliam": 53.0, "zachary": 53.0,
+    "hodge": 52.50, "stacey": 52.50, "svadlenka": 61.50, "robert": 61.50,
+    "welch": 78.50, "ailsa": 78.50, "guo": 130.0, "qizhong": 130.0,
+    "wang": 100.0, "roger": 100.0,
+}
+
+
+def _salary_rate_for(name: str) -> float:
+    nl = (name or "").lower()
+    for k, v in SALARY_RATES.items():
+        if k in nl:
+            return v
+    return 0.0
+
+
+@app.get("/accounting/comp-reconciliation")
+def accounting_comp_reconciliation(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Earned (timesheet hours x DEP salary rate) vs paid (payroll W-2) per
+    person — surfaces reasonable-comp gaps (owner underpaying via distributions)
+    and owed wages (e.g. Ailsa). Period-aware."""
+    from collections import defaultdict as _dd
+    s, e = _accounting_period(start, end)
+
+    def _pd(v: object):
+        sv = str(v or "").strip()
+        for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(sv, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    hrs = _dd(lambda: [0.0, 0.0])  # user_id -> [billable, nonbillable]
+    for te in db.scalars(select(TimeEntry).where(TimeEntry.work_date >= s, TimeEntry.work_date <= e)).all():
+        h = float(te.hours or 0)
+        if te.is_billable:
+            hrs[te.user_id][0] += h
+        else:
+            hrs[te.user_id][1] += h
+
+    paid = _dd(float)  # payroll "Last, First" (lower) -> gross in period
+    try:
+        inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
+        if inbox.exists():
+            for _fn, _yr, parsed in _iter_parsed_payroll(inbox):
+                for p in parsed.get("periods", []):
+                    d = _pd(p.get("pay_day"))
+                    if d is None or d < s or d > e:
+                        continue
+                    for r in p.get("rows", []):
+                        paid[(r.get("employee") or "").lower()] += float(r.get("gross") or 0)
+    except Exception:
+        pass
+
+    def paid_for(full_name: str) -> float:
+        toks = [t for t in (full_name or "").lower().replace(".", "").split() if len(t) >= 3]
+        if not toks:
+            return 0.0
+        first, last = toks[0], toks[-1]
+        return sum(v for k, v in paid.items() if last in k and first[:4] in k)
+
+    rows = []
+    for u in db.scalars(select(User)).all():
+        b, nb = hrs.get(u.id, [0.0, 0.0])
+        if b + nb <= 0:
+            continue
+        rate = _salary_rate_for(u.full_name or "")
+        earned = (b + nb) * rate
+        pd_paid = paid_for(u.full_name or "")
+        rows.append({
+            "name": u.full_name, "billable": round(b, 1), "nonbillable": round(nb, 1),
+            "total_hours": round(b + nb, 1), "rate": rate,
+            "earned": round(earned, 2), "paid": round(pd_paid, 2), "gap": round(earned - pd_paid, 2),
+        })
+    rows.sort(key=lambda r: -r["gap"])
+    return {
+        "period": {"start": s.isoformat(), "end": e.isoformat()},
+        "rows": rows,
+        "total_earned": round(sum(r["earned"] for r in rows), 2),
+        "total_paid": round(sum(r["paid"] for r in rows), 2),
+        "total_gap": round(sum(r["gap"] for r in rows), 2),
+    }
+
+
 @app.get("/accounting/balance-sheet")
 def accounting_balance_sheet(
     db: Session = Depends(get_db),
