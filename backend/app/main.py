@@ -4120,14 +4120,20 @@ def accounting_comp_reconciliation(
         pass
 
     def paid_for(full_name: str) -> float:
-        # Match payroll by FIRST name: last names vary (Ailsa appears as both
-        # "Welch" and "Gilliam"), while first names are unique on this team and
-        # still disambiguate the two Byrnes (Bertrand vs Courtney).
+        # Match payroll by FIRST name as a whole token (5-char prefix) — last
+        # names vary (Ailsa appears as "Welch" and "Gilliam"); first names are
+        # unique on this team and disambiguate the two Byrnes. Whole-token
+        # prefix avoids "bert" matching inside "Robert".
         toks = [t for t in (full_name or "").lower().replace(".", "").split() if len(t) >= 3]
         if not toks:
             return 0.0
         first = toks[0]
-        return sum(v for k, v in paid.items() if first[:4] in k)
+        tot = 0.0
+        for k, v in paid.items():
+            ktoks = [t for t in k.replace(",", " ").replace(".", " ").split() if len(t) >= 4]
+            if any(t.startswith(first[:5]) or first.startswith(t[:5]) for t in ktoks):
+                tot += v
+        return tot
 
     rows = []
     for u in db.scalars(select(User)).all():
