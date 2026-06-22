@@ -1,6 +1,6 @@
 "use client";
 
-import { CashFlow } from "./workspaceShared";
+import { CashFlow, CompRecon } from "./workspaceShared";
 
 type Grp = { group: string; amount: number };
 type CogsBreak = {
@@ -421,6 +421,79 @@ export function CashFlowPanel({
           </div>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   PANEL 3 — REASONABLE COMP: earned (hours × rate) vs paid (W-2)
+   Surfaces owner under-payment (distributions in lieu of salary) and
+   owed wages (e.g. Ailsa). Period-aware.
+   ───────────────────────────────────────────────────────────── */
+export function CompReconPanel({ data }: { data: CompRecon | null }) {
+  if (!data || !(data.rows || []).length) return null;
+  const cell = { padding: "0.3rem 0.5rem", fontSize: "0.85em" } as const;
+  const rcell = { ...cell, textAlign: "right" as const };
+  return (
+    <section className="aq-lite-panel">
+      <div className="aq-lite-panel-head">
+        <div>
+          <p className="aq-lite-eyebrow">Reasonable comp — earned vs. paid</p>
+          <h3>Who&apos;s owed wages (and who&apos;s underpaying themselves)</h3>
+        </div>
+        <span style={{ opacity: 0.6, fontSize: "0.82em" }}>
+          {data.period.start} → {data.period.end}
+        </span>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ opacity: 0.6, fontSize: "0.78em", textAlign: "left", borderBottom: BORDER }}>
+              <th style={cell}>Person</th>
+              <th style={rcell}>Hours (bill / non)</th>
+              <th style={rcell}>Rate</th>
+              <th style={rcell}>Earned</th>
+              <th style={rcell}>Paid (W-2)</th>
+              <th style={rcell}>Gap</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((r) => {
+              const owed = r.gap > 1;
+              return (
+                <tr key={r.name} style={{ borderBottom: "1px solid rgba(128,128,128,0.14)" }}>
+                  <td style={cell}>{r.name}</td>
+                  <td style={rcell}>
+                    {r.total_hours.toFixed(0)}{" "}
+                    <span style={{ opacity: 0.5 }}>
+                      ({r.billable.toFixed(0)}/{r.nonbillable.toFixed(0)})
+                    </span>
+                  </td>
+                  <td style={rcell}>${r.rate.toFixed(2)}</td>
+                  <td style={rcell}>{money(r.earned)}</td>
+                  <td style={rcell}>{money(r.paid)}</td>
+                  <td style={{ ...rcell, fontWeight: 700, color: owed ? "#c0563b" : undefined }}>
+                    {owed ? money(r.gap) : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr style={{ borderTop: BORDER, fontWeight: 700 }}>
+              <td style={cell}>Total</td>
+              <td style={rcell} />
+              <td style={rcell} />
+              <td style={rcell}>{money(data.total_earned)}</td>
+              <td style={rcell}>{money(data.total_paid)}</td>
+              <td style={{ ...rcell, color: "#c0563b" }}>{money(data.total_gap)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p style={{ ...subRow, marginTop: "0.5rem" }}>
+        Gap = earned (timesheet hours × DEP salary rate) − W-2 paid. A positive gap = wages owed or
+        taken as distributions instead of salary (reasonable-comp exposure). Rates are DEP direct
+        salary rates; Wang/Courtney estimated.
+      </p>
     </section>
   );
 }

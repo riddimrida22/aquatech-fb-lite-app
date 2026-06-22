@@ -135,6 +135,15 @@ export type ProjectPerformanceRange = {
   has_data: boolean;
 };
 
+export type CompRecon = {
+  period: { start: string; end: string };
+  rows: Array<{
+    name: string; billable: number; nonbillable: number; total_hours: number;
+    rate: number; earned: number; paid: number; gap: number;
+  }>;
+  total_earned: number; total_paid: number; total_gap: number;
+};
+
 export type CashFlow = {
   period: { start: string; end: string };
   operating: { cash_in_invoices: number; cash_out_opex?: number; cash_out_payroll?: number; cash_out_opex_and_payroll: number; net: number };
