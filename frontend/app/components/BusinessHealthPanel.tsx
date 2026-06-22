@@ -41,6 +41,13 @@ export type BusinessHealth = {
     net_distributions: number;
     note?: string;
   };
+  owner_payroll?: {
+    gross_paid: number;
+    employer_match: number;
+    deferral_est: number;
+    allowable_401k: number;
+    remaining_401k: number;
+  };
   debt_outstanding: { lines: { name: string; balance: number }[]; total: number };
 };
 
@@ -255,6 +262,35 @@ export function ProfitLossPanel({
               <strong>{money(ficaEmployer)}</strong>
             </div>
           </div>
+          {data.owner_payroll ? (
+            <div
+              className="aq-lite-stat-list"
+              style={{ marginTop: "0.55rem", borderTop: "1px dashed rgba(90,120,150,0.45)", paddingTop: "0.5rem" }}
+            >
+              <div style={{ fontWeight: 600, opacity: 0.75 }}>
+                <span>ACTUAL PAYROLL RUN TO DATE (vs. the target above)</span>
+                <span />
+              </div>
+              <div style={dimRow}>
+                <span>Gross W-2 actually paid you</span>
+                <strong>{money(data.owner_payroll.gross_paid)}</strong>
+              </div>
+              <div style={dimRow}>
+                <span>401(k) deferred so far (~80% of actual gross)</span>
+                <strong>{money(data.owner_payroll.deferral_est)}</strong>
+              </div>
+              <div style={{ ...grandRow, borderTopColor: "rgba(90,120,150,0.45)" }}>
+                <span>= 401(k) room left (of {money(data.owner_payroll.allowable_401k)})</span>
+                <strong>{money(data.owner_payroll.remaining_401k)}</strong>
+              </div>
+              <div style={subRow}>
+                <span>
+                  To use it, run ~{money(data.owner_payroll.remaining_401k / 0.8)} more gross salary before
+                  year-end. Employer match paid so far {money(data.owner_payroll.employer_match)}.
+                </span>
+              </div>
+            </div>
+          ) : null}
           <p style={{ ...subRow, marginTop: "0.4rem" }}>
             Employee FICA + income tax come out of the same cash you already drew — only the employer
             FICA is genuinely new. 401(k) cuts income tax, not FICA. Cap {money(K401_LIMIT_2026)} =
