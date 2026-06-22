@@ -1559,6 +1559,8 @@ CHART_OF_ACCOUNTS: dict[str, tuple[str, str]] = {
     "Software & Subscriptions": ("INDIRECT", "Admin / G&A"),
     "Insurance": ("INDIRECT", "Admin / G&A"),
     "Telecom & Internet": ("INDIRECT", "Admin / G&A"),
+    "Taxes & Licenses": ("INDIRECT", "Admin / G&A"),
+    "Taxes And Licenses": ("INDIRECT", "Admin / G&A"),
     "Office Supplies": ("INDIRECT", "Admin / G&A"),
     "Office & Postage": ("INDIRECT", "Admin / G&A"),
     "Professional Services": ("INDIRECT", "Admin / G&A"),
@@ -3591,8 +3593,14 @@ def accounting_pl(
             continue  # MCA / short-term business financing — debt servicing, not OPEX
         # Zelle to individuals: per user (2026-06-07) these are personal or staff-pay
         # already counted in COGS — either way not OPEX. (Was staff-name-only.)
+        # EXCEPTION: honour an explicit manual category that maps to a real INDIRECT
+        # account — e.g. rent paid via Zelle to landlord "Rodney Gilliam" (whose
+        # surname collides with staff). Staff-pay Zelles stay excluded because they
+        # route to COGS-labor (section != INDIRECT) and may duplicate the journal.
         if "ZELLE" in nm_upper:
-            continue
+            _zsec, _zgrp = coa_section(_tx_category_from_json(tx)[1])
+            if not (_zsec == "INDIRECT" and _zgrp != "⚠ Needs review (manual)"):
+                continue
         if "payroll" in cat_lower and "tax" not in cat_lower:
             continue
         amt = -float(tx.amount or 0)
