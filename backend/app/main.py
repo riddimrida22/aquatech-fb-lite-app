@@ -4119,19 +4119,26 @@ def accounting_comp_reconciliation(
     except Exception:
         pass
 
+    # Explicit payroll-name match per user (known team). Handles Paychex
+    # truncation + Ailsa's compound surname "Welch Gilliam" (her first name
+    # truncates to "Ai") and keeps the two Byrnes separate.
+    PAYROLL_MATCH = {
+        "bertrand": ("bertran",), "courtney": ("courtney",),
+        "ailsa": ("welch gilliam",), "zachary": ("gilliam, zach", "zachary"),
+        "stacey": ("hodge",), "robert": ("svadlenka",),
+        "roger": ("wang",), "qizhong": ("guo",), "george": ("guo",),
+    }
+
     def paid_for(full_name: str) -> float:
-        # Match payroll by FIRST name as a whole token (5-char prefix) — last
-        # names vary (Ailsa appears as "Welch" and "Gilliam"); first names are
-        # unique on this team and disambiguate the two Byrnes. Whole-token
-        # prefix avoids "bert" matching inside "Robert".
-        toks = [t for t in (full_name or "").lower().replace(".", "").split() if len(t) >= 3]
-        if not toks:
-            return 0.0
-        first = toks[0]
+        first = (full_name or "").lower().split()[0] if full_name else ""
+        keys = PAYROLL_MATCH.get(first)
+        if keys:
+            return sum(v for k, v in paid.items() if any(key in k for key in keys))
+        # Fallback for any future name: whole-token first-name prefix
         tot = 0.0
         for k, v in paid.items():
-            ktoks = [t for t in k.replace(",", " ").replace(".", " ").split() if len(t) >= 4]
-            if any(t.startswith(first[:5]) or first.startswith(t[:5]) for t in ktoks):
+            ktoks = [t for t in k.replace(",", " ").split() if len(t) >= 4]
+            if any(t.startswith(first[:5]) for t in ktoks):
                 tot += v
         return tot
 
