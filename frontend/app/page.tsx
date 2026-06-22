@@ -69,6 +69,9 @@ type WorkspaceKey =
 
 const DEV_AUTH_ENABLED = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true";
 
+// Shared cursor for drill-down (clickable dashboard figures → detail tab)
+const drillStyle = { cursor: "pointer" } as const;
+
 const WORKSPACES: Array<{ key: WorkspaceKey; label: string; hint: string }> = [
   { key: "dashboard", label: "Dashboard", hint: "Snapshot" },
   { key: "clients", label: "Clients", hint: "Relationships" },
@@ -897,30 +900,30 @@ export default function AquatechPmHome() {
                 </p>
               </div>
               <div className="aq-lite-hero-grid">
-                <article className="aq-lite-kpi">
-                  <span>Active projects</span>
+                <article className="aq-lite-kpi" style={drillStyle} title="View projects →" onClick={() => setWorkspace("projects")}>
+                  <span>Active projects ↗</span>
                   <strong>{headlineMetrics.activeProjects}</strong>
                 </article>
-                <article className="aq-lite-kpi">
-                  <span>Month hours logged</span>
+                <article className="aq-lite-kpi" style={drillStyle} title="View timesheets →" onClick={() => setWorkspace("timesheets")}>
+                  <span>Month hours logged ↗</span>
                   <strong>{formatNumber(companyMonthHours ?? headlineMetrics.monthHours, 1)}</strong>
                 </article>
-                <article className="aq-lite-kpi">
-                  <span>{accountingBasis === "cash" ? "Collected" : "Invoiced"} ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"})</span>
+                <article className="aq-lite-kpi" style={drillStyle} title="View invoices →" onClick={() => setWorkspace("invoices")}>
+                  <span>{accountingBasis === "cash" ? "Collected" : "Invoiced"} ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}) ↗</span>
                   <strong>{formatCurrency(accountingBasis === "cash" ? invoiceStatus?.collected_period : invoiceStatus?.invoiced_period)}</strong>
                 </article>
-                <article className="aq-lite-kpi">
-                  <span>Open invoices (now)</span>
+                <article className="aq-lite-kpi" style={drillStyle} title="View invoices →" onClick={() => setWorkspace("invoices")}>
+                  <span>Open invoices (now) ↗</span>
                   <strong>{headlineMetrics.openInvoices}</strong>
                 </article>
                 {businessHealth ? (
                   <>
-                    <article className="aq-lite-kpi">
-                      <span>Net income ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"})</span>
+                    <article className="aq-lite-kpi" style={drillStyle} title="View P&L →" onClick={() => setWorkspace("accounting")}>
+                      <span>Net income ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}) ↗</span>
                       <strong>{formatCurrency(businessHealth.waterfall.net_income)}</strong>
                     </article>
-                    <article className="aq-lite-kpi">
-                      <span>Net margin ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"})</span>
+                    <article className="aq-lite-kpi" style={drillStyle} title="View P&L →" onClick={() => setWorkspace("accounting")}>
+                      <span>Net margin ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}) ↗</span>
                       <strong>{businessHealth.waterfall.net_margin != null ? `${(businessHealth.waterfall.net_margin * 100).toFixed(1)}%` : "—"}</strong>
                     </article>
                   </>
@@ -928,9 +931,9 @@ export default function AquatechPmHome() {
               </div>
             </div>
 
-            <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} />
-            <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} />
-            <CompReconPanel data={compRecon} />
+            <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => setWorkspace(k as WorkspaceKey)} />
+            <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => setWorkspace(k as WorkspaceKey)} />
+            <CompReconPanel data={compRecon} onNavigate={(k) => setWorkspace(k as WorkspaceKey)} />
 
             <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
