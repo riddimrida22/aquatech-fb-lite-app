@@ -213,8 +213,12 @@ export function CashFlowPanel({
           <strong>{money(op.cash_in_invoices)}</strong>
         </div>
         <div style={dimRow}>
-          <span>− Paid out (OpEx + payroll)</span>
-          <strong style={negStrong}>({money(op.cash_out_opex_and_payroll)})</strong>
+          <span>− Payroll paid (wages + taxes)</span>
+          <strong style={negStrong}>({money(op.cash_out_payroll ?? 0)})</strong>
+        </div>
+        <div style={dimRow}>
+          <span>− Other operating costs paid</span>
+          <strong style={negStrong}>({money(op.cash_out_opex ?? op.cash_out_opex_and_payroll)})</strong>
         </div>
         <div style={totalRow}>
           <span>= Operating cash flow</span>

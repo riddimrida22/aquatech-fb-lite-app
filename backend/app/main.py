@@ -3788,6 +3788,7 @@ def accounting_cashflow(
     payroll_keywords_cf = PAYROLL_KEYWORDS
     personal_overrides_cf = PERSONAL_OVERRIDE_KEYWORDS
     cash_out_opex = 0.0
+    cash_out_payroll = 0.0  # real wages/taxes paid (Gusto/Paychex) — operating cash out
     cc_transfers_keywords = CC_TRANSFER_KEYWORDS
     for tx in db.scalars(
         select(BankTransaction).where(
@@ -3802,11 +3803,15 @@ def accounting_cashflow(
         nm_upper = (tx.name or "").upper()
         if any(k in nm_upper for k in cc_transfers_keywords):
             continue
-        if any(k in nm_upper for k in payroll_keywords_cf):
-            continue
         if any(k in nm_upper for k in loan_keywords_cf):
             continue
         if any(k in nm_upper for k in personal_overrides_cf):
+            continue
+        # Payroll IS an operating cash outflow (unlike the P&L, which sources COGS
+        # from the Gusto journal). Capture it separately so the operating section
+        # reflects real cash paid to employees.
+        if any(k in nm_upper for k in payroll_keywords_cf):
+            cash_out_payroll += -float(tx.amount or 0)
             continue
         cash_out_opex += -float(tx.amount or 0)
 
@@ -3869,14 +3874,16 @@ def accounting_cashflow(
     contributions_in = sum(float(t.amount or 0) for t in owner_txns if float(t.amount or 0) > 0)
     owner_net = contributions_in - distributions_out  # +ve = net cash in from owner
 
-    operating_net = cash_in_invoices - cash_out_opex
+    operating_net = cash_in_invoices - cash_out_opex - cash_out_payroll
     net_change = operating_net + financing_net + owner_net
 
     return {
         "period": {"start": s.isoformat(), "end": e.isoformat()},
         "operating": {
             "cash_in_invoices": round(cash_in_invoices, 2),
-            "cash_out_opex_and_payroll": round(cash_out_opex, 2),
+            "cash_out_opex": round(cash_out_opex, 2),
+            "cash_out_payroll": round(cash_out_payroll, 2),
+            "cash_out_opex_and_payroll": round(cash_out_opex + cash_out_payroll, 2),
             "net": round(operating_net, 2),
         },
         "investing": {"capex": 0.0, "net": 0.0, "note": "Capex not tracked yet."},
