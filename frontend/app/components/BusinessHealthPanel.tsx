@@ -98,7 +98,11 @@ export function ProfitLossPanel({
   // Compensation plan (CPA): split owner draws into W-2 salary vs distribution,
   // with 401(k) deferral + FICA. (Figures flagged — confirm against official 2026.)
   const SS_BASE_2026 = 183600; // 2026 Social Security wage base (estimate)
-  const K401_LIMIT_2026 = 24500; // 2026 employee 401(k) elective-deferral cap (estimate; +$7,500 if 50+)
+  // Owner turns 60 in 2026 (DOB 12/23/1966) → SECURE 2.0 ages 60-63 "super catch-up".
+  // 2026 cap = base elective deferral (~$24,500) + super catch-up (~$11,250 est).
+  const K401_BASE_2026 = 24500;
+  const K401_CATCHUP_2026 = 11250; // ages 60-63 super catch-up (est — confirm)
+  const K401_LIMIT_2026 = K401_BASE_2026 + K401_CATCHUP_2026; // ~$35,750
   const K401_RATE = 0.8; // owner's elective deferral rate
   const ssTaxable = Math.min(impPeriod, SS_BASE_2026);
   const ficaTotal = ssTaxable * 0.124 + impPeriod * 0.029;
@@ -253,8 +257,12 @@ export function ProfitLossPanel({
           </div>
           <p style={{ ...subRow, marginTop: "0.4rem" }}>
             Employee FICA + income tax come out of the same cash you already drew — only the employer
-            FICA is genuinely new. 401(k) cuts income tax, not FICA. Confirm 2026 figures: SS wage base
-            ~{money(SS_BASE_2026)}, 401(k) cap {money(K401_LIMIT_2026)} (+$7,500 catch-up if 50+).
+            FICA is genuinely new. 401(k) cuts income tax, not FICA. Cap {money(K401_LIMIT_2026)} =
+            base {money(K401_BASE_2026)} + ages 60–63 super catch-up {money(K401_CATCHUP_2026)} (you
+            turn 60 in 2026). ⚠ If your 2025 W-2 wages exceeded ~$145K, the catch-up must be Roth
+            (after-tax) — grows tax-free but won&apos;t cut this year&apos;s income tax. Confirm 2026
+            figures: SS base ~{money(SS_BASE_2026)}, base 401(k) ~{money(K401_BASE_2026)}, super
+            catch-up ~{money(K401_CATCHUP_2026)}.
           </p>
         </div>
       ) : null}
