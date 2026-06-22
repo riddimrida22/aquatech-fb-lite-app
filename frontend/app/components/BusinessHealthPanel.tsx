@@ -83,10 +83,12 @@ export function ProfitLossPanel({
   data,
   ownerAnnualSalary,
   onOwnerSalaryChange,
+  onNavigate,
 }: {
   data: BusinessHealth | null;
   ownerAnnualSalary: number;
   onOwnerSalaryChange: (n: number) => void;
+  onNavigate?: (k: string) => void;
 }) {
   if (!data) return null;
   const w = data.waterfall;
@@ -122,9 +124,9 @@ export function ProfitLossPanel({
   return (
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
-        <div>
+        <div onClick={() => onNavigate?.("accounting")} style={onNavigate ? { cursor: "pointer" } : undefined} title={onNavigate ? "Open P&L detail →" : undefined}>
           <p className="aq-lite-eyebrow">Profit &amp; Loss</p>
-          <h3>What the business earned</h3>
+          <h3>What the business earned {onNavigate ? "↗" : ""}</h3>
         </div>
         <span style={{ opacity: 0.6, fontSize: "0.82em" }}>
           {basisLabel} · {data.period.start} → {data.period.end}
@@ -314,9 +316,11 @@ export function ProfitLossPanel({
 export function CashFlowPanel({
   data,
   debt,
+  onNavigate,
 }: {
   data: CashFlow | null;
   debt?: BusinessHealth["debt_outstanding"] | null;
+  onNavigate?: (k: string) => void;
 }) {
   if (!data) return null;
   const op = data.operating;
@@ -325,9 +329,9 @@ export function CashFlowPanel({
   return (
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
-        <div>
+        <div onClick={() => onNavigate?.("accounting")} style={onNavigate ? { cursor: "pointer" } : undefined} title={onNavigate ? "Open Cash Flow / Loans →" : undefined}>
           <p className="aq-lite-eyebrow">Cash Flow</p>
-          <h3>Where the cash actually moved</h3>
+          <h3>Where the cash actually moved {onNavigate ? "↗" : ""}</h3>
         </div>
         <span style={{ opacity: 0.6, fontSize: "0.82em" }}>
           cash basis · {data.period.start} → {data.period.end}
@@ -430,7 +434,7 @@ export function CashFlowPanel({
    Surfaces owner under-payment (distributions in lieu of salary) and
    owed wages (e.g. Ailsa). Period-aware.
    ───────────────────────────────────────────────────────────── */
-export function CompReconPanel({ data }: { data: CompRecon | null }) {
+export function CompReconPanel({ data, onNavigate }: { data: CompRecon | null; onNavigate?: (k: string) => void }) {
   if (!data || !(data.rows || []).length) return null;
   const cell = { padding: "0.3rem 0.5rem", fontSize: "0.85em" } as const;
   const rcell = { ...cell, textAlign: "right" as const };
@@ -461,8 +465,13 @@ export function CompReconPanel({ data }: { data: CompRecon | null }) {
             {data.rows.map((r) => {
               const owed = r.gap > 1;
               return (
-                <tr key={r.name} style={{ borderBottom: "1px solid rgba(128,128,128,0.14)" }}>
-                  <td style={cell}>{r.name}</td>
+                <tr
+                  key={r.name}
+                  onClick={() => onNavigate?.("timesheets")}
+                  style={{ borderBottom: "1px solid rgba(128,128,128,0.14)", cursor: onNavigate ? "pointer" : undefined }}
+                  title={onNavigate ? "View timesheets →" : undefined}
+                >
+                  <td style={cell}>{r.name}{onNavigate ? " ↗" : ""}</td>
                   <td style={rcell}>
                     {r.total_hours.toFixed(0)}{" "}
                     <span style={{ opacity: 0.5 }}>
