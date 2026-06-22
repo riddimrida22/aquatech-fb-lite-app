@@ -3905,6 +3905,48 @@ def accounting_cashflow(
     }
 
 
+def _owner_actual_payroll(start: date, end: date) -> dict[str, float]:
+    """Bertrand's ACTUAL W-2 payroll run in the period (from the Gusto/Paychex
+    journals) — distinct from the reasonable-comp TARGET. Surfaces the real
+    401(k) deferral vs the allowable so the dashboard shows reality, not a
+    projection. Filters to Bertrand (matches 'Bertrand' and the truncated
+    'Dr Bertran'), excluding Courtney Byrne."""
+    def _pd(v: object) -> date | None:
+        sv = str(v or "").strip()
+        for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(sv, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    gross = match = 0.0
+    try:
+        inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
+        if inbox.exists():
+            for _fn, _yr, parsed in _iter_parsed_payroll(inbox):
+                for p in parsed.get("periods", []):
+                    pd = _pd(p.get("pay_day"))
+                    if pd is None or pd < start or pd > end:
+                        continue
+                    for r in p.get("rows", []):
+                        nm = (r.get("employee") or "").lower()
+                        if "byrne" in nm and "bertran" in nm and "courtney" not in nm:
+                            gross += float(r.get("gross") or 0)
+                            match += float(r.get("employer_401k") or 0)
+    except Exception:
+        pass
+    # Owner defers 80% of gross; 2026 allowable incl. ages 60-63 super catch-up = $35,750.
+    defer = min(gross * 0.80, 35750.0)
+    return {
+        "gross_paid": round(gross, 2),
+        "employer_match": round(match, 2),
+        "deferral_est": round(defer, 2),
+        "allowable_401k": 35750.0,
+        "remaining_401k": round(max(0.0, 35750.0 - defer), 2),
+    }
+
+
 @app.get("/accounting/business-health")
 def accounting_business_health(
     start: str | None = None,
@@ -4010,6 +4052,7 @@ def accounting_business_health(
             "net_distributions": round(dist_out - contrib_0273, 2),
             "note": "S-corp, sole shareholder: distributions reduce equity — not an expense, not a loan.",
         },
+        "owner_payroll": _owner_actual_payroll(s, e),
         "debt_outstanding": {"lines": debt_lines, "total": debt_total},
     }
 
