@@ -1,8 +1,11 @@
 name: Deploy
 
 on:
-  push:
-    branches: ["main"]
+  # Auto-deploy on push DISABLED (2026-06): the GCE prod server is firewalled
+  # from GitHub Actions, so deploy-staging/deploy-production always fail and
+  # email a failure notice on every push. Deploys are done manually over SSH
+  # via scripts/deploy_from_commit.sh. Use "Run workflow" if CI deploy is ever
+  # wired up. (CI build validation still runs via ci.yml on push.)
   workflow_dispatch:
     inputs:
       target_commit:
