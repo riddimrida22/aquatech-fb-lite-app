@@ -160,7 +160,7 @@ export default function AquatechPmHome() {
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceRevenueStatus | null>(null);
   const [businessHealth, setBusinessHealth] = useState<BusinessHealth | null>(null);
   const [cashflow, setCashflow] = useState<CashFlow | null>(null);
-  const [ownerComp, setOwnerComp] = useState<number>(0);
+  const [ownerAnnualSalary, setOwnerAnnualSalary] = useState<number>(206398.4);
   const [finPeriod, setFinPeriod] = useState<{ preset: PeriodPreset; start: string; end: string }>(() => ({ preset: "ytd", ...periodRange("ytd") }));
   const [accountingBasis, setAccountingBasis] = useState<"cash" | "accrual">("cash");
   useEffect(() => {
@@ -924,7 +924,7 @@ export default function AquatechPmHome() {
               </div>
             </div>
 
-            <ProfitLossPanel data={businessHealth} ownerComp={ownerComp} onOwnerCompChange={setOwnerComp} />
+            <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} />
             <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} />
 
             <div className="aq-lite-grid aq-lite-grid-2">

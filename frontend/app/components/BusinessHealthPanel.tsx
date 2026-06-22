@@ -67,21 +67,34 @@ const negStrong = { opacity: 0.85 } as const;
    Pure operating profitability: client revenue → COGS → indirect → net.
    No borrowed cash here (that lives in the Cash Flow panel).
    ───────────────────────────────────────────────────────────── */
+function daysBetween(a: string, b: string): number {
+  const ms = new Date(b).getTime() - new Date(a).getTime();
+  return Math.max(0, Math.round(ms / 86400000) + 1);
+}
+
 export function ProfitLossPanel({
   data,
-  ownerComp,
-  onOwnerCompChange,
+  ownerAnnualSalary,
+  onOwnerSalaryChange,
 }: {
   data: BusinessHealth | null;
-  ownerComp: number;
-  onOwnerCompChange: (n: number) => void;
+  ownerAnnualSalary: number;
+  onOwnerSalaryChange: (n: number) => void;
 }) {
   if (!data) return null;
   const w = data.waterfall;
   const cb = w.cogs_breakdown || {};
   const basisLabel = (data.basis || "cash") === "accrual" ? "Accrual — invoiced" : "Cash — collected from clients";
-  const adjNet = w.net_income - (ownerComp || 0);
+  const annual = ownerAnnualSalary || 0;
+  // Imputed comp for the DISPLAYED period (prorate annual salary by period days).
+  const periodDays = daysBetween(data.period.start, data.period.end);
+  const impPeriod = annual * (periodDays / 365);
+  const adjNet = w.net_income - impPeriod;
   const adjMargin = w.revenue ? adjNet / w.revenue : null;
+  // 2026 salary accrual tracker (Jan 1 → period end as "as of").
+  const elapsed2026 = Math.min(365, daysBetween("2026-01-01", data.period.end));
+  const owedSoFar = annual * (elapsed2026 / 365);
+  const remaining2026 = Math.max(0, annual - owedSoFar);
   return (
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
@@ -142,31 +155,46 @@ export function ProfitLossPanel({
         </div>
       </div>
 
-      {/* Owner-comp imputation — the true operating margin once the principal's
-          labor is valued (currently taken as distributions, not W-2 salary). */}
+      {/* Owner salary — value the principal's labor (taken as distributions, not
+          W-2 salary) and track the 2026 accrual. */}
       <div style={{ marginTop: "0.85rem", padding: "0.6rem 0.7rem", borderRadius: 8, background: "rgba(150,120,90,0.10)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "0.82em", opacity: 0.8 }}>Impute owner salary (your labor isn&apos;t in COGS):</span>
+          <span style={{ fontSize: "0.82em", opacity: 0.8 }}>Owner salary (annual):</span>
           <span style={{ fontSize: "0.85em" }}>$</span>
           <input
             type="number"
-            value={ownerComp || 0}
+            value={annual}
             min={0}
-            step={5000}
-            onChange={(e) => onOwnerCompChange(Number(e.target.value) || 0)}
-            style={{ width: 110, fontSize: "0.85em", padding: "0.15rem 0.35rem" }}
+            step={1000}
+            onChange={(e) => onOwnerSalaryChange(Number(e.target.value) || 0)}
+            style={{ width: 130, fontSize: "0.85em", padding: "0.15rem 0.35rem" }}
           />
+          <span style={{ fontSize: "0.78em", opacity: 0.55 }}>/ yr</span>
         </div>
-        {ownerComp ? (
-          <div style={{ ...grandRow, marginTop: "0.45rem", borderTopColor: "rgba(150,120,90,0.45)" }}>
-            <span>= Net after owner comp</span>
-            <strong>
-              {money(adjNet)} · {pct(adjMargin)}
-            </strong>
+        {annual ? (
+          <div className="aq-lite-stat-list" style={{ marginTop: "0.5rem" }}>
+            <div style={dimRow}>
+              <span>Owed to you so far (2026, {elapsed2026} days)</span>
+              <strong>{money(owedSoFar)}</strong>
+            </div>
+            <div style={dimRow}>
+              <span>Remaining to be paid in 2026</span>
+              <strong>{money(remaining2026)}</strong>
+            </div>
+            <div style={{ ...totalRow, opacity: 0.85 }}>
+              <span>Salary cost this period ({periodDays} days)</span>
+              <strong style={negStrong}>({money(impPeriod)})</strong>
+            </div>
+            <div style={{ ...grandRow, borderTopColor: "rgba(150,120,90,0.45)" }}>
+              <span>= Net after owner salary</span>
+              <strong>
+                {money(adjNet)} · {pct(adjMargin)}
+              </strong>
+            </div>
           </div>
         ) : (
           <p style={{ ...subRow, marginTop: "0.35rem" }}>
-            Set a market salary to see your real operating margin (e.g. $150K/yr ≈ $75K for 6 mo).
+            Set a market salary to see your real operating margin and 2026 accrual.
           </p>
         )}
       </div>
