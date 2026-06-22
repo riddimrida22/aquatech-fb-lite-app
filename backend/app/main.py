@@ -3412,10 +3412,12 @@ def accounting_pl(
         .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
     ) or 0.0)
 
-    # Accrual revenue: invoices issued in period (alternate)
+    # Accrual revenue: invoices issued in period (alternate). Exclude DRAFTS —
+    # a draft is not billed work; FreshBooks excludes them from invoiced totals too.
     revenue_accrual = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.subtotal_amount), 0.0))
-        .where(Invoice.issue_date >= s, Invoice.issue_date <= e)
+        .where(Invoice.issue_date >= s, Invoice.issue_date <= e,
+               func.lower(func.coalesce(Invoice.status, "")) != "draft")
     ) or 0.0)
 
     # COGS from Gusto journal (canonical). Re-parse the inbox.
@@ -7415,7 +7417,8 @@ def invoice_revenue_status(
     s, e = _accounting_period(start, end)
     invoiced_period = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.subtotal_amount), 0.0))
-        .where(Invoice.issue_date.isnot(None), Invoice.issue_date >= s, Invoice.issue_date <= e)
+        .where(Invoice.issue_date.isnot(None), Invoice.issue_date >= s, Invoice.issue_date <= e,
+               func.lower(func.coalesce(Invoice.status, "")) != "draft")
     ) or 0.0)
     collected_period = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
