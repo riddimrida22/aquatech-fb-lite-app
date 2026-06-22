@@ -9,7 +9,7 @@ import { WeeklyTimeEntry } from "./components/WeeklyTimeEntry";
 import { Toast } from "./components/Toast";
 import { StatusBadge } from "./components/StatusBadge";
 import { ARAgingPanel } from "./components/ARAgingPanel";
-import { BusinessHealthPanel, BusinessHealth } from "./components/BusinessHealthPanel";
+import { ProfitLossPanel, CashFlowPanel, BusinessHealth } from "./components/BusinessHealthPanel";
 import { TransfersPanel } from "./components/TransfersPanel";
 import { DedupPanel } from "./components/DedupPanel";
 import { PayrollPortal } from "./components/PayrollPortal";
@@ -33,6 +33,7 @@ import {
   Invoice,
   InvoicePreview,
   InvoiceRevenueStatus,
+  CashFlow,
   UnbilledHoursReport,
   Project,
   ProjectExpense,
@@ -158,6 +159,8 @@ export default function AquatechPmHome() {
   const [projectPerformance, setProjectPerformance] = useState<ProjectPerformanceRow[]>([]);
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceRevenueStatus | null>(null);
   const [businessHealth, setBusinessHealth] = useState<BusinessHealth | null>(null);
+  const [cashflow, setCashflow] = useState<CashFlow | null>(null);
+  const [ownerComp, setOwnerComp] = useState<number>(0);
   const [finPeriod, setFinPeriod] = useState<{ preset: PeriodPreset; start: string; end: string }>(() => ({ preset: "ytd", ...periodRange("ytd") }));
   const [accountingBasis, setAccountingBasis] = useState<"cash" | "accrual">("cash");
   useEffect(() => {
@@ -168,6 +171,8 @@ export default function AquatechPmHome() {
       .then((d) => setBusinessHealth(d)).catch(() => setBusinessHealth(null));
     apiGet<InvoiceRevenueStatus>(`/reports/invoice-revenue-status?start=${finPeriod.start}&end=${finPeriod.end}`)
       .then((d) => setInvoiceStatus(d)).catch(() => undefined);
+    apiGet<CashFlow>(`/accounting/cashflow?start=${finPeriod.start}&end=${finPeriod.end}`)
+      .then((d) => setCashflow(d)).catch(() => setCashflow(null));
   }, [finPeriod.start, finPeriod.end, accountingBasis, user]);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
@@ -919,7 +924,8 @@ export default function AquatechPmHome() {
               </div>
             </div>
 
-            <BusinessHealthPanel data={businessHealth} />
+            <ProfitLossPanel data={businessHealth} ownerComp={ownerComp} onOwnerCompChange={setOwnerComp} />
+            <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} />
 
             <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
