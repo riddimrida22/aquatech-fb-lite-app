@@ -1704,6 +1704,21 @@ def _start_fb_time_sync_worker() -> None:
                 print(f"[fb_time_sync] tick: time_entries by_outcome={outcomes}", flush=True)
         except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
             print(f"[fb_time_sync] tick failed: {exc!r}", flush=True)
+            # Persist a LOUD failure status so a broken connection can't sit silent —
+            # this is exactly what let the June-12 token death go unnoticed for 11 days.
+            try:
+                with SessionLocal() as db2:
+                    tok2 = fb_mod.load_token(db2)
+                    if tok2 is not None:
+                        m = str(exc).lower()
+                        is_auth = ("oauth/token" in m or "invalid_grant" in m
+                                   or "401" in m or ("400" in m and "auth" in m))
+                        tok2.last_sync_status = "reauth_required" if is_auth else "error"
+                        tok2.last_sync_summary = json.dumps(
+                            {"error": str(exc)[:500], "at": datetime.utcnow().isoformat()})
+                        db2.commit()
+            except Exception:
+                pass
 
     sched = BackgroundScheduler(daemon=True)
     sched.add_job(_tick, "interval", minutes=10, id="fb_time_sync", coalesce=True, max_instances=1,
@@ -10776,7 +10791,25 @@ def freshbooks_status(
 ) -> dict[str, object]:
     row = fb_integration.load_token(db)
     if not row:
-        return {"connected": False}
+        return {"connected": False, "health": "disconnected", "needs_reauth": True,
+                "message": "FreshBooks is not connected — connect it to sync hours."}
+    # Computed health: surfaces a broken/stale connection even if last_sync_status
+    # is itself stale (the auto-sync runs every 10 min, so >1h silent = broken).
+    now = datetime.utcnow()
+    stale_secs = (now - row.last_synced_at).total_seconds() if row.last_synced_at else None
+    if row.last_sync_status in ("reauth_required", "error"):
+        health = "disconnected"
+    elif stale_secs is not None and stale_secs > 3600:
+        health = "stale"
+    else:
+        health = "ok"
+    last_sum = json.loads(row.last_sync_summary or "{}")
+    msg = None
+    if health == "disconnected":
+        msg = "FreshBooks disconnected — reconnect to resume syncing hours."
+    elif health == "stale":
+        hrs = int(stale_secs // 3600) if stale_secs else 0
+        msg = f"FreshBooks hasn't synced in ~{hrs}h — hours may be missing. Check the connection."
     return {
         "connected": True,
         "account_id": row.account_id,
@@ -10784,8 +10817,67 @@ def freshbooks_status(
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
         "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
         "last_sync_status": row.last_sync_status,
-        "last_sync_summary": json.loads(row.last_sync_summary or "{}"),
+        "last_sync_summary": last_sum,
         "notes": row.notes,
+        "health": health,
+        "needs_reauth": health == "disconnected",
+        "minutes_since_sync": int(stale_secs // 60) if stale_secs is not None else None,
+        "message": msg,
+    }
+
+
+@app.get("/admin/freshbooks/reconcile")
+def freshbooks_reconcile(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    """Reconcile FreshBooks time entries against the app — proves no hours are silently
+    missing. Compares FB's total entry count to the app's, and surfaces how many landed
+    in the Unassigned catch-all (need a project link)."""
+    row = fb_integration.load_token(db)
+    if not row or not row.business_id:
+        return {"ok": False, "health": "disconnected",
+                "message": "FreshBooks not connected — reconnect to reconcile."}
+    # app side
+    app_count = db.scalar(
+        select(func.count()).select_from(TimeEntry).where(TimeEntry.source == "freshbooks_api")
+    ) or 0
+    app_latest = db.scalar(
+        select(func.max(TimeEntry.work_date)).where(TimeEntry.source == "freshbooks_api")
+    )
+    unassigned_pid = db.scalar(select(Project.id).where(Project.name == "Unassigned (FB API)"))
+    app_unassigned = 0
+    if unassigned_pid:
+        app_unassigned = db.scalar(
+            select(func.count()).select_from(TimeEntry).where(
+                TimeEntry.source == "freshbooks_api", TimeEntry.project_id == unassigned_pid)
+        ) or 0
+    # FB side — fetch only page 1 to read the total from meta
+    try:
+        resp = fb_integration.api_get(
+            db, f"/timetracking/business/{row.business_id}/time_entries",
+            params={"page": 1, "per_page": 1, "team": "true"})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "health": "disconnected",
+                "message": f"Can't reach FreshBooks: {exc}. Reconnect.",
+                "app_fb_entries": app_count,
+                "app_latest_date": app_latest.isoformat() if app_latest else None}
+    meta = resp.get("meta") or {}
+    fb_total = int(meta.get("total") or 0)
+    missing = fb_total - app_count  # >0 ⇒ FB has entries the app never stored
+    in_sync = missing <= 0
+    return {
+        "ok": True,
+        "in_sync": in_sync,
+        "fb_total_entries": fb_total,
+        "app_fb_entries": app_count,
+        "missing_estimate": max(missing, 0),
+        "unassigned_entries": app_unassigned,
+        "app_latest_date": app_latest.isoformat() if app_latest else None,
+        "message": ("All FreshBooks hours are in the app."
+                    + (f" ({app_unassigned} need a project link.)" if app_unassigned else ""))
+        if in_sync else
+        f"{missing} FreshBooks time entr{'y' if missing == 1 else 'ies'} are NOT in the app — run a sync.",
     }
 
 

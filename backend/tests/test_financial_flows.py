@@ -711,3 +711,39 @@ def test_payroll_hours_report_biweekly_period() -> None:
         my_row = next((r for r in rows if r["user_id"] == admin_id), None)
         assert my_row is not None
         assert my_row["hours"] == 8
+
+
+def test_unmapped_project_time_entries_are_captured_not_dropped(monkeypatch) -> None:
+    """Revenue guardrail: a FreshBooks time entry whose project isn't linked must land
+    on the 'Unassigned (FB API)' bucket (flagged), never be silently skipped."""
+    from datetime import date as _date
+    from sqlalchemy import select as _select
+    from app.db import SessionLocal
+    from app import freshbooks as fb
+    from app.models import User, UserRate, Project, Task, Subtask, TimeEntry
+
+    with SessionLocal() as db:
+        u = User(email="t@x.com", full_name="T", is_active=True); db.add(u); db.flush()
+        db.add(UserRate(user_id=u.id, effective_date=_date(2024, 1, 1), bill_rate=100, cost_rate=50))
+        p = Project(name="Mapped", external_id="999", lifecycle_status="active"); db.add(p); db.flush()
+        t = Task(project_id=p.id, name="T", is_billable=True); db.add(t); db.flush()
+        db.add(Subtask(task_id=t.id, code="A", name="A")); db.commit()
+
+        page = {"time_entries": [
+            {"id": "1", "identity_id": 1, "project_id": 999, "local_started_at": "2026-06-22",
+             "duration": 28800, "note": "ok", "billable": True, "billed": False},
+            {"id": "2", "identity_id": 1, "project_id": 888, "local_started_at": "2026-06-22",
+             "duration": 14400, "note": "cavalry", "billable": True, "billed": False},
+        ], "meta": {"pages": 1}}
+        monkeypatch.setattr(fb, "api_get", lambda *a, **k: page)
+        monkeypatch.setattr(fb, "_project_bill_rate", lambda *a, **k: None)
+
+        res = fb.sync_time_entries(db, "BID", {1: u.id}); db.commit()
+        oc = res["by_outcome"]
+        assert oc["errors"] == 0 and oc["skipped_no_project"] == 0
+        assert oc["routed_unassigned"] == 1
+        una = db.scalar(_select(Project).where(Project.name == "Unassigned (FB API)"))
+        ent = {e.external_id: e for e in db.scalars(_select(TimeEntry)).all()}
+        assert ent["1"].project_id == p.id and ent["1"].hours == 8.0
+        assert ent["2"].project_id == una.id and ent["2"].hours == 4.0
+        assert "unmapped FB project 888" in ent["2"].note
