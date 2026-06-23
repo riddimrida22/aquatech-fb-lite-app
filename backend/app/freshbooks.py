@@ -441,6 +441,28 @@ def _ensure_unassigned_project(db: Session) -> int:
     return row.id
 
 
+def _ensure_unassigned_target(db: Session) -> tuple[int, int, int]:
+    """Return (project_id, task_id, subtask_id) for the catch-all bucket.
+
+    Time entries whose FB project can't be linked land here instead of being
+    silently dropped — so logged hours are NEVER lost. The entry is flagged
+    (project = 'Unassigned (FB API)' + a note marker) and auto-re-resolves to the
+    real project on the next sync once that project gets linked.
+    """
+    pid = _ensure_unassigned_project(db)
+    task = db.scalar(select(Task).where(Task.project_id == pid))
+    if task is None:
+        task = Task(project_id=pid, name="Needs project assignment", is_billable=False)
+        db.add(task)
+        db.flush()
+    sub = db.scalar(select(Subtask).where(Subtask.task_id == task.id))
+    if sub is None:
+        sub = Subtask(task_id=task.id, code="NO-SUBTASK", name="Unassigned")
+        db.add(sub)
+        db.flush()
+    return pid, task.id, sub.id
+
+
 def _persist_expense(db: Session, exp: dict[str, Any], project_map: dict[int, int], unassigned_id: int) -> str:
     """Upsert a single FreshBooks expense into project_expenses.
 
@@ -857,7 +879,7 @@ def sync_time_entries(
         raise RuntimeError("sync_time_entries requires business_id")
 
     counts = {"inserted": 0, "updated": 0, "skipped_no_user": 0, "skipped_no_project": 0,
-              "skipped_no_subtask": 0, "errors": 0, "deleted_orphans": 0}
+              "routed_unassigned": 0, "skipped_no_subtask": 0, "errors": 0, "deleted_orphans": 0}
     sample: list[dict[str, Any]] = []
     seen_fb_ids: set[str] = set()  # every external_id FB returned this run (for delete-reconcile)
     subtask_cache: dict[int, tuple[int, int]] = {}
@@ -869,6 +891,9 @@ def sync_time_entries(
             fb_to_aqt_project[int(p.external_id)] = p.id
         except (TypeError, ValueError):
             continue
+
+    # Catch-all bucket so a FB entry on an unlinked project is never dropped.
+    unassigned_pid, unassigned_task, unassigned_sub = _ensure_unassigned_target(db)
 
     page = 1
     while True:
@@ -899,21 +924,31 @@ def sync_time_entries(
 
                 fb_pid = e.get("project_id")
                 aqt_pid = fb_to_aqt_project.get(int(fb_pid)) if fb_pid else None
-                if not aqt_pid:
-                    counts["skipped_no_project"] += 1
-                    continue
+                unmapped = aqt_pid is None
+                if unmapped:
+                    # NEVER drop hours: park on the Unassigned bucket, flagged for
+                    # linking. Auto-re-resolves to the real project once it's linked.
+                    aqt_pid = unassigned_pid
+                    counts["routed_unassigned"] += 1
 
-                ts = _resolve_subtask_for_project(db, aqt_pid, subtask_cache)
-                if not ts:
-                    counts["skipped_no_subtask"] += 1
-                    continue
-                task_id, subtask_id = ts
+                if unmapped:
+                    task_id, subtask_id = unassigned_task, unassigned_sub
+                else:
+                    ts = _resolve_subtask_for_project(db, aqt_pid, subtask_cache)
+                    if not ts:
+                        counts["skipped_no_subtask"] += 1
+                        continue
+                    task_id, subtask_id = ts
 
                 # work_date from local_started_at (fallback to started_at)
                 work_date = _parse_fb_date(e.get("local_started_at")) or _parse_fb_date(e.get("started_at")) or date.today()
                 duration = int(e.get("duration") or 0)
                 hours = round(duration / 3600.0, 4)
                 note = (e.get("note") or "")[:65000]
+                if unmapped:
+                    marker = (f"[unmapped FB project {fb_pid} — link in Projects]"
+                              if fb_pid else "[no FB project — link in Projects]")
+                    note = ((note + " " + marker) if note else marker)[:65000]
 
                 bill_rate, cost_rate = _user_rate_for(db, aqt_uid, work_date)
                 # Bill rate is PER-PROJECT-per-employee (FB team_member_rate). Prefer the
