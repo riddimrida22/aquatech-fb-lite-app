@@ -865,6 +865,46 @@ def _resolve_subtask_for_project(db: Session, project_id: int, cache: dict[int, 
 # added to seen_fb_ids, so the delete-reconcile below purges them).
 FB_EXCLUDED_PROJECT_IDS: set[int] = {13006083}  # Cavalry — owner's separate W2 employer
 
+# FB members who log time without being on a project team (so they aren't in the
+# project-derived identity_map). Manually map them: fb_identity_id -> aqt_user_id.
+FB_IDENTITY_OVERRIDES: dict[int, int] = {13972135: 3}  # Courtney Byrne (ASCEND attendee)
+
+# The indirect/overhead "catch-all" project whose entries are auto-sorted into service
+# buckets by note keyword (so categorization is durable across re-syncs, not wiped to
+# the fallback subtask). Future entries classify automatically too.
+_INDIRECT_PROJECT_NAME = "Aquatech Operations"
+
+
+def _classify_indirect_service(note: str | None) -> str:
+    """Map an indirect time-entry note to one of the standard service buckets."""
+    n = (note or "").lower()
+    if re.search(r"website|web site|\blogo\b", n):
+        return "Advertising"
+    if re.search(r"revenue|forecast|invoic|billing|\baccount|financ|\btax\b|bookkeep|budget|profit|expense report|\baudit|reconcil|quickbook|freshbook", n):
+        return "Accounting"
+    if re.search(r"\btrain|webinar|seminar|workshop|tutorial|\bswmm\b|hec-?ras|\bvba\b|\bpython\b|\barcgis\b|harassment awareness|\bcourse\b|continuing ed|\bpe exam\b|coaching", n):
+        return "Training"
+    if re.search(r"proposal|\brfp\b|\brfq\b|\brfi\b|\brep\b|\bsoq\b|pursu|on-?call|marketing|business develop|teaming|pre-?qual|cost proposal|narrative|interview|\bbid\b|client|opportunit|qualif|exploring|capture|outreach|network|site visit|watershed|\bascend\b|\bdbe\b|\bmwbe\b|recertif|panynj|new rochelle|kensico|devon|\bstv\b|sheldrake|woodard|drainage|\bscope\b|level of effort", n):
+        return "Business Development"
+    return "Administration"
+
+
+def _service_subtask(db: Session, project_id: int, service_name: str,
+                     cache: dict[tuple[int, str], tuple[int, int] | None]) -> tuple[int, int] | None:
+    """(task_id, subtask_id) for the named service task on a project. Cached per run."""
+    key = (project_id, service_name.lower())
+    if key in cache:
+        return cache[key]
+    tasks = db.scalars(select(Task).where(Task.project_id == project_id)).all()
+    task = next((t for t in tasks if (t.name or "").strip().lower() == service_name.lower()), None)
+    if task is None:
+        cache[key] = None
+        return None
+    subs = db.scalars(select(Subtask).where(Subtask.task_id == task.id)).all()
+    sub = next((s for s in subs if (s.code or "").upper() != "NO-SUBTASK"), subs[0] if subs else None)
+    cache[key] = (task.id, sub.id) if sub else None
+    return cache[key]
+
 
 def sync_time_entries(
     db: Session,
@@ -902,6 +942,9 @@ def sync_time_entries(
 
     # Catch-all bucket so a FB entry on an unlinked project is never dropped.
     unassigned_pid, unassigned_task, unassigned_sub = _ensure_unassigned_target(db)
+    # Indirect project whose entries auto-sort into service buckets by note keyword.
+    indirect_pid = db.scalar(select(Project.id).where(Project.name == _INDIRECT_PROJECT_NAME))
+    service_cache: dict[tuple[int, str], tuple[int, int] | None] = {}
 
     page = 1
     while True:
@@ -931,7 +974,8 @@ def sync_time_entries(
                 seen_fb_ids.add(fb_id)
 
                 identity_id = e.get("identity_id")
-                aqt_uid = identity_map.get(int(identity_id)) if identity_id else None
+                aqt_uid = ((identity_map.get(int(identity_id)) or FB_IDENTITY_OVERRIDES.get(int(identity_id)))
+                           if identity_id else None)
                 if not aqt_uid:
                     counts["skipped_no_user"] += 1
                     continue
@@ -948,7 +992,12 @@ def sync_time_entries(
                 if unmapped:
                     task_id, subtask_id = unassigned_task, unassigned_sub
                 else:
-                    ts = _resolve_subtask_for_project(db, aqt_pid, subtask_cache)
+                    ts = None
+                    if aqt_pid == indirect_pid:
+                        # Indirect time auto-sorts into service buckets (durable across syncs).
+                        ts = _service_subtask(db, aqt_pid, _classify_indirect_service(e.get("note")), service_cache)
+                    if not ts:
+                        ts = _resolve_subtask_for_project(db, aqt_pid, subtask_cache)
                     if not ts:
                         counts["skipped_no_subtask"] += 1
                         continue
