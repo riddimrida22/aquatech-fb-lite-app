@@ -882,9 +882,9 @@ def _classify_indirect_service(note: str | None) -> str:
         return "Advertising"
     if re.search(r"revenue|forecast|invoic|billing|\baccount|financ|\btax\b|bookkeep|budget|profit|expense report|\baudit|reconcil|quickbook|freshbook", n):
         return "Accounting"
-    if re.search(r"\btrain|webinar|seminar|workshop|tutorial|\bswmm\b|hec-?ras|\bvba\b|\bpython\b|\barcgis\b|harassment awareness|\bcourse\b|continuing ed|\bpe exam\b|coaching", n):
+    if re.search(r"\btrain|webinar|seminar|workshop|tutorial|\bswmm\b|hec-?ras|\bvba\b|\bpython\b|\barcgis\b|harassment awareness|\bcourse\b|continuing ed|\bpe exam\b|coaching|postgres|pgadmin", n):
         return "Training"
-    if re.search(r"proposal|\brfp\b|\brfq\b|\brfi\b|\brep\b|\bsoq\b|pursu|on-?call|marketing|business develop|teaming|pre-?qual|cost proposal|narrative|interview|\bbid\b|client|opportunit|qualif|exploring|capture|outreach|network|site visit|watershed|\bascend\b|\bdbe\b|\bmwbe\b|recertif|panynj|new rochelle|kensico|devon|\bstv\b|sheldrake|woodard|drainage|\bscope\b|level of effort", n):
+    if re.search(r"proposal|\brfp\b|\brfq\b|\brfi\b|\brep\b|\bsoq\b|pursu|on-?call|marketing|business develop|teaming|pre-?qual|cost proposal|narrative|interview|\bbid\b|client|opportunit|qualif|exploring|capture|outreach|network|site visit|watershed|\bascend\b|\bdbe\b|\bmwbe\b|recertif|panynj|new rochelle|kensico|devon|\bstv\b|sheldrake|woodard|drainage|\bscope\b|level of effort|europass|stakeholder", n):
         return "Business Development"
     return "Administration"
 
