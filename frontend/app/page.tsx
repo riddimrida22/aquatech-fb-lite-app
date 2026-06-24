@@ -853,10 +853,10 @@ export default function AquatechPmHome() {
                       cursor: "pointer",
                       fontSize: "0.82em",
                       transition: "background 0.12s ease, border-color 0.12s ease, color 0.12s ease",
-                      border: finPeriod.preset === p.key ? "1px solid #7d97ff" : "1px solid rgba(176,190,220,0.7)",
-                      background: finPeriod.preset === p.key ? "#4f63c9" : "rgba(255,255,255,0.13)",
-                      color: finPeriod.preset === p.key ? "#ffffff" : "rgba(234,239,249,0.96)",
-                      fontWeight: finPeriod.preset === p.key ? 700 : 500,
+                      border: finPeriod.preset === p.key ? "1px solid #7d97ff" : "1px solid #6b8198",
+                      background: finPeriod.preset === p.key ? "#4f63c9" : "#37485c",
+                      color: finPeriod.preset === p.key ? "#ffffff" : "#eef3fa",
+                      fontWeight: finPeriod.preset === p.key ? 700 : 600,
                       boxShadow: finPeriod.preset === p.key ? "0 0 0 2px rgba(125,151,255,0.30)" : "none",
                     }}
                   >
@@ -883,10 +883,10 @@ export default function AquatechPmHome() {
                         cursor: "pointer",
                         fontSize: "0.78em",
                         transition: "background 0.12s ease, border-color 0.12s ease, color 0.12s ease",
-                        border: accountingBasis === b ? "1px solid #d9a14f" : "1px solid rgba(176,190,220,0.7)",
-                        background: accountingBasis === b ? "#b9803c" : "rgba(255,255,255,0.13)",
-                        color: accountingBasis === b ? "#ffffff" : "rgba(234,239,249,0.96)",
-                        fontWeight: accountingBasis === b ? 700 : 500,
+                        border: accountingBasis === b ? "1px solid #d9a14f" : "1px solid #6b8198",
+                        background: accountingBasis === b ? "#b9803c" : "#37485c",
+                        color: accountingBasis === b ? "#ffffff" : "#eef3fa",
+                        fontWeight: accountingBasis === b ? 700 : 600,
                         boxShadow: accountingBasis === b ? "0 0 0 2px rgba(217,161,79,0.28)" : "none",
                       }}
                     >
