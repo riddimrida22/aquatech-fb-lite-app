@@ -926,8 +926,8 @@ def sync_time_entries(
         raise RuntimeError("sync_time_entries requires business_id")
 
     counts = {"inserted": 0, "updated": 0, "skipped_no_user": 0, "skipped_no_project": 0,
-              "routed_unassigned": 0, "skipped_excluded": 0, "skipped_no_subtask": 0,
-              "errors": 0, "deleted_orphans": 0}
+              "routed_unassigned": 0, "routed_indirect": 0, "skipped_excluded": 0,
+              "skipped_no_subtask": 0, "errors": 0, "deleted_orphans": 0}
     sample: list[dict[str, Any]] = []
     seen_fb_ids: set[str] = set()  # every external_id FB returned this run (for delete-reconcile)
     subtask_cache: dict[int, tuple[int, int]] = {}
@@ -983,9 +983,15 @@ def sync_time_entries(
                 fb_pid = e.get("project_id")
                 aqt_pid = fb_to_aqt_project.get(int(fb_pid)) if fb_pid else None
                 unmapped = aqt_pid is None
-                if unmapped:
-                    # NEVER drop hours: park on the Unassigned bucket, flagged for
-                    # linking. Auto-re-resolves to the real project once it's linked.
+                if unmapped and not fb_pid and indirect_pid:
+                    # No FB project at all = overhead/indirect work → sort into a service
+                    # (classified below), not parked in the review bucket.
+                    aqt_pid = indirect_pid
+                    unmapped = False
+                    counts["routed_indirect"] += 1
+                elif unmapped:
+                    # FB project exists but isn't linked in AqtPM → park on the Unassigned
+                    # bucket, flagged for linking. Auto-re-resolves once the project is linked.
                     aqt_pid = unassigned_pid
                     counts["routed_unassigned"] += 1
 
