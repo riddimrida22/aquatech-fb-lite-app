@@ -859,6 +859,13 @@ def _resolve_subtask_for_project(db: Session, project_id: int, cache: dict[int, 
     return (tsk.id, sub.id)
 
 
+# FreshBooks projects to exclude entirely from import — personal / non-business work
+# logged in this FB account that is NOT Aquatech business (e.g. the owner's W2 job).
+# Excluded entries are skipped on import AND removed if already present (they aren't
+# added to seen_fb_ids, so the delete-reconcile below purges them).
+FB_EXCLUDED_PROJECT_IDS: set[int] = {13006083}  # Cavalry — owner's separate W2 employer
+
+
 def sync_time_entries(
     db: Session,
     business_id: str,
@@ -879,7 +886,8 @@ def sync_time_entries(
         raise RuntimeError("sync_time_entries requires business_id")
 
     counts = {"inserted": 0, "updated": 0, "skipped_no_user": 0, "skipped_no_project": 0,
-              "routed_unassigned": 0, "skipped_no_subtask": 0, "errors": 0, "deleted_orphans": 0}
+              "routed_unassigned": 0, "skipped_excluded": 0, "skipped_no_subtask": 0,
+              "errors": 0, "deleted_orphans": 0}
     sample: list[dict[str, Any]] = []
     seen_fb_ids: set[str] = set()  # every external_id FB returned this run (for delete-reconcile)
     subtask_cache: dict[int, tuple[int, int]] = {}
@@ -913,6 +921,12 @@ def sync_time_entries(
                 fb_id = str(e.get("id") or "")
                 if not fb_id:
                     counts["errors"] += 1
+                    continue
+                _excl_pid = e.get("project_id")
+                if _excl_pid is not None and int(_excl_pid) in FB_EXCLUDED_PROJECT_IDS:
+                    # Personal / non-business project — never import. Intentionally NOT
+                    # added to seen_fb_ids so any already-imported rows get purged below.
+                    counts["skipped_excluded"] += 1
                     continue
                 seen_fb_ids.add(fb_id)
 
