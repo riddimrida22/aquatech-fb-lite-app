@@ -10864,17 +10864,24 @@ def freshbooks_reconcile(
                 "app_latest_date": app_latest.isoformat() if app_latest else None}
     meta = resp.get("meta") or {}
     fb_total = int(meta.get("total") or 0)
-    missing = fb_total - app_count  # >0 ⇒ FB has entries the app never stored
+    # Personal/excluded FB projects (e.g. owner's W2 work) are intentionally NOT imported;
+    # subtract them so the reconcile never flags them as "missing".
+    last_sum = json.loads(row.last_sync_summary or "{}")
+    excluded = int(((last_sum.get("time_entries") or {}).get("by_outcome") or {}).get("skipped_excluded") or 0)
+    expected = fb_total - excluded
+    missing = expected - app_count  # >0 ⇒ business FB entries the app never stored
     in_sync = missing <= 0
     return {
         "ok": True,
         "in_sync": in_sync,
         "fb_total_entries": fb_total,
+        "excluded_personal": excluded,
         "app_fb_entries": app_count,
         "missing_estimate": max(missing, 0),
         "unassigned_entries": app_unassigned,
         "app_latest_date": app_latest.isoformat() if app_latest else None,
-        "message": ("All FreshBooks hours are in the app."
+        "message": ("All FreshBooks business hours are in the app."
+                    + (f" ({excluded} personal entries excluded.)" if excluded else "")
                     + (f" ({app_unassigned} need a project link.)" if app_unassigned else ""))
         if in_sync else
         f"{missing} FreshBooks time entr{'y' if missing == 1 else 'ies'} are NOT in the app — run a sync.",
