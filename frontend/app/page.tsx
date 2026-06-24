@@ -848,13 +848,16 @@ export default function AquatechPmHome() {
                         : setFinPeriod({ preset: p.key, ...periodRange(p.key) })
                     }
                     style={{
-                      padding: "0.25rem 0.7rem",
+                      padding: "0.3rem 0.85rem",
                       borderRadius: "999px",
                       cursor: "pointer",
-                      border: "1px solid rgba(128,128,128,0.35)",
                       fontSize: "0.82em",
-                      background: finPeriod.preset === p.key ? "rgba(120,140,200,0.25)" : "transparent",
-                      fontWeight: finPeriod.preset === p.key ? 700 : 400,
+                      transition: "background 0.12s ease, border-color 0.12s ease, color 0.12s ease",
+                      border: finPeriod.preset === p.key ? "1px solid #7d97ff" : "1px solid rgba(150,160,190,0.45)",
+                      background: finPeriod.preset === p.key ? "#4f63c9" : "rgba(255,255,255,0.06)",
+                      color: finPeriod.preset === p.key ? "#ffffff" : "rgba(218,224,236,0.78)",
+                      fontWeight: finPeriod.preset === p.key ? 700 : 500,
+                      boxShadow: finPeriod.preset === p.key ? "0 0 0 2px rgba(125,151,255,0.30)" : "none",
                     }}
                   >
                     {p.label}
@@ -875,13 +878,16 @@ export default function AquatechPmHome() {
                       onClick={() => setAccountingBasis(b)}
                       title={b === "cash" ? "Cash basis — revenue recognized when collected (matches your tax filing)" : "Accrual basis — revenue recognized when invoiced"}
                       style={{
-                        padding: "0.2rem 0.55rem",
+                        padding: "0.22rem 0.65rem",
                         borderRadius: "999px",
                         cursor: "pointer",
-                        border: "1px solid rgba(128,128,128,0.35)",
                         fontSize: "0.78em",
-                        background: accountingBasis === b ? "rgba(150,120,90,0.3)" : "transparent",
-                        fontWeight: accountingBasis === b ? 700 : 400,
+                        transition: "background 0.12s ease, border-color 0.12s ease, color 0.12s ease",
+                        border: accountingBasis === b ? "1px solid #d9a14f" : "1px solid rgba(150,160,190,0.45)",
+                        background: accountingBasis === b ? "#b9803c" : "rgba(255,255,255,0.06)",
+                        color: accountingBasis === b ? "#ffffff" : "rgba(218,224,236,0.78)",
+                        fontWeight: accountingBasis === b ? 700 : 500,
+                        boxShadow: accountingBasis === b ? "0 0 0 2px rgba(217,161,79,0.28)" : "none",
                       }}
                     >
                       {b === "cash" ? "Cash" : "Accrual"}
