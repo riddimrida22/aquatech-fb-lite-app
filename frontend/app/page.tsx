@@ -168,6 +168,19 @@ export default function AquatechPmHome() {
   const [ownerAnnualSalary, setOwnerAnnualSalary] = useState<number>(206398.4);
   const [finPeriod, setFinPeriod] = useState<{ preset: PeriodPreset; start: string; end: string }>(() => ({ preset: "ytd", ...periodRange("ytd") }));
   const [accountingBasis, setAccountingBasis] = useState<"cash" | "accrual">("cash");
+  const [netAfterSalary, setNetAfterSalary] = useState<boolean>(false);
+  // Headline net-income view: "book" (owner draws counted as distributions, matches the
+  // S-corp filing) vs "after salary" (the owner's reasonable comp expensed, prorated to the
+  // displayed period). Uses the SAME math as ProfitLossPanel's adjNet so the headline card
+  // and the P&L panel below it always agree.
+  const _bhPeriodDays = businessHealth
+    ? Math.max(0, Math.round((new Date(businessHealth.period.end).getTime() - new Date(businessHealth.period.start).getTime()) / 86400000) + 1)
+    : 0;
+  const ownerSalaryThisPeriod = (ownerAnnualSalary || 0) * (_bhPeriodDays / 365);
+  const _bookNet = businessHealth?.waterfall.net_income ?? 0;
+  const _bookRev = businessHealth?.waterfall.revenue ?? 0;
+  const shownNetIncome = netAfterSalary ? _bookNet - ownerSalaryThisPeriod : _bookNet;
+  const shownNetMargin = netAfterSalary ? (_bookRev ? shownNetIncome / _bookRev : null) : (businessHealth?.waterfall.net_margin ?? null);
   useEffect(() => {
     if (!user || !deriveUserCapabilities(user).canViewFinancials) return;
     if (!finPeriod.start || !finPeriod.end) return;
@@ -871,6 +884,30 @@ export default function AquatechPmHome() {
                   </span>
                 ) : null}
                 <span style={{ marginLeft: "auto", display: "inline-flex", gap: "0.35rem", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.72em", textTransform: "uppercase", letterSpacing: "0.04em", color: "#9fb2c8", fontWeight: 700 }} title="Show net income with your reasonable owner salary expensed, or as booked (draws = distributions)">Net</span>
+                  {([false, true] as const).map((after) => (
+                    <button
+                      key={after ? "after" : "book"}
+                      type="button"
+                      onClick={() => setNetAfterSalary(after)}
+                      title={after ? `Expense your reasonable owner salary (${formatCurrency(ownerAnnualSalary)}/yr · ${formatCurrency(ownerSalaryThisPeriod)} this period) → true operating profit` : "Book net income — owner draws counted as distributions (matches your S-corp filing)"}
+                      style={{
+                        padding: "0.22rem 0.65rem",
+                        borderRadius: "999px",
+                        cursor: "pointer",
+                        fontSize: "0.78em",
+                        transition: "background 0.12s ease, border-color 0.12s ease, color 0.12s ease",
+                        border: netAfterSalary === after ? "1px solid #57c4a6" : "1px solid #6b8198",
+                        background: netAfterSalary === after ? "#2f8f76" : "#37485c",
+                        color: netAfterSalary === after ? "#ffffff" : "#eef3fa",
+                        fontWeight: netAfterSalary === after ? 700 : 600,
+                        boxShadow: netAfterSalary === after ? "0 0 0 2px rgba(87,196,166,0.28)" : "none",
+                      }}
+                    >
+                      {after ? "After salary" : "Book"}
+                    </button>
+                  ))}
+                  <span aria-hidden style={{ width: 1, height: 16, background: "rgba(150,160,190,0.4)", margin: "0 0.25rem" }} />
                   {(["cash", "accrual"] as const).map((b) => (
                     <button
                       key={b}
@@ -924,13 +961,13 @@ export default function AquatechPmHome() {
                 </article>
                 {businessHealth ? (
                   <>
-                    <article className="aq-lite-kpi" style={drillStyle} title="View P&L →" onClick={() => setWorkspace("accounting")}>
-                      <span>Net income ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}) ↗</span>
-                      <strong>{formatCurrency(businessHealth.waterfall.net_income)}</strong>
+                    <article className="aq-lite-kpi" style={drillStyle} title={netAfterSalary ? "Net income after your reasonable owner salary is expensed — View P&L →" : "Book net income (owner draws as distributions) — View P&L →"} onClick={() => setWorkspace("accounting")}>
+                      <span>Net income ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}){netAfterSalary ? " · after salary" : ""} ↗</span>
+                      <strong>{formatCurrency(shownNetIncome)}</strong>
                     </article>
-                    <article className="aq-lite-kpi" style={drillStyle} title="View P&L →" onClick={() => setWorkspace("accounting")}>
-                      <span>Net margin ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}) ↗</span>
-                      <strong>{businessHealth.waterfall.net_margin != null ? `${(businessHealth.waterfall.net_margin * 100).toFixed(1)}%` : "—"}</strong>
+                    <article className="aq-lite-kpi" style={drillStyle} title={netAfterSalary ? "Net margin after your reasonable owner salary is expensed — View P&L →" : "Book net margin — View P&L →"} onClick={() => setWorkspace("accounting")}>
+                      <span>Net margin ({PERIOD_PRESETS.find((p) => p.key === finPeriod.preset)?.label ?? "period"}){netAfterSalary ? " · after salary" : ""} ↗</span>
+                      <strong>{shownNetMargin != null ? `${(shownNetMargin * 100).toFixed(1)}%` : "—"}</strong>
                     </article>
                   </>
                 ) : null}
