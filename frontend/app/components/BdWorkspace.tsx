@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost, apiPatch } from "../../lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, API_BASE } from "../../lib/api";
 
 type Pursuit = {
   id: number; name: string; client_name: string; agency: string | null; sector: string; role: string;
@@ -33,7 +33,7 @@ const ACCENT = "#21737e";
 const fmt$ = (n: number | null | undefined) => "$" + Math.round(n || 0).toLocaleString();
 
 export function BdWorkspace() {
-  const [tab, setTab] = useState<"dashboard" | "pipeline">("dashboard");
+  const [tab, setTab] = useState<"dashboard" | "pipeline" | "library">("dashboard");
   const [pursuits, setPursuits] = useState<Pursuit[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [factors, setFactors] = useState<GngFactor[]>([]);
@@ -53,22 +53,25 @@ export function BdWorkspace() {
     <div className="aq-lite-stack">
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <div style={{ display: "inline-flex", gap: 4, background: "var(--aq-input-bg, rgba(0,0,0,0.06))", borderRadius: 999, padding: 3 }}>
-          {(["dashboard", "pipeline"] as const).map((t) => (
+          {(["dashboard", "pipeline", "library"] as const).map((t) => (
             <button key={t} type="button" onClick={() => setTab(t)}
               style={{ border: "none", cursor: "pointer", borderRadius: 999, padding: "6px 16px", fontSize: 13, fontWeight: 600,
                 background: tab === t ? ACCENT : "transparent", color: tab === t ? "#fff" : "inherit" }}>
-              {t === "dashboard" ? "Dashboard" : "Pipeline"}
+              {t === "dashboard" ? "Dashboard" : t === "pipeline" ? "Pipeline" : "Library"}
             </button>
           ))}
         </div>
-        <button type="button" onClick={() => setCreating(true)}
-          style={{ border: "none", borderRadius: 10, padding: "8px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "#3b82f6", color: "#fff" }}>
-          + New pursuit
-        </button>
+        {tab !== "library" ? (
+          <button type="button" onClick={() => setCreating(true)}
+            style={{ border: "none", borderRadius: 10, padding: "8px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "#3b82f6", color: "#fff" }}>
+            + New pursuit
+          </button>
+        ) : null}
       </div>
 
       {tab === "dashboard" && <Dashboard metrics={metrics} onOpen={setSelId} />}
       {tab === "pipeline" && <Pipeline pursuits={pursuits} onOpen={setSelId} />}
+      {tab === "library" && <Library />}
 
       {creating && <CreateModal onClose={() => setCreating(false)} onSaved={() => { setCreating(false); refresh(); }} />}
       {selId != null && (
@@ -305,5 +308,133 @@ function DetailModal({ id, factors, onClose, onChanged }: { id: number; factors:
           ))}
       </div>
     </Modal>
+  );
+}
+
+// ============================ Proposal content library ============================
+type LibDoc = { id: number; category: string; title: string; description: string; tags: string[]; status: string | null; filename: string; size_bytes: number; created_at: string | null };
+type LibCat = { key: string; label: string };
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function Library() {
+  const [cats, setCats] = useState<LibCat[]>([]);
+  const [docs, setDocs] = useState<LibDoc[]>([]);
+  const [upCat, setUpCat] = useState("project");
+  const [upTitle, setUpTitle] = useState("");
+  const [upTags, setUpTags] = useState("");
+  const [upStatus, setUpStatus] = useState("current");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function refresh() {
+    apiGet<{ items: LibDoc[] }>("/library").then((r) => setDocs(r.items || [])).catch(() => {});
+  }
+  useEffect(() => {
+    apiGet<{ categories: LibCat[] }>("/library/config").then((c) => setCats(c.categories || [])).catch(() => {});
+    refresh();
+  }, []);
+
+  async function upload() {
+    if (!file || busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("category", upCat);
+      fd.append("title", upTitle || file.name);
+      fd.append("tags", upTags);
+      if (upCat === "rfp") fd.append("status", upStatus);
+      const res = await fetch(`${API_BASE}/library`, { method: "POST", credentials: "include", body: fd });
+      if (!res.ok) throw new Error(await res.text());
+      setMsg(`Uploaded “${upTitle || file.name}”.`);
+      setFile(null); setUpTitle(""); setUpTags("");
+      const el = document.getElementById("lib-file") as HTMLInputElement | null;
+      if (el) el.value = "";
+      refresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message.slice(0, 200) : "Upload failed");
+    } finally { setBusy(false); }
+  }
+
+  async function download(d: LibDoc) {
+    try {
+      const res = await fetch(`${API_BASE}/library/${d.id}/download`, { credentials: "include" });
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = d.filename || d.title; a.click();
+      URL.revokeObjectURL(url);
+    } catch { setMsg("Download failed"); }
+  }
+
+  async function remove(d: LibDoc) {
+    if (!confirm(`Delete “${d.title}”?`)) return;
+    setDocs((x) => x.filter((y) => y.id !== d.id));
+    try { await apiDelete(`/library/${d.id}`); } catch { refresh(); }
+  }
+
+  const inp = { padding: "9px 11px", borderRadius: 8, border: "1px solid var(--aq-border,rgba(0,0,0,0.15))", background: "var(--aq-input-bg,#fff)", color: "inherit", fontSize: 14 } as const;
+
+  return (
+    <div className="aq-lite-stack">
+      <section className="aq-lite-panel">
+        <p className="aq-lite-eyebrow" style={{ margin: 0 }}>Proposal content library</p>
+        <h3 style={{ margin: "2px 0 10px" }}>Reusable pieces for future proposals</h3>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input id="lib-file" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13 }} />
+          <select value={upCat} onChange={(e) => setUpCat(e.target.value)} style={inp}>
+            {cats.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
+          {upCat === "rfp" ? (
+            <select value={upStatus} onChange={(e) => setUpStatus(e.target.value)} style={inp}>
+              <option value="new">New</option><option value="current">Current</option><option value="previous">Previous</option>
+            </select>
+          ) : null}
+          <input value={upTitle} onChange={(e) => setUpTitle(e.target.value)} placeholder="Title (optional)" style={{ ...inp, flex: 1, minWidth: 160 }} />
+          <input value={upTags} onChange={(e) => setUpTags(e.target.value)} placeholder="tags, comma-sep" style={{ ...inp, width: 160 }} />
+          <button type="button" onClick={upload} disabled={!file || busy}
+            style={{ border: "none", borderRadius: 8, padding: "9px 18px", fontWeight: 600, cursor: !file || busy ? "default" : "pointer", background: !file || busy ? "rgba(33,115,126,0.5)" : ACCENT, color: "#fff" }}>
+            {busy ? "Uploading…" : "Upload"}
+          </button>
+        </div>
+        {msg ? <p style={{ marginTop: 8, fontSize: 12.5, color: ACCENT }}>{msg}</p> : null}
+        <p className="aq-lite-muted" style={{ marginTop: 8, fontSize: 12 }}>Stored in your database (backed up nightly, survives deploys). 30 MB max per file.</p>
+      </section>
+
+      {cats.map((c) => {
+        const items = docs.filter((d) => d.category === c.key);
+        if (items.length === 0) return null;
+        return (
+          <section key={c.key} className="aq-lite-panel">
+            <h3 style={{ margin: "0 0 6px" }}>{c.label} <span style={{ opacity: 0.5, fontWeight: 400 }}>({items.length})</span></h3>
+            <div className="aq-lite-scroll">
+              {items.map((d) => (
+                <div key={d.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--aq-border,rgba(0,0,0,0.06))" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {d.title}{d.status ? <span style={{ marginLeft: 8, fontSize: 11, textTransform: "uppercase", opacity: 0.6 }}>{d.status}</span> : null}
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.6 }}>
+                      {[d.filename, fmtSize(d.size_bytes), (d.created_at || "").slice(0, 10), d.tags.join(" · ")].filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, whiteSpace: "nowrap" }}>
+                    <button type="button" onClick={() => download(d)} style={{ padding: "5px 12px", fontSize: 12.5, borderRadius: 8, border: "1px solid var(--aq-border,rgba(0,0,0,0.15))", background: "transparent", cursor: "pointer", color: "inherit" }}>Download</button>
+                    <button type="button" onClick={() => remove(d)} title="Delete" style={{ padding: "5px 10px", fontSize: 12.5, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#ef4444", opacity: 0.7 }}>✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        );
+      })}
+      {docs.length === 0 ? <section className="aq-lite-panel"><p className="aq-lite-muted">No documents yet — upload RFPs, resumes, past project sheets, certs, and financials to reuse in proposals.</p></section> : null}
+    </div>
   );
 }

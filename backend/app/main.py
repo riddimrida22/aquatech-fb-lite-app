@@ -17,7 +17,7 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 import requests
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 import httpx
@@ -43,6 +43,7 @@ from .models import (
     Invoice,
     InvoiceLine,
     IntegrationToken,
+    LibraryDocument,
     Loan,
     LoanPayment,
     Contact,
@@ -4901,6 +4902,111 @@ def bd_metrics(db: Session = Depends(get_db), _: User = Depends(require_permissi
         "aging": aging[:20],
         "loss_reasons": loss_reasons,
     }
+
+
+# =====================================================================
+# Proposal content library (Business-Dev document repository)
+# =====================================================================
+_LIBRARY_CATEGORIES = [
+    ("rfp", "RFPs / Solicitations"),
+    ("resume", "Resumes"),
+    ("project", "Past Projects"),
+    ("certificate", "Certificates & Licenses"),
+    ("financial", "Financials"),
+    ("boilerplate", "Boilerplate / Narratives"),
+    ("other", "Other"),
+]
+_LIBRARY_CAT_KEYS = {k for k, _ in _LIBRARY_CATEGORIES}
+_MAX_LIBRARY_BYTES = 30 * 1024 * 1024  # 30 MB per file
+
+
+@app.get("/library/config")
+def library_config(_: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    return {
+        "categories": [{"key": k, "label": l} for k, l in _LIBRARY_CATEGORIES],
+        "rfp_statuses": ["new", "current", "previous"],
+    }
+
+
+def _library_out(d: LibraryDocument) -> dict:
+    return {
+        "id": d.id, "category": d.category, "title": d.title, "description": d.description,
+        "tags": [t.strip() for t in (d.tags or "").split(",") if t.strip()],
+        "status": d.status, "pursuit_id": d.pursuit_id, "filename": d.filename,
+        "content_type": d.content_type, "size_bytes": d.size_bytes,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+    }
+
+
+@app.get("/library")
+def list_library(category: str | None = None, pursuit_id: int | None = None, q: str | None = None,
+                 db: Session = Depends(get_db), _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    sel = select(LibraryDocument)
+    if category:
+        sel = sel.where(LibraryDocument.category == category)
+    if pursuit_id:
+        sel = sel.where(LibraryDocument.pursuit_id == pursuit_id)
+    if q:
+        sel = sel.where(or_(LibraryDocument.title.ilike(f"%{q}%"),
+                            LibraryDocument.tags.ilike(f"%{q}%"),
+                            LibraryDocument.description.ilike(f"%{q}%")))
+    rows = db.scalars(sel.order_by(LibraryDocument.created_at.desc())).all()
+    return {"items": [_library_out(d) for d in rows]}
+
+
+@app.post("/library")
+async def upload_library(
+    file: UploadFile = File(...),
+    category: str = Form("other"),
+    title: str = Form(""),
+    description: str = Form(""),
+    tags: str = Form(""),
+    status: str = Form(""),
+    pursuit_id: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("VIEW_FINANCIALS")),
+):
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(raw) > _MAX_LIBRARY_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 30 MB limit.")
+    cat = category if category in _LIBRARY_CAT_KEYS else "other"
+    pid = int(pursuit_id) if pursuit_id.strip().isdigit() else None
+    d = LibraryDocument(
+        category=cat, title=(title.strip() or file.filename or "Untitled")[:255],
+        description=description or "", tags=(tags or "")[:512],
+        status=(status or None) if cat == "rfp" else None,
+        pursuit_id=pid, filename=(file.filename or "file")[:255],
+        content_type=(file.content_type or "application/octet-stream")[:128],
+        size_bytes=len(raw), content=raw, uploaded_by_user_id=user.id,
+    )
+    db.add(d)
+    db.commit()
+    db.refresh(d)
+    return _library_out(d)
+
+
+@app.get("/library/{doc_id}/download")
+def download_library(doc_id: int, db: Session = Depends(get_db),
+                     _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    d = db.get(LibraryDocument, doc_id)
+    if not d or d.content is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    safe = (d.filename or "document").replace('"', "").replace("\n", "")
+    return Response(content=d.content, media_type=d.content_type or "application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{safe}"'})
+
+
+@app.delete("/library/{doc_id}")
+def delete_library(doc_id: int, db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    d = db.get(LibraryDocument, doc_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    db.delete(d)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/admin/integrations/schedule")
