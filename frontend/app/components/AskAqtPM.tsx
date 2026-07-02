@@ -195,30 +195,57 @@ export default function AskAqtPM() {
         </div>
       )}
 
-      {result && <AnswerPanel result={result} />}
+      {result && <AnswerPanel result={result} onClear={() => setResult(null)} />}
     </section>
   );
 }
 
-function AnswerPanel({ result }: { result: AskResult }) {
-  if (result.error) {
-    return (
-      <div
+function AnswerPanel({ result, onClear }: { result: AskResult; onClear: () => void }) {
+  const clearBtn = (
+    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+      <button
+        type="button"
+        onClick={onClear}
+        title="Clear this answer and start fresh"
         style={{
-          marginTop: 14,
-          padding: "12px 14px",
-          borderRadius: 10,
-          background: "rgba(239,68,68,0.08)",
-          border: "1px solid rgba(239,68,68,0.25)",
-          fontSize: 14,
+          border: "1px solid var(--aq-border, rgba(0,0,0,0.14))",
+          background: "transparent",
+          color: "inherit",
+          borderRadius: 999,
+          padding: "4px 12px",
+          fontSize: 12.5,
+          cursor: "pointer",
+          opacity: 0.75,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
         }}
       >
-        {result.message || "Something went wrong."}
+        ↻ Clear answer
+      </button>
+    </div>
+  );
+  if (result.error) {
+    return (
+      <div style={{ marginTop: 14 }}>
+        {clearBtn}
+        <div
+          style={{
+            padding: "12px 14px",
+            borderRadius: 10,
+            background: "rgba(239,68,68,0.08)",
+            border: "1px solid rgba(239,68,68,0.25)",
+            fontSize: 14,
+          }}
+        >
+          {result.message || "Something went wrong."}
+        </div>
       </div>
     );
   }
   return (
     <div style={{ marginTop: 16 }}>
+      {clearBtn}
       {!!result.key_numbers?.length && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
           {result.key_numbers.map((k, i) => (
