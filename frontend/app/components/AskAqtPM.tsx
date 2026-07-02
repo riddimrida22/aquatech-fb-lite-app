@@ -95,21 +95,51 @@ export default function AskAqtPM() {
         }}
         style={{ display: "flex", gap: 8, marginTop: 12 }}
       >
-        <input
-          ref={inputRef}
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="e.g. What's our net margin, and how does it compare across projects?"
-          style={{
-            flex: 1,
-            padding: "11px 14px",
-            borderRadius: 10,
-            border: "1px solid var(--aq-border, rgba(0,0,0,0.15))",
-            background: "var(--aq-input-bg, #fff)",
-            color: "inherit",
-            fontSize: 15,
-          }}
-        />
+        <div style={{ flex: 1, position: "relative", display: "flex" }}>
+          <input
+            ref={inputRef}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="e.g. What's our net margin, and how does it compare across projects?"
+            style={{
+              width: "100%",
+              padding: "11px 36px 11px 14px",
+              borderRadius: 10,
+              border: "1px solid var(--aq-border, rgba(0,0,0,0.15))",
+              background: "var(--aq-input-bg, #fff)",
+              color: "inherit",
+              fontSize: 15,
+            }}
+          />
+          {question && (
+            <button
+              type="button"
+              aria-label="Clear"
+              title="Clear"
+              onClick={() => {
+                setQuestion("");
+                setResult(null);
+                inputRef.current?.focus();
+              }}
+              style={{
+                position: "absolute",
+                right: 8,
+                top: "50%",
+                transform: "translateY(-50%)",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                fontSize: 20,
+                lineHeight: 1,
+                opacity: 0.45,
+                color: "inherit",
+                padding: "2px 4px",
+              }}
+            >
+              ×
+            </button>
+          )}
+        </div>
         <button
           type="submit"
           disabled={loading || !question.trim()}
