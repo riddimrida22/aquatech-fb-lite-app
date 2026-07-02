@@ -120,6 +120,15 @@ const NAV_LEAVES: NavLeaf[] = NAV.flatMap((entry) => (isNavGroup(entry) ? entry.
 const labelForWorkspace = (key: WorkspaceKey): string =>
   NAV_LEAVES.find((leaf) => leaf.key === key)?.label ?? "";
 
+// Dashboard subtabs — show one group at a time so the page isn't a long scroll.
+const DASH_TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "financials", label: "P&L · Cash flow" },
+  { key: "receivables", label: "Receivables" },
+  { key: "hours", label: "Hours" },
+] as const;
+type DashTab = (typeof DASH_TABS)[number]["key"];
+
 const BUILD_STAMP = "AqtPM rebuild live on Apr 17, 2026";
 
 function todayIso() {
@@ -179,6 +188,7 @@ export default function AquatechPmHome() {
   const [workspace, setWorkspace] = useState<WorkspaceKey>("dashboard");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [timeTab, setTimeTab] = useState<TimeTab>("enter");
+  const [dashTab, setDashTab] = useState<DashTab>("overview");
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
@@ -1054,10 +1064,33 @@ export default function AquatechPmHome() {
               </div>
             </div>
 
-            <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
-            <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
-            <CompReconPanel data={compRecon} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "6px 0 2px" }}>
+              {DASH_TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setDashTab(t.key)}
+                  style={{
+                    border: "none", cursor: "pointer", borderRadius: 999, padding: "7px 16px",
+                    fontSize: 13, fontWeight: 600,
+                    background: dashTab === t.key ? "#21737e" : "var(--aq-input-bg, rgba(0,0,0,0.06))",
+                    color: dashTab === t.key ? "#fff" : "inherit",
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
 
+            {dashTab === "financials" ? (
+              <>
+                <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
+                <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
+                <CompReconPanel data={compRecon} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
+              </>
+            ) : null}
+
+            {dashTab === "receivables" ? (
             <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
@@ -1110,7 +1143,9 @@ export default function AquatechPmHome() {
 
               <ARAgingPanel invoices={invoices} />
             </div>
+            ) : null}
 
+            {dashTab === "overview" ? (
             <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
@@ -1155,7 +1190,10 @@ export default function AquatechPmHome() {
                 </div>
               </section>
             </div>
+            ) : null}
 
+            {dashTab === "hours" ? (
+            <>
             <section className="aq-lite-panel">
               <div className="aq-lite-panel-head">
                 <div>
@@ -1296,6 +1334,8 @@ export default function AquatechPmHome() {
                 ))}
               </div>
             </section>
+            </>
+            ) : null}
           </section>
         ) : null}
 

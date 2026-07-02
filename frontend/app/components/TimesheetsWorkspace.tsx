@@ -47,13 +47,37 @@ export function TimesheetsWorkspace({
     submitted: adminTimesheets.filter((sheet) => sheet.status === "submitted").length,
     approved: adminTimesheets.filter((sheet) => sheet.status === "approved").length,
   };
-  const visibleAdminTimesheets = useMemo(() => {
-    if (adminStatusFilter === "all") return adminTimesheets;
-    if (adminStatusFilter === "draft") {
-      return adminTimesheets.filter((sheet) => sheet.status === "draft" || sheet.status === "rejected");
+
+  // Admin employee + period selectors so the roster isn't one long list — the
+  // admin picks any employee (incl. their own) and a pay period (defaults to the
+  // most recent, so nothing shows until/unless a period is chosen).
+  const employeeOptions = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const s of adminTimesheets) m.set(s.user_id, s.user_full_name || s.user_email || `User ${s.user_id}`);
+    return Array.from(m, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [adminTimesheets]);
+  const periodOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of adminTimesheets) {
+      if (s.week_start) m.set(s.week_start, `${formatDate(s.week_start)} – ${formatDate(s.week_end)}`);
     }
-    return adminTimesheets.filter((sheet) => sheet.status === adminStatusFilter);
-  }, [adminStatusFilter, adminTimesheets]);
+    return Array.from(m, ([week_start, label]) => ({ week_start, label })).sort((a, b) => b.week_start.localeCompare(a.week_start));
+  }, [adminTimesheets]);
+  const [adminEmployee, setAdminEmployee] = useState<number | "all">("all");
+  const [adminPeriod, setAdminPeriod] = useState<string>(""); // "" → resolves to latest period
+  const effectivePeriod = adminPeriod || (periodOptions[0]?.week_start ?? "all");
+
+  const visibleAdminTimesheets = useMemo(() => {
+    let rows = adminTimesheets;
+    if (adminStatusFilter === "draft") {
+      rows = rows.filter((s) => s.status === "draft" || s.status === "rejected");
+    } else if (adminStatusFilter !== "all") {
+      rows = rows.filter((s) => s.status === adminStatusFilter);
+    }
+    if (adminEmployee !== "all") rows = rows.filter((s) => s.user_id === adminEmployee);
+    if (effectivePeriod !== "all") rows = rows.filter((s) => s.week_start === effectivePeriod);
+    return rows;
+  }, [adminStatusFilter, adminTimesheets, adminEmployee, effectivePeriod]);
 
   return (
     <div className="aq-lite-stack">
@@ -166,6 +190,28 @@ export function TimesheetsWorkspace({
               <h3>All employee timesheets</h3>
             </div>
             <div className="aq-lite-toolbar">
+              <select
+                value={adminEmployee}
+                onChange={(e) => setAdminEmployee(e.target.value === "all" ? "all" : Number(e.target.value))}
+                title="Employee"
+                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--aq-border,rgba(0,0,0,0.15))", background: "var(--aq-input-bg,#fff)", color: "inherit" }}
+              >
+                <option value="all">All employees</option>
+                {employeeOptions.map((o) => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </select>
+              <select
+                value={effectivePeriod}
+                onChange={(e) => setAdminPeriod(e.target.value)}
+                title="Pay period"
+                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--aq-border,rgba(0,0,0,0.15))", background: "var(--aq-input-bg,#fff)", color: "inherit" }}
+              >
+                <option value="all">All periods</option>
+                {periodOptions.map((o) => (
+                  <option key={o.week_start} value={o.week_start}>{o.label}</option>
+                ))}
+              </select>
               <button type="button" className={adminStatusFilter === "all" ? "is-active" : ""} onClick={() => setAdminStatusFilter("all")}>
                 All
               </button>
