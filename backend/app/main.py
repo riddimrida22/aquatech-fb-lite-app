@@ -84,6 +84,7 @@ CC_TRANSFER_KEYWORDS = (
 
 PAYROLL_KEYWORDS = (
     "GUSTO",            # all Gusto wires
+    "PAYCHEX",          # Paychex payroll debits (net pay + taxes) — already in COGS via the journal
     "MATRIX TRUST",     # 401(k) custodian
     "HUMAN INTEREST",   # 401(k) plan administrator
     "NU ERA", "NUERA",  # health insurance benefits
@@ -105,7 +106,8 @@ PERSONAL_OVERRIDE_KEYWORDS = (
 # Merchant-cash-advance / short-term business financing. The payment is debt
 # servicing (principal + baked-in fee), NOT an operating expense — exclude from OPEX.
 # (Interest portion is not separately modeled; revisit via Loans if it becomes material.)
-FINANCING_EXCLUDE_KEYWORDS = ("FUNDBOX", "FORWARD FIN", "KAPITUS", "ONDECK", "BLUEVINE")
+FINANCING_EXCLUDE_KEYWORDS = ("FUNDBOX", "FORWARD FIN", "FORWARDFINANCING", "KAPITUS", "ONDECK",
+                              "BLUEVINE", "N26", "REVOLUT")  # short-term / cash-advance financing
 
 # Personal-account items that ARE business per user directive:
 #   1. Computer hardware purchases at major retailers
