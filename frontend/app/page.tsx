@@ -1166,7 +1166,7 @@ export default function AquatechPmHome() {
                 </div>
                 <div className="aq-lite-list">
                   {projectPerformance.slice(0, 5).map((project) => (
-                    <div key={project.project_id} className="aq-lite-list-row">
+                    <div key={project.project_id} className="aq-lite-list-row" style={drillStyle} title="View projects →" onClick={() => setWorkspace("projects")}>
                       <div>
                         <strong>{project.project_name}</strong>
                         <span>{formatPercent(project.margin_pct)} margin</span>
@@ -1187,7 +1187,7 @@ export default function AquatechPmHome() {
                 </div>
                 <div className="aq-lite-list">
                   {clientRollups.slice(0, 5).map((client) => (
-                    <div key={client.name} className="aq-lite-list-row">
+                    <div key={client.name} className="aq-lite-list-row" style={drillStyle} title="View clients →" onClick={() => setWorkspace("clients")}>
                       <div>
                         <strong>{client.name}</strong>
                         <span>
@@ -1227,7 +1227,7 @@ export default function AquatechPmHome() {
                   <p className="aq-lite-eyebrow" style={{ marginTop: 8 }}>By employee</p>
                   <div className="aq-lite-list">
                     {(unbilledHours?.billable.by_employee ?? []).map((row) => (
-                      <div key={row.user_id} className="aq-lite-list-row">
+                      <div key={row.user_id} className="aq-lite-list-row" style={drillStyle} title="View timesheets →" onClick={() => { setTimeTab("timesheets"); setWorkspace("time"); }}>
                         <div>
                           <strong>{row.name}</strong>
                           <span>{formatCurrency(row.value ?? 0)}</span>
@@ -1244,7 +1244,7 @@ export default function AquatechPmHome() {
                   <p className="aq-lite-eyebrow" style={{ marginTop: 8 }}>By project</p>
                   <div className="aq-lite-list">
                     {(unbilledHours?.billable.by_project ?? []).map((row) => (
-                      <div key={row.project_id} className="aq-lite-list-row">
+                      <div key={row.project_id} className="aq-lite-list-row" style={drillStyle} title="View invoices →" onClick={() => setWorkspace("invoices")}>
                         <div>
                           <strong>{row.project_name}</strong>
                           <span>{row.client_name || "—"} · {formatCurrency(row.value ?? 0)}</span>
@@ -1289,7 +1289,7 @@ export default function AquatechPmHome() {
                   </p>
                   <div className="aq-lite-list">
                     {(unbilledHours?.non_billable.ytd.by_employee ?? []).map((row) => (
-                      <div key={row.user_id} className="aq-lite-list-row">
+                      <div key={row.user_id} className="aq-lite-list-row" style={drillStyle} title="View timesheets →" onClick={() => { setTimeTab("timesheets"); setWorkspace("time"); }}>
                         <div>
                           <strong>{row.name}</strong>
                         </div>
@@ -1307,7 +1307,7 @@ export default function AquatechPmHome() {
                   </p>
                   <div className="aq-lite-list">
                     {(unbilledHours?.non_billable.ytd.by_project ?? []).map((row) => (
-                      <div key={row.project_id} className="aq-lite-list-row">
+                      <div key={row.project_id} className="aq-lite-list-row" style={drillStyle} title="View projects →" onClick={() => setWorkspace("projects")}>
                         <div>
                           <strong>{row.project_name}</strong>
                           <span>{row.client_name || "—"}</span>
@@ -1332,7 +1332,7 @@ export default function AquatechPmHome() {
               </div>
               <div className="aq-lite-grid aq-lite-grid-2" style={{ gap: 8 }}>
                 {timeEntries.slice(-8).reverse().map((entry) => (
-                  <div key={entry.id} className="aq-lite-list-row">
+                  <div key={entry.id} className="aq-lite-list-row" style={drillStyle} title="View time →" onClick={() => { setTimeTab("enter"); setWorkspace("time"); }}>
                     <div>
                       <strong>{entry.project_name || "Project"}</strong>
                       <span>
@@ -1369,7 +1369,7 @@ export default function AquatechPmHome() {
               </thead>
               <tbody>
                 {clientRollups.map((client) => (
-                  <tr key={client.name}>
+                  <tr key={client.name} style={{ cursor: "pointer" }} title="View projects →" onClick={() => setWorkspace("projects")}>
                     <td>{client.name}</td>
                     <td>{client.projectCount}</td>
                     <td>{client.activeProjectCount}</td>

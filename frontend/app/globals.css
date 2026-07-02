@@ -189,6 +189,8 @@ table th.aq-sortable-header.aq-sortable-desc::after {
    only when they really must. */
 .aq-lite-panel > .aq-lite-table-wrap {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 440px;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -793,6 +795,20 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 .aq-lite-stat-list {
   display: grid;
   gap: 8px;
+}
+
+/* Keep long lists/tables from stretching the page — scroll within a capped box. */
+.aq-lite-list,
+.aq-lite-stat-list {
+  max-height: 380px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.aq-lite-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .aq-lite-list-row,

@@ -265,7 +265,7 @@ export function GroupedList<T>({
               </span>
             </button>
             {isOpen ? (
-              <div style={{ padding: "0 6px 8px 6px" }}>
+              <div style={{ padding: "0 6px 8px 6px", maxHeight: 420, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
                 {g.items.map((row, idx) => (
                   <div key={idx}>{renderRow(row, idx)}</div>
                 ))}
