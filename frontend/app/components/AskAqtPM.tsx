@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { apiGet, apiPost } from "../../lib/api";
+import { apiGet, apiPost, apiDelete } from "../../lib/api";
 
 type KeyNumber = { label: string; value: string };
 type Series = { name: string; data: number[] };
@@ -15,6 +15,28 @@ type AskResult = {
   error?: string;
   message?: string;
 };
+
+type HistoryItem = {
+  id: number;
+  question: string;
+  mode: string;
+  answer_preview?: string | null;
+  created_at?: string | null;
+};
+
+function relTime(iso?: string | null): string {
+  if (!iso) return "";
+  const s = /[Z+]|[+-]\d\d:\d\d$/.test(iso) ? iso : iso + "Z"; // backend stores naive UTC
+  const t = new Date(s).getTime();
+  if (isNaN(t)) return "";
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return d < 7 ? `${d}d ago` : new Date(s).toLocaleDateString();
+}
 
 const SUGGESTIONS = [
   "What's our net income and margin this year?",
@@ -33,12 +55,20 @@ export default function AskAqtPM() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AskResult | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  function refreshHistory() {
+    apiGet<{ items: HistoryItem[] }>("/assistant/history?limit=25")
+      .then((r) => setHistory(r.items || []))
+      .catch(() => {});
+  }
 
   useEffect(() => {
     apiGet<{ configured: boolean }>("/assistant/status")
       .then((s) => setConfigured(!!s.configured))
       .catch(() => setConfigured(null));
+    refreshHistory();
   }, []);
 
   async function ask(q?: string) {
@@ -50,10 +80,29 @@ export default function AskAqtPM() {
     try {
       const res = await apiPost<AskResult>("/assistant/ask", { question: query, mode });
       setResult(res);
+      refreshHistory();
     } catch (e) {
       setResult({ error: "network", message: "Couldn't reach the assistant. Is the backend running?" });
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function deleteHistoryItem(id: number) {
+    setHistory((h) => h.filter((x) => x.id !== id));
+    try {
+      await apiDelete(`/assistant/history?id=${id}`);
+    } catch {
+      refreshHistory();
+    }
+  }
+
+  async function clearHistory() {
+    setHistory([]);
+    try {
+      await apiDelete("/assistant/history");
+    } catch {
+      refreshHistory();
     }
   }
 
@@ -196,6 +245,63 @@ export default function AskAqtPM() {
       )}
 
       {result && <AnswerPanel result={result} onClear={() => setResult(null)} />}
+
+      {history.length > 0 && (
+        <div style={{ marginTop: 16, borderTop: "1px solid var(--aq-border, rgba(0,0,0,0.08))", paddingTop: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4, opacity: 0.55 }}>
+              Your recent questions
+            </div>
+            <button
+              type="button"
+              onClick={clearHistory}
+              style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 12, opacity: 0.6 }}
+            >
+              Clear history
+            </button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 240, overflowY: "auto" }}>
+            {history.map((h) => (
+              <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={() => ask(h.question)}
+                  title={h.answer_preview || "Ask this again"}
+                  style={{
+                    flex: 1,
+                    textAlign: "left",
+                    border: "none",
+                    background: "transparent",
+                    color: "inherit",
+                    cursor: "pointer",
+                    borderRadius: 8,
+                    padding: "6px 8px",
+                    fontSize: 13.5,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "baseline",
+                    gap: 10,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--aq-row-head-bg, rgba(59,130,246,0.07))")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.question}</span>
+                  <span style={{ opacity: 0.45, fontSize: 11, whiteSpace: "nowrap" }}>{relTime(h.created_at)}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label="Remove from history"
+                  title="Remove"
+                  onClick={() => deleteHistoryItem(h.id)}
+                  style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 16, opacity: 0.35, padding: "2px 6px", lineHeight: 1 }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

@@ -24,7 +24,7 @@ import httpx
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import and_, exists, false, func, or_, select
+from sqlalchemy import and_, delete, exists, false, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
@@ -32,6 +32,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .authz import get_current_user, permissions_for_role, require_permission
 from .db import SessionLocal, get_db, init_db
 from .models import (
+    AssistantQuery,
     AuditEvent,
     BankAccount,
     BankConnection,
@@ -4262,14 +4263,73 @@ def assistant_status(_: User = Depends(require_permission("VIEW_FINANCIALS"))):
 def assistant_ask(
     body: AssistantAskIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+    user: User = Depends(require_permission("VIEW_FINANCIALS")),
 ):
     """Answer a natural-language question about the company from the live data."""
     from . import assistant as _assistant
 
     if not (body.question or "").strip():
         return {"error": "empty_question", "message": "Ask a question first."}
-    return _assistant.ask(body.question, body.mode, db, settings)
+    result = _assistant.ask(body.question, body.mode, db, settings)
+    # Record per-person search history (best-effort — never fail the answer on a log error).
+    try:
+        answer = result.get("answer") if isinstance(result, dict) else None
+        preview = (answer or "").strip()[:280] if answer else None
+        db.add(
+            AssistantQuery(
+                user_id=getattr(user, "id", None),
+                question=body.question.strip()[:2000],
+                mode=(body.mode or "quick")[:16],
+                answer_preview=preview,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    return result
+
+
+@app.get("/assistant/history")
+def assistant_history(
+    limit: int = 25,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("VIEW_FINANCIALS")),
+):
+    """This person's recent assistant questions (own history only)."""
+    n = max(1, min(int(limit or 25), 100))
+    rows = db.scalars(
+        select(AssistantQuery)
+        .where(AssistantQuery.user_id == user.id)
+        .order_by(AssistantQuery.created_at.desc())
+        .limit(n)
+    ).all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "question": r.question,
+                "mode": r.mode,
+                "answer_preview": r.answer_preview,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.delete("/assistant/history")
+def assistant_history_clear(
+    id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("VIEW_FINANCIALS")),
+):
+    """Clear this person's assistant history — one item if `id` is given, else all of theirs."""
+    stmt = delete(AssistantQuery).where(AssistantQuery.user_id == user.id)
+    if id is not None:
+        stmt = stmt.where(AssistantQuery.id == int(id))
+    db.execute(stmt)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/admin/integrations/schedule")
