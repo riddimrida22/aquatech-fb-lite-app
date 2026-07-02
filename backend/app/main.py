@@ -1581,13 +1581,15 @@ CHART_OF_ACCOUNTS: dict[str, tuple[str, str]] = {
     "Client Meals": ("INDIRECT", "Business Development"),
     "Conferences & Events": ("INDIRECT", "Business Development"),
     "Memberships": ("INDIRECT", "Business Development"),
-    # Exact labels emitted by the keyword classifier (_OPEX_BUCKET_RULES) — keep in sync
+    # Labels emitted by the OPEX keyword classifier (_OPEX_BUCKET_RULES) not already
+    # mapped above. _verify_chart_of_accounts_coverage() fails loud at startup if any
+    # classifier label is missing here, so unmapped spend can't silently drift into
+    # the review bucket. (Duplicates of keys above — "Dues, Licenses & Education",
+    # "Marketing & Advertising" — and a trailing-space "Computer Hardware & Equipment "
+    # were removed 2026-07-02; coa_section() strips before lookup so they were dead.)
     "Travel & Transport": ("INDIRECT", "Business Development"),
     "Meals & Entertainment": ("INDIRECT", "Business Development"),
     "Office Supplies & Postage": ("INDIRECT", "Admin / G&A"),
-    "Computer Hardware & Equipment ": ("INDIRECT", "Admin / G&A"),
-    "Dues, Licenses & Education": ("INDIRECT", "Admin / G&A"),
-    "Marketing & Advertising": ("INDIRECT", "Marketing"),
     "Other / Uncategorized": ("INDIRECT", "⚠ Needs review (manual)"),
     "⚠ Needs review (manual)": ("INDIRECT", "⚠ Needs review (manual)"),
     # OTHER — below the operating line (excluded from margin)
@@ -1668,6 +1670,14 @@ _recurring_thread_started = False
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    _coa_missing = _verify_chart_of_accounts_coverage()
+    if _coa_missing:
+        print(
+            f"[chart-of-accounts] WARNING: {len(_coa_missing)} classifier label(s) not mapped "
+            f"in CHART_OF_ACCOUNTS (would fall into '⚠ Needs review'): {_coa_missing}"
+        )
+    else:
+        print("[chart-of-accounts] OK — all classifier labels mapped.")
     _ensure_default_subtasks_for_all_tasks()
     _start_timesheet_reminder_worker()
     _start_recurring_invoice_worker()
@@ -3446,6 +3456,24 @@ def _opex_category_bucket(name_upper: str, plaid_cat: str | None) -> str:
         if any(k in name_upper for k in kws):
             return label
     return _normalize_opex_label(plaid_cat)
+
+
+def _verify_chart_of_accounts_coverage() -> list[str]:
+    """Every FIXED category label any classifier can emit must be mapped in
+    CHART_OF_ACCOUNTS; otherwise it silently falls into the '⚠ Needs review' OpEx
+    bucket via coa_section()'s default. Returns the sorted list of unmapped labels
+    so startup (and an admin endpoint) can surface the gap loudly instead of letting
+    the P&L absorb it. (Free-form title-cased Plaid categories are inherently
+    open-ended and are intentionally not checked here.)"""
+    emitted: set[str] = set()
+    for _kws, (_grp, label, _conf) in BANK_CATEGORY_KEYWORD_RULES:
+        emitted.add(label)
+    for label, _kws in _OPEX_BUCKET_RULES:
+        emitted.add(label)
+    emitted.update(_OPEX_LABEL_SYNONYMS.values())
+    for _section, labels in DEFAULT_EXPENSE_CATEGORY_MAP.items():
+        emitted.update(labels)
+    return sorted(lbl for lbl in emitted if str(lbl).strip() not in CHART_OF_ACCOUNTS)
 
 
 def _accounting_period(start_iso: str | None, end_iso: str | None) -> tuple[date, date]:
