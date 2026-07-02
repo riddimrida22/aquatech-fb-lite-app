@@ -13,6 +13,7 @@ import { ProfitLossPanel, CashFlowPanel, CompReconPanel, BusinessHealth } from "
 import { TransfersPanel } from "./components/TransfersPanel";
 import { DedupPanel } from "./components/DedupPanel";
 import { PayrollPortal } from "./components/PayrollPortal";
+import AskAqtPM from "./components/AskAqtPM";
 import { PayrollExpenseSummary } from "./components/PayrollExpenseSummary";
 import { TimesheetsWorkspace } from "./components/TimesheetsWorkspace";
 import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
@@ -848,6 +849,7 @@ export default function AquatechPmHome() {
 
         {workspace === "dashboard" ? (
           <section className="aq-lite-stack">
+            {capabilities.canViewFinancials ? <AskAqtPM /> : null}
             {capabilities.canViewFinancials ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
                 <span style={{ opacity: 0.6, fontSize: "0.8em", marginRight: "0.2rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>Period</span>
@@ -958,6 +960,19 @@ export default function AquatechPmHome() {
                 <article className="aq-lite-kpi" style={drillStyle} title="View invoices →" onClick={() => setWorkspace("invoices")}>
                   <span>Open invoices (now) ↗</span>
                   <strong>{headlineMetrics.openInvoices}</strong>
+                </article>
+                <article
+                  className="aq-lite-kpi"
+                  style={drillStyle}
+                  title={`Billable hours entered but not yet on any invoice${
+                    unbilledHours?.billable.totals.value != null
+                      ? ` · ${formatCurrency(unbilledHours.billable.totals.value)} unbilled value`
+                      : ""
+                  } — View invoices →`}
+                  onClick={() => setWorkspace("invoices")}
+                >
+                  <span>Unbilled hours (now) ↗</span>
+                  <strong>{formatNumber(unbilledHours?.billable.totals.hours ?? 0, 1)}</strong>
                 </article>
                 {businessHealth ? (
                   <>

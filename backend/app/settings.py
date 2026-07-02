@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     SESSION_HTTPS_ONLY: bool = False
     SESSION_SAME_SITE: str = "lax"
     CORS_ALLOW_INTERNAL_REGEX: bool = True
+    # AI Assistant ("Ask AqtPM") — natural-language company Q&A
+    ANTHROPIC_API_KEY: str = ""
+    ASSISTANT_MODEL: str = "claude-opus-4-8"
+    # Daily auto-sync of external integrations (bank + accounting)
+    PLAID_DAILY_SYNC_ENABLED: bool = True
+    FRESHBOOKS_DAILY_SYNC_ENABLED: bool = True
+    INTEGRATIONS_SYNC_HOUR_LOCAL: int = 6
+    INTEGRATIONS_SYNC_TIMEZONE: str = "America/New_York"
 
 
 @lru_cache
