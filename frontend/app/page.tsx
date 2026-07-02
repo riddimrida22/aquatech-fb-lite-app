@@ -88,9 +88,16 @@ function isNavGroup(entry: NavEntry): entry is NavGroup {
 // Settings are grouped with submenus) — down from 14 flat items.
 const NAV: NavEntry[] = [
   { key: "dashboard", label: "Dashboard", hint: "Snapshot" },
-  { key: "clients", label: "Clients", hint: "Relationships" },
   { key: "projects", label: "Projects", hint: "Pipeline + setup" },
-  { key: "bd", label: "Business Dev", hint: "Pursuits + pipeline" },
+  {
+    groupKey: "bizdev",
+    label: "Business Dev",
+    hint: "Pursuits · clients",
+    children: [
+      { key: "bd", label: "Pipeline", hint: "Pursuits + go/no-go" },
+      { key: "clients", label: "Clients", hint: "Relationships" },
+    ],
+  },
   { key: "time", label: "Time", hint: "Hours + timesheets" },
   {
     groupKey: "financial",
