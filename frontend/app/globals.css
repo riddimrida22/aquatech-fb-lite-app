@@ -570,6 +570,30 @@ table th.aq-sortable-header.aq-sortable-desc::after {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+.aq-lite-nav-group {
+  display: grid;
+  gap: 6px;
+}
+
+.aq-lite-nav-group-head {
+  cursor: pointer;
+}
+
+.aq-lite-nav-group-head.active-parent {
+  border-color: rgba(33, 115, 126, 0.55);
+}
+
+.aq-lite-nav-child {
+  margin-left: 12px;
+  width: calc(100% - 12px);
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.aq-lite-nav-child span {
+  font-size: 0.94rem;
+}
+
 .aq-lite-sidebar-card {
   margin-top: auto;
   display: grid;
