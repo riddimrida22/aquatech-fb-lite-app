@@ -1775,6 +1775,15 @@ def _start_fb_time_sync_worker() -> None:
                 print(f"[plaid_daily] sync ok: transactions={txn}", flush=True)
         except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
             print(f"[plaid_daily] sync failed: {exc!r}", flush=True)
+            # Loud failure — mark connections in error so a dead Plaid link can't sit
+            # silent (mirrors the FB reauth_required escalation).
+            try:
+                with SessionLocal() as db2:
+                    for c in db2.scalars(select(BankConnection)).all():
+                        c.status = "error"
+                    db2.commit()
+            except Exception:
+                pass
 
     sched = BackgroundScheduler(daemon=True)
     sched.add_job(_tick, "interval", minutes=10, id="fb_time_sync", coalesce=True, max_instances=1,
@@ -1792,6 +1801,15 @@ def _start_fb_time_sync_worker() -> None:
     if getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
         sched.add_job(_daily_fb_full_sync, "cron", hour=_hour, minute=15, timezone=_tz,
                       id="fb_daily_full_sync", coalesce=True, max_instances=1)
+    # One-shot catch-up ~60-90s after boot, so a restart/deploy doesn't leave bank +
+    # FreshBooks data stale until the next 6 AM cron.
+    _boot = datetime.utcnow()
+    if getattr(settings, "PLAID_DAILY_SYNC_ENABLED", True):
+        sched.add_job(_daily_plaid_sync, "date", run_date=_boot + timedelta(seconds=60),
+                      id="plaid_boot_catchup", coalesce=True, max_instances=1)
+    if getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
+        sched.add_job(_daily_fb_full_sync, "date", run_date=_boot + timedelta(seconds=90),
+                      id="fb_boot_catchup", coalesce=True, max_instances=1)
     sched.start()
     _fb_time_sync_scheduler = sched
     print(
@@ -4900,6 +4918,72 @@ def integrations_schedule(_: User = Depends(require_permission("VIEW_FINANCIALS"
                 }
             )
     return {"scheduler_running": sched is not None, "jobs": jobs}
+
+
+@app.get("/integrations/freshness")
+def integrations_freshness(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Consolidated data-freshness for the app-wide banner: when each source last
+    synced + its health, so staleness is visible to any dashboard viewer (not just
+    admins on per-integration status pages)."""
+    now = datetime.utcnow()
+
+    def _age(dt: datetime | None) -> float | None:
+        return round((now - dt).total_seconds() / 3600, 1) if dt else None
+
+    sources: list[dict] = []
+    # FreshBooks
+    try:
+        tok = fb_integration.load_token(db)
+        if tok is not None:
+            sources.append({
+                "key": "freshbooks", "label": "FreshBooks",
+                "last_synced_at": tok.last_synced_at.isoformat() if getattr(tok, "last_synced_at", None) else None,
+                "age_hours": _age(getattr(tok, "last_synced_at", None)),
+                "status": getattr(tok, "last_sync_status", None) or "connected",
+            })
+    except Exception:
+        pass
+    # Plaid (bank + card)
+    try:
+        conns = db.scalars(select(BankConnection)).all()
+        if conns:
+            latest = max((c.last_synced_at for c in conns if c.last_synced_at), default=None)
+            bad = [c for c in conns if c.status and c.status not in ("connected", "ok")]
+            sources.append({
+                "key": "plaid", "label": "Bank + card (Plaid)",
+                "last_synced_at": latest.isoformat() if latest else None,
+                "age_hours": _age(latest), "status": "error" if bad else "ok",
+                "detail": f"{len(conns)} account(s)",
+            })
+    except Exception:
+        pass
+    # Payroll inbox (Paychex)
+    try:
+        inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+        if inbox.exists():
+            pdfs = list(inbox.glob("*.pdf"))
+            latest_m = max((datetime.utcfromtimestamp(p.stat().st_mtime) for p in pdfs), default=None)
+            sources.append({
+                "key": "payroll", "label": "Payroll (Paychex)",
+                "last_synced_at": latest_m.isoformat() if latest_m else None,
+                "age_hours": _age(latest_m), "status": "ok" if pdfs else "stale",
+                "detail": f"{len(pdfs)} file(s)",
+            })
+    except Exception:
+        pass
+
+    overall = "ok"
+    for s in sources:
+        st = s.get("status")
+        if st in ("error", "reauth_required"):
+            overall = "error"
+            break
+        if (st == "stale" or ((s.get("age_hours") or 0) > 30)) and overall == "ok":
+            overall = "stale"
+    return {"sources": sources, "overall": overall, "as_of": now.isoformat()}
 
 
 @app.get("/accounting/balance-sheet")
