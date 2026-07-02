@@ -3676,6 +3676,11 @@ def accounting_pl(
     # operating margin entirely. Authoritative source = each tx's assigned category
     # (_tx_category_from_json); the keyword classifier is only a fallback for uncategorized.
     opex_by_group: dict[str, float] = defaultdict(float)
+    # Transactions whose category couldn't be resolved land in the review group and
+    # still count in OpEx (nothing silently dropped) — but we surface how much/how many
+    # so un-reviewed spend can't quietly ride inside the net margin.
+    _review_group = "⚠ Needs review (manual)"
+    needs_review_count = 0
     cogs_from_tx = 0.0
     cogs_tx_by_group: dict[str, float] = defaultdict(float)
     interest_in_loans = 0.0
@@ -3783,6 +3788,8 @@ def accounting_pl(
             opex += amt
             opex_by_cat[cat] += amt
             opex_by_group[group] += amt
+            if group == _review_group:
+                needs_review_count += 1
     # Pass 2: hardware/travel purchases on personal account that are actually business
     for tx in personal_outflows:
         nm_upper = (tx.name or "").upper()
@@ -3804,6 +3811,8 @@ def accounting_pl(
                 opex += amt
                 opex_by_cat[cat] += amt
                 opex_by_group[group] += amt
+                if group == _review_group:
+                    needs_review_count += 1
 
     # Pass 3: FB-only business expenses (paid on a personal card not linked to AqtPM,
     # so the bank-side rows we have don't see them). Pull from active csv_fb_expenses
@@ -3838,6 +3847,8 @@ def accounting_pl(
             opex += amt
             opex_by_cat[fb_label] += amt
             opex_by_group[group] += amt
+            if group == _review_group:
+                needs_review_count += 1
 
     # Interest + fees from LoanPayment records — but EXCLUDE Fundbox. Fundbox is
     # paid sometimes from checking, sometimes on the company credit card (for the
@@ -3912,6 +3923,9 @@ def accounting_pl(
             for g, v in sorted(opex_by_group.items(), key=lambda kv: kv[1], reverse=True)
             if round(v, 2) != 0
         ],
+        # Un-reviewed spend that still counts in OpEx/margin — surfaced so it can't hide.
+        "needs_review_total": round(opex_by_group.get(_review_group, 0.0), 2),
+        "needs_review_count": needs_review_count,
         "interest_expense": interest_expense,
         "fees_expense": fees_expense,
         "fundbox_financing_cost": fundbox_financing_cost,
