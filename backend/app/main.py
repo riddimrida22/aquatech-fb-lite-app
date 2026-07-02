@@ -3383,6 +3383,48 @@ def add_loan_payment(
     )
 
 
+class LoanDrawCreate(BaseModel):
+    amount: float
+    draw_date: date | None = None
+    notes: str = ""
+
+
+@app.post("/loans/{loan_id}/draw", response_model=LoanPaymentOut)
+def add_loan_draw(
+    loan_id: int,
+    payload: LoanDrawCreate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> LoanPaymentOut:
+    """Record a draw on a revolving line / cash-advance — INCREASES the outstanding
+    balance (the mirror of a payment). Stored as a LoanPayment with negative principal
+    so the same delete/reversal logic applies."""
+    loan = db.get(Loan, loan_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    amt = abs(float(payload.amount or 0))
+    if amt <= 0:
+        raise HTTPException(status_code=400, detail="Draw amount must be positive.")
+    pmt = LoanPayment(
+        loan_id=loan_id, payment_date=payload.draw_date or date.today(),
+        total_amount=amt, principal_amount=-amt, interest_amount=0.0, fees_amount=0.0,
+        notes="⬆ Draw" + (f": {payload.notes}" if payload.notes else ""),
+    )
+    db.add(pmt)
+    loan.principal_current = float(loan.principal_current or 0) + amt
+    db.flush()
+    _log_audit_event(db=db, entity_type="loan_payment", entity_id=pmt.id, action="draw",
+                     actor_user_id=actor.id, payload={"loan_id": loan_id, "amount": amt})
+    db.commit()
+    db.refresh(pmt)
+    return LoanPaymentOut(
+        id=pmt.id, loan_id=pmt.loan_id, payment_date=pmt.payment_date,
+        total_amount=pmt.total_amount, principal_amount=pmt.principal_amount,
+        interest_amount=pmt.interest_amount, fees_amount=pmt.fees_amount,
+        bank_transaction_id=pmt.bank_transaction_id, notes=pmt.notes or "",
+    )
+
+
 @app.delete("/loans/{loan_id}/payments/{payment_id}")
 def delete_loan_payment(
     loan_id: int,

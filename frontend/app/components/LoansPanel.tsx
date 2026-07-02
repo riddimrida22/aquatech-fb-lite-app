@@ -323,6 +323,8 @@ function LoanPaymentsInline({ loanId, canManage, onChange }: { loanId: number; c
   const [items, setItems] = useState<LoanPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [showDraw, setShowDraw] = useState(false);
+  const [drawForm, setDrawForm] = useState({ draw_date: new Date().toISOString().slice(0, 10), amount: "", notes: "" });
   const [form, setForm] = useState({
     payment_date: new Date().toISOString().slice(0, 10),
     total_amount: "",
@@ -363,8 +365,25 @@ function LoanPaymentsInline({ loanId, canManage, onChange }: { loanId: number; c
     }
   }
 
+  async function addDraw(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      await apiPost(`/loans/${loanId}/draw`, {
+        amount: Number(drawForm.amount) || 0,
+        draw_date: drawForm.draw_date,
+        notes: drawForm.notes,
+      });
+      setShowDraw(false);
+      setDrawForm({ draw_date: new Date().toISOString().slice(0, 10), amount: "", notes: "" });
+      await load();
+      onChange();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to add draw");
+    }
+  }
+
   async function remove(p: LoanPayment) {
-    if (!confirm(`Delete payment of ${formatCurrency(p.total_amount)} on ${p.payment_date}? Principal will be added back to outstanding balance.`)) return;
+    if (!confirm(`Delete this entry of ${formatCurrency(p.total_amount)} on ${p.payment_date}? The balance will be reversed.`)) return;
     try {
       await apiDelete(`/loans/${loanId}/payments/${p.id}`);
       await load();
@@ -377,9 +396,22 @@ function LoanPaymentsInline({ loanId, canManage, onChange }: { loanId: number; c
   return (
     <div style={{ padding: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <p className="aq-lite-eyebrow" style={{ margin: 0 }}>Payments ({items.length})</p>
-        {canManage ? <button type="button" onClick={() => setShowAdd((s) => !s)} style={{ padding: "4px 10px", fontSize: 12 }}>{showAdd ? "Cancel" : "+ Record payment"}</button> : null}
+        <p className="aq-lite-eyebrow" style={{ margin: 0 }}>Draws &amp; payments ({items.length})</p>
+        {canManage ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button type="button" onClick={() => { setShowDraw((s) => !s); setShowAdd(false); }} title="Record a cash-advance / line draw — increases the balance" style={{ padding: "4px 10px", fontSize: 12 }}>{showDraw ? "Cancel" : "⬆ Draw"}</button>
+            <button type="button" onClick={() => { setShowAdd((s) => !s); setShowDraw(false); }} title="Record a repayment — decreases the balance" style={{ padding: "4px 10px", fontSize: 12 }}>{showAdd ? "Cancel" : "⬇ Payment"}</button>
+          </div>
+        ) : null}
       </div>
+      {showDraw && canManage ? (
+        <form onSubmit={addDraw} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr 90px", gap: 6, marginBottom: 8, alignItems: "end" }}>
+          <label style={{ fontSize: 11 }}>Draw date<input type="date" required value={drawForm.draw_date} onChange={(e) => setDrawForm({ ...drawForm, draw_date: e.target.value })} /></label>
+          <label style={{ fontSize: 11 }}>Amount<input type="number" step="0.01" required value={drawForm.amount} onChange={(e) => setDrawForm({ ...drawForm, amount: e.target.value })} placeholder="cash advance $" /></label>
+          <label style={{ fontSize: 11 }}>Notes<input value={drawForm.notes} onChange={(e) => setDrawForm({ ...drawForm, notes: e.target.value })} placeholder="e.g. payroll 6/25 via N26" /></label>
+          <button type="submit" style={{ padding: "6px 8px", fontSize: 12 }}>⬆ Add draw</button>
+        </form>
+      ) : null}
       {showAdd && canManage ? (
         <form onSubmit={add} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 80px", gap: 6, marginBottom: 8, alignItems: "end" }}>
           <label style={{ fontSize: 11 }}>Date<input type="date" required value={form.payment_date} onChange={(e) => setForm({ ...form, payment_date: e.target.value })} /></label>
