@@ -1720,12 +1720,69 @@ def _start_fb_time_sync_worker() -> None:
             except Exception:
                 pass
 
+    def _daily_fb_full_sync() -> None:
+        """Full FreshBooks sync (clients/projects/invoices/expenses/time) once a day."""
+        from . import freshbooks as fb_mod
+        try:
+            with SessionLocal() as db:
+                tok = fb_mod.load_token(db)
+                if tok is None or not tok.account_id or not tok.business_id:
+                    return  # FB not connected; quiet no-op
+                r = fb_mod.sync_summary(db)
+
+                def _n(k):
+                    v = r.get(k) if isinstance(r, dict) else None
+                    return v.get("count", v) if isinstance(v, dict) else v
+
+                print(
+                    f"[fb_daily] full sync ok: clients={_n('clients')} projects={_n('projects')} "
+                    f"invoices={_n('invoices')} expenses={_n('expenses')} time_entries={_n('time_entries')}",
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
+            print(f"[fb_daily] full sync failed: {exc!r}", flush=True)
+
+    def _daily_plaid_sync() -> None:
+        """Pull new bank transactions from Plaid once a day (no scheduler existed before)."""
+        if not getattr(settings, "PLAID_CLIENT_ID", ""):
+            return  # Plaid not configured
+        try:
+            from . import plaid_integration as pl_mod
+        except Exception as exc:  # noqa: BLE001
+            print(f"[plaid_daily] plaid module import failed: {exc!r}", flush=True)
+            return
+        try:
+            with SessionLocal() as db:
+                r = pl_mod.sync_summary(db)
+                txn = r.get("transactions") if isinstance(r, dict) else r
+                print(f"[plaid_daily] sync ok: transactions={txn}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
+            print(f"[plaid_daily] sync failed: {exc!r}", flush=True)
+
     sched = BackgroundScheduler(daemon=True)
     sched.add_job(_tick, "interval", minutes=10, id="fb_time_sync", coalesce=True, max_instances=1,
                   next_run_time=datetime.utcnow() + timedelta(seconds=30))
+    # Daily full integration syncs — Plaid bank download + FreshBooks full sync.
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo(getattr(settings, "INTEGRATIONS_SYNC_TIMEZONE", "America/New_York"))
+    except Exception:
+        _tz = None
+    _hour = int(getattr(settings, "INTEGRATIONS_SYNC_HOUR_LOCAL", 6))
+    if getattr(settings, "PLAID_DAILY_SYNC_ENABLED", True):
+        sched.add_job(_daily_plaid_sync, "cron", hour=_hour, minute=0, timezone=_tz,
+                      id="plaid_daily_sync", coalesce=True, max_instances=1)
+    if getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
+        sched.add_job(_daily_fb_full_sync, "cron", hour=_hour, minute=15, timezone=_tz,
+                      id="fb_daily_full_sync", coalesce=True, max_instances=1)
     sched.start()
     _fb_time_sync_scheduler = sched
-    print("[fb_time_sync] scheduler started — interval 10 min, first tick in 30s", flush=True)
+    print(
+        f"[integrations] schedulers started — FB time-sync every 10 min; "
+        f"Plaid daily {_hour:02d}:00 + FreshBooks full daily {_hour:02d}:15 "
+        f"({getattr(settings, 'INTEGRATIONS_SYNC_TIMEZONE', 'America/New_York')})",
+        flush=True,
+    )
 
 
 def _ensure_default_subtasks_for_all_tasks() -> None:
@@ -4186,6 +4243,50 @@ def accounting_comp_reconciliation(
         "total_paid": round(sum(r["paid"] for r in rows), 2),
         "total_gap": round(sum(r["gap"] for r in rows), 2),
     }
+
+
+class AssistantAskIn(BaseModel):
+    question: str
+    mode: str = "quick"
+
+
+@app.get("/assistant/status")
+def assistant_status(_: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    """Whether the 'Ask AqtPM' assistant is configured (has an API key)."""
+    from . import assistant as _assistant
+
+    return {"configured": _assistant.is_configured(settings), "model": settings.ASSISTANT_MODEL}
+
+
+@app.post("/assistant/ask")
+def assistant_ask(
+    body: AssistantAskIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+):
+    """Answer a natural-language question about the company from the live data."""
+    from . import assistant as _assistant
+
+    if not (body.question or "").strip():
+        return {"error": "empty_question", "message": "Ask a question first."}
+    return _assistant.ask(body.question, body.mode, db, settings)
+
+
+@app.get("/admin/integrations/schedule")
+def integrations_schedule(_: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    """Show the registered background auto-sync jobs and their next run times."""
+    sched = _fb_time_sync_scheduler
+    jobs = []
+    if sched is not None:
+        for j in sched.get_jobs():
+            jobs.append(
+                {
+                    "id": j.id,
+                    "next_run": j.next_run_time.isoformat() if j.next_run_time else None,
+                    "trigger": str(j.trigger),
+                }
+            )
+    return {"scheduler_running": sched is not None, "jobs": jobs}
 
 
 @app.get("/accounting/balance-sheet")
