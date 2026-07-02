@@ -13,6 +13,7 @@ import { TransfersPanel } from "./components/TransfersPanel";
 import { DedupPanel } from "./components/DedupPanel";
 import { PayrollPortal } from "./components/PayrollPortal";
 import AskAqtPM from "./components/AskAqtPM";
+import { BdWorkspace } from "./components/BdWorkspace";
 import { PayrollExpenseSummary } from "./components/PayrollExpenseSummary";
 import { TimesheetsWorkspace } from "./components/TimesheetsWorkspace";
 import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
@@ -55,6 +56,7 @@ type WorkspaceKey =
   | "dashboard"
   | "clients"
   | "projects"
+  | "bd"
   | "time"
   | "invoices"
   | "costs"
@@ -87,6 +89,7 @@ const NAV: NavEntry[] = [
   { key: "dashboard", label: "Dashboard", hint: "Snapshot" },
   { key: "clients", label: "Clients", hint: "Relationships" },
   { key: "projects", label: "Projects", hint: "Pipeline + setup" },
+  { key: "bd", label: "Business Dev", hint: "Pursuits + pipeline" },
   { key: "time", label: "Time", hint: "Hours + timesheets" },
   {
     groupKey: "financial",
@@ -1344,6 +1347,8 @@ export default function AquatechPmHome() {
             staffOptions={staffList.map((u) => ({ id: u.id, full_name: u.full_name, email: u.email }))}
           />
         ) : null}
+
+        {workspace === "bd" ? <BdWorkspace /> : null}
 
         {workspace === "time" ? (
           <div className="aq-lite-stack">
