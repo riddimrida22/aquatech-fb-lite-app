@@ -32,6 +32,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .authz import get_current_user, permissions_for_role, require_permission
 from .db import SessionLocal, get_db, init_db
 from .models import (
+    Activity,
     AssistantQuery,
     AuditEvent,
     BankAccount,
@@ -44,10 +45,15 @@ from .models import (
     IntegrationToken,
     Loan,
     LoanPayment,
+    Contact,
     Project,
     ProjectExpense,
     ProjectMember,
+    Pursuit,
+    PursuitContact,
+    PursuitPartner,
     RecurringInvoiceSchedule,
+    TeamingPartner,
     Subtask,
     Task,
     TimeEntry,
@@ -4438,6 +4444,445 @@ def assistant_history_clear(
     db.execute(stmt)
     db.commit()
     return {"ok": True}
+
+
+# =====================================================================
+# Business Development / Marketing ("pursuits") module
+# =====================================================================
+_STAGE_WIN_PROB = {
+    "lead": 0.05, "qualifying": 0.10, "go_no_go": 0.25, "pursuing": 0.40,
+    "proposal": 0.50, "shortlist": 0.70, "won": 1.0, "lost": 0.0,
+    "no_go": 0.0, "abandoned": 0.0,
+}
+_PURSUIT_TERMINAL = {"won", "lost", "no_go", "abandoned"}
+_PURSUIT_STAGES = ["lead", "qualifying", "go_no_go", "pursuing", "proposal", "shortlist",
+                   "won", "lost", "no_go", "abandoned"]
+# Go/No-Go rubric — (key, label, weight); weights sum to 1.0. Each factor scored 1..5.
+_GNG_FACTORS = [
+    ("strategic_fit", "Strategic fit", 0.15),
+    ("client_relationship", "Client relationship", 0.15),
+    ("competitive_position", "Win probability / competitive position", 0.15),
+    ("profitability", "Profitability / fee", 0.10),
+    ("staff_capacity", "Staff capacity", 0.10),
+    ("past_performance", "Technical qualifications / past performance", 0.10),
+    ("teaming", "Teaming strength / MWBE", 0.08),
+    ("contract_risk", "Contract / agency risk", 0.07),
+    ("pursuit_cost", "Pursuit cost vs prize", 0.05),
+    ("schedule", "Schedule feasibility", 0.05),
+]
+
+
+def _bd_parse_date(s):
+    if not s:
+        return None
+    if isinstance(s, date) and not isinstance(s, datetime):
+        return s
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(str(s)[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _pursuit_out(p: Pursuit) -> dict:
+    return {
+        "id": p.id, "name": p.name, "client_name": p.client_name, "agency": p.agency,
+        "sector": p.sector, "role": p.role, "prime_partner": p.prime_partner,
+        "stage": p.stage, "win_probability": p.win_probability, "is_open": p.is_open,
+        "est_fee": p.est_fee, "weighted_value": round((p.est_fee or 0) * (p.win_probability or 0), 2),
+        "est_duration_months": p.est_duration_months, "solicitation_type": p.solicitation_type,
+        "rfp_release_date": p.rfp_release_date.isoformat() if p.rfp_release_date else None,
+        "proposal_due_date": p.proposal_due_date.isoformat() if p.proposal_due_date else None,
+        "interview_date": p.interview_date.isoformat() if p.interview_date else None,
+        "decision_expected_date": p.decision_expected_date.isoformat() if p.decision_expected_date else None,
+        "owner_user_id": p.owner_user_id, "win_strategy": p.win_strategy, "scope_summary": p.scope_summary,
+        "incumbent": p.incumbent, "gng_score": p.gng_score, "gng_recommendation": p.gng_recommendation,
+        "gng_scores": json.loads(p.gng_scores_json or "{}"),
+        "outcome_reason": p.outcome_reason, "outcome_notes": p.outcome_notes,
+        "closed_date": p.closed_date.isoformat() if p.closed_date else None,
+        "converted_project_id": p.converted_project_id,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+class PursuitIn(BaseModel):
+    name: str
+    client_name: str = ""
+    agency: str | None = None
+    sector: str = "public"
+    role: str = "prime"
+    prime_partner: str | None = None
+    est_fee: float = 0.0
+    est_duration_months: int | None = None
+    solicitation_type: str | None = None
+    rfp_release_date: str | None = None
+    proposal_due_date: str | None = None
+    interview_date: str | None = None
+    decision_expected_date: str | None = None
+    owner_user_id: int | None = None
+    win_strategy: str = ""
+    scope_summary: str = ""
+    incumbent: str | None = None
+    stage: str = "lead"
+
+
+class PursuitPatch(BaseModel):
+    name: str | None = None
+    client_name: str | None = None
+    agency: str | None = None
+    sector: str | None = None
+    role: str | None = None
+    prime_partner: str | None = None
+    stage: str | None = None
+    win_probability: float | None = None
+    est_fee: float | None = None
+    est_duration_months: int | None = None
+    solicitation_type: str | None = None
+    rfp_release_date: str | None = None
+    proposal_due_date: str | None = None
+    interview_date: str | None = None
+    decision_expected_date: str | None = None
+    owner_user_id: int | None = None
+    win_strategy: str | None = None
+    scope_summary: str | None = None
+    incumbent: str | None = None
+    outcome_reason: str | None = None
+    outcome_notes: str | None = None
+
+
+class GngIn(BaseModel):
+    scores: dict[str, int]
+    win_strategy: str | None = None
+
+
+class ActivityIn(BaseModel):
+    kind: str = "note"
+    subject: str = ""
+    body: str = ""
+    due_date: str | None = None
+    contact_id: int | None = None
+    completed: bool | None = None
+
+
+class ContactIn(BaseModel):
+    full_name: str
+    title: str | None = None
+    organization: str = ""
+    org_type: str = "client"
+    email: str | None = None
+    phone: str | None = None
+    notes: str = ""
+
+
+class TeamingPartnerIn(BaseModel):
+    firm_name: str
+    disciplines: str = ""
+    is_mbe: bool = False
+    is_wbe: bool = False
+    is_dbe: bool = False
+    is_sbe: bool = False
+    cert_notes: str = ""
+    rating: int | None = None
+    notes: str = ""
+
+
+@app.get("/bd/config")
+def bd_config(_: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    return {
+        "stages": _PURSUIT_STAGES,
+        "stage_win_prob": _STAGE_WIN_PROB,
+        "terminal_stages": sorted(_PURSUIT_TERMINAL),
+        "gng_factors": [{"key": k, "label": l, "weight": w} for k, l, w in _GNG_FACTORS],
+    }
+
+
+@app.get("/pursuits")
+def list_pursuits(open: bool | None = None, stage: str | None = None, owner_id: int | None = None,
+                  db: Session = Depends(get_db), _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    q = select(Pursuit)
+    if open is not None:
+        q = q.where(Pursuit.is_open.is_(bool(open)))
+    if stage:
+        q = q.where(Pursuit.stage == stage)
+    if owner_id:
+        q = q.where(Pursuit.owner_user_id == owner_id)
+    rows = db.scalars(q.order_by(Pursuit.created_at.desc())).all()
+    return {"items": [_pursuit_out(p) for p in rows]}
+
+
+@app.post("/pursuits")
+def create_pursuit(body: PursuitIn, db: Session = Depends(get_db),
+                   user: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    if not (body.name or "").strip():
+        raise HTTPException(status_code=400, detail="Pursuit name is required.")
+    stage = body.stage if body.stage in _STAGE_WIN_PROB else "lead"
+    p = Pursuit(
+        name=body.name.strip(), client_name=body.client_name or "", agency=body.agency,
+        sector=body.sector or "public", role=body.role or "prime", prime_partner=body.prime_partner,
+        stage=stage, win_probability=_STAGE_WIN_PROB.get(stage, 0.05), is_open=stage not in _PURSUIT_TERMINAL,
+        est_fee=float(body.est_fee or 0), est_duration_months=body.est_duration_months,
+        solicitation_type=body.solicitation_type,
+        rfp_release_date=_bd_parse_date(body.rfp_release_date),
+        proposal_due_date=_bd_parse_date(body.proposal_due_date),
+        interview_date=_bd_parse_date(body.interview_date),
+        decision_expected_date=_bd_parse_date(body.decision_expected_date),
+        owner_user_id=body.owner_user_id or user.id, win_strategy=body.win_strategy or "",
+        scope_summary=body.scope_summary or "", incumbent=body.incumbent, source="manual",
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return _pursuit_out(p)
+
+
+@app.get("/pursuits/{pursuit_id}")
+def get_pursuit(pursuit_id: int, db: Session = Depends(get_db),
+                _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    acts = db.scalars(select(Activity).where(Activity.pursuit_id == pursuit_id)
+                      .order_by(Activity.occurred_at.desc())).all()
+    parts = db.scalars(select(PursuitPartner).where(PursuitPartner.pursuit_id == pursuit_id)).all()
+    pcs = db.scalars(select(PursuitContact).where(PursuitContact.pursuit_id == pursuit_id)).all()
+    out = _pursuit_out(p)
+    out["activities"] = [{"id": a.id, "kind": a.kind, "subject": a.subject, "body": a.body,
+                          "due_date": a.due_date.isoformat() if a.due_date else None,
+                          "completed": a.completed, "contact_id": a.contact_id,
+                          "occurred_at": a.occurred_at.isoformat() if a.occurred_at else None} for a in acts]
+    out["partners"] = [{"id": pp.id, "teaming_partner_id": pp.teaming_partner_id, "role": pp.role,
+                        "scope": pp.scope, "planned_utilization_pct": pp.planned_utilization_pct} for pp in parts]
+    out["contacts"] = [{"id": pc.id, "contact_id": pc.contact_id, "role": pc.role} for pc in pcs]
+    return out
+
+
+@app.patch("/pursuits/{pursuit_id}")
+def update_pursuit(pursuit_id: int, body: PursuitPatch, db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    data = body.model_dump(exclude_unset=True)
+    date_fields = {"rfp_release_date", "proposal_due_date", "interview_date", "decision_expected_date"}
+    for f, v in data.items():
+        if f == "stage":
+            continue
+        setattr(p, f, _bd_parse_date(v) if f in date_fields else v)
+    if "stage" in data and data["stage"] in _STAGE_WIN_PROB:
+        new_stage = data["stage"]
+        p.stage = new_stage
+        if "win_probability" not in data:
+            p.win_probability = _STAGE_WIN_PROB[new_stage]
+        p.is_open = new_stage not in _PURSUIT_TERMINAL
+        if new_stage in _PURSUIT_TERMINAL and not p.closed_date:
+            p.closed_date = date.today()
+        elif new_stage not in _PURSUIT_TERMINAL:
+            p.closed_date = None
+    db.commit()
+    db.refresh(p)
+    return _pursuit_out(p)
+
+
+@app.post("/pursuits/{pursuit_id}/gng")
+def score_pursuit_gng(pursuit_id: int, body: GngIn, db: Session = Depends(get_db),
+                      _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    total = 0.0
+    for key, _label, weight in _GNG_FACTORS:
+        raw = body.scores.get(key)
+        if raw is None:
+            continue
+        s = max(1, min(int(raw), 5))
+        total += weight * (s / 5.0) * 100.0
+    score = round(total, 1)
+    rec = "go" if score >= 70 else ("conditional" if score >= 50 else "no_go")
+    p.gng_score = score
+    p.gng_recommendation = rec
+    p.gng_scores_json = json.dumps({k: int(v) for k, v in body.scores.items()})
+    p.gng_decided_at = datetime.utcnow()
+    if body.win_strategy is not None:
+        p.win_strategy = body.win_strategy
+    if p.stage in ("lead", "qualifying"):
+        p.stage = "go_no_go"
+        p.win_probability = _STAGE_WIN_PROB["go_no_go"]
+    db.commit()
+    db.refresh(p)
+    return _pursuit_out(p)
+
+
+@app.post("/pursuits/{pursuit_id}/convert")
+def convert_pursuit(pursuit_id: int, db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    if p.converted_project_id:
+        raise HTTPException(status_code=409, detail="Pursuit already converted to a project")
+    existing = db.scalar(select(Project).where(Project.name == p.name))
+    if existing:
+        raise HTTPException(status_code=409, detail=f"A project named '{p.name}' already exists")
+    proj = Project(name=p.name, client_name=p.client_name or None, overall_budget_fee=float(p.est_fee or 0),
+                   pm_user_id=p.owner_user_id, lifecycle_status="planning", is_active=True)
+    db.add(proj)
+    db.flush()
+    p.stage = "won"
+    p.is_open = False
+    p.win_probability = 1.0
+    p.closed_date = date.today()
+    p.converted_project_id = proj.id
+    db.commit()
+    db.refresh(p)
+    return {"pursuit": _pursuit_out(p), "project_id": proj.id, "project_name": proj.name}
+
+
+@app.delete("/pursuits/{pursuit_id}")
+def delete_pursuit(pursuit_id: int, db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/pursuits/{pursuit_id}/activities")
+def add_activity(pursuit_id: int, body: ActivityIn, db: Session = Depends(get_db),
+                 user: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    if not db.get(Pursuit, pursuit_id):
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    a = Activity(pursuit_id=pursuit_id, contact_id=body.contact_id, user_id=user.id,
+                 kind=body.kind or "note", subject=body.subject or "", body=body.body or "",
+                 due_date=_bd_parse_date(body.due_date), completed=bool(body.completed))
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return {"id": a.id, "kind": a.kind, "subject": a.subject, "body": a.body,
+            "due_date": a.due_date.isoformat() if a.due_date else None, "completed": a.completed,
+            "occurred_at": a.occurred_at.isoformat() if a.occurred_at else None}
+
+
+@app.patch("/activities/{activity_id}")
+def update_activity(activity_id: int, body: ActivityIn, db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    a = db.get(Activity, activity_id)
+    if not a:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    data = body.model_dump(exclude_unset=True)
+    for f, v in data.items():
+        setattr(a, f, _bd_parse_date(v) if f == "due_date" else v)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/bd/tasks")
+def bd_tasks(db: Session = Depends(get_db), _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    acts = db.scalars(select(Activity).where(Activity.kind == "task", Activity.completed.is_(False),
+                                             Activity.due_date.isnot(None)).order_by(Activity.due_date)).all()
+    return {"items": [{"id": a.id, "pursuit_id": a.pursuit_id, "subject": a.subject,
+                       "due_date": a.due_date.isoformat() if a.due_date else None} for a in acts]}
+
+
+@app.get("/contacts")
+def list_contacts(org_type: str | None = None, q: str | None = None, db: Session = Depends(get_db),
+                  _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    sel = select(Contact)
+    if org_type:
+        sel = sel.where(Contact.org_type == org_type)
+    if q:
+        sel = sel.where(or_(Contact.full_name.ilike(f"%{q}%"), Contact.organization.ilike(f"%{q}%")))
+    rows = db.scalars(sel.order_by(Contact.full_name)).all()
+    return {"items": [{"id": c.id, "full_name": c.full_name, "title": c.title, "organization": c.organization,
+                       "org_type": c.org_type, "email": c.email, "phone": c.phone, "notes": c.notes} for c in rows]}
+
+
+@app.post("/contacts")
+def create_contact(body: ContactIn, db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    c = Contact(full_name=body.full_name.strip(), title=body.title, organization=body.organization or "",
+                org_type=body.org_type or "client", email=body.email, phone=body.phone, notes=body.notes or "")
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return {"id": c.id, "full_name": c.full_name, "organization": c.organization, "org_type": c.org_type}
+
+
+@app.get("/teaming-partners")
+def list_partners(db: Session = Depends(get_db), _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    rows = db.scalars(select(TeamingPartner).where(TeamingPartner.is_active.is_(True))
+                      .order_by(TeamingPartner.firm_name)).all()
+    return {"items": [{"id": t.id, "firm_name": t.firm_name, "disciplines": t.disciplines,
+                       "is_mbe": t.is_mbe, "is_wbe": t.is_wbe, "is_dbe": t.is_dbe, "is_sbe": t.is_sbe,
+                       "cert_notes": t.cert_notes, "rating": t.rating, "notes": t.notes} for t in rows]}
+
+
+@app.post("/teaming-partners")
+def create_partner(body: TeamingPartnerIn, db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    if db.scalar(select(TeamingPartner).where(TeamingPartner.firm_name == body.firm_name.strip())):
+        raise HTTPException(status_code=409, detail="A partner with that firm name already exists")
+    t = TeamingPartner(firm_name=body.firm_name.strip(), disciplines=body.disciplines or "",
+                       is_mbe=body.is_mbe, is_wbe=body.is_wbe, is_dbe=body.is_dbe, is_sbe=body.is_sbe,
+                       cert_notes=body.cert_notes or "", rating=body.rating, notes=body.notes or "")
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return {"id": t.id, "firm_name": t.firm_name}
+
+
+@app.get("/bd/metrics")
+def bd_metrics(db: Session = Depends(get_db), _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    pursuits = db.scalars(select(Pursuit)).all()
+    open_p = [p for p in pursuits if p.is_open]
+    weighted = sum((p.est_fee or 0) * (p.win_probability or 0) for p in open_p)
+    raw_pipeline = sum((p.est_fee or 0) for p in open_p)
+    by_stage: dict[str, dict] = {}
+    for p in open_p:
+        b = by_stage.setdefault(p.stage, {"count": 0, "value": 0.0, "weighted": 0.0})
+        b["count"] += 1
+        b["value"] += (p.est_fee or 0)
+        b["weighted"] += (p.est_fee or 0) * (p.win_probability or 0)
+    won = [p for p in pursuits if p.stage == "won"]
+    lost = [p for p in pursuits if p.stage == "lost"]
+    decided = len(won) + len(lost)
+    hit_rate = round(100.0 * len(won) / decided, 1) if decided else None
+    won_val = sum((p.est_fee or 0) for p in won)
+    lost_val = sum((p.est_fee or 0) for p in lost)
+    hit_rate_value = round(100.0 * won_val / (won_val + lost_val), 1) if (won_val + lost_val) else None
+    today = date.today()
+    upcoming = []
+    for p in open_p:
+        for label, d in (("Proposal due", p.proposal_due_date), ("Interview", p.interview_date),
+                         ("Decision", p.decision_expected_date)):
+            if d and 0 <= (d - today).days <= 60:
+                upcoming.append({"pursuit_id": p.id, "name": p.name, "kind": label,
+                                 "date": d.isoformat(), "days_out": (d - today).days})
+    upcoming.sort(key=lambda x: x["date"])
+    aging = []
+    for p in open_p:
+        days = (today - p.created_at.date()).days if p.created_at else 0
+        if days >= 45:
+            aging.append({"pursuit_id": p.id, "name": p.name, "stage": p.stage, "days_open": days})
+    aging.sort(key=lambda x: -x["days_open"])
+    loss_reasons: dict[str, int] = {}
+    for p in lost:
+        loss_reasons[p.outcome_reason or "unspecified"] = loss_reasons.get(p.outcome_reason or "unspecified", 0) + 1
+    return {
+        "open_count": len(open_p),
+        "weighted_pipeline": round(weighted, 2),
+        "raw_pipeline": round(raw_pipeline, 2),
+        "by_stage": by_stage,
+        "hit_rate_pct": hit_rate,
+        "hit_rate_value_pct": hit_rate_value,
+        "won_count": len(won), "lost_count": len(lost),
+        "won_value": round(won_val, 2), "lost_value": round(lost_val, 2),
+        "upcoming": upcoming[:20],
+        "aging": aging[:20],
+        "loss_reasons": loss_reasons,
+    }
 
 
 @app.get("/admin/integrations/schedule")

@@ -471,3 +471,122 @@ class BankMerchantRule(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     __table_args__ = (UniqueConstraint("user_id", "merchant_key", name="uq_bank_merchant_rule_user_key"),)
+
+
+# ============================================================================
+# Business Development / Marketing ("pursuits") module
+# A Pursuit is the BD analogue of a Project; a won Pursuit converts into a Project.
+# ============================================================================
+
+class Pursuit(Base):
+    __tablename__ = "pursuits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    client_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    agency: Mapped[str | None] = mapped_column(String(255), nullable=True)          # DEP | DDC | DOT | private
+    sector: Mapped[str] = mapped_column(String(32), default="public", index=True)   # public | private | federal
+    role: Mapped[str] = mapped_column(String(16), default="prime", index=True)      # prime | sub
+    prime_partner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    stage: Mapped[str] = mapped_column(String(24), default="lead", index=True)
+    win_probability: Mapped[float] = mapped_column(Float, default=0.05)             # 0..1
+    is_open: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    est_fee: Mapped[float] = mapped_column(Float, default=0.0)
+    est_duration_months: Mapped[int | None] = mapped_column(nullable=True)
+    solicitation_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # RFQ|RFP|SF330|sole_source
+    rfp_release_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    proposal_due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    interview_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    decision_expected_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    win_strategy: Mapped[str] = mapped_column(Text, default="")
+    scope_summary: Mapped[str] = mapped_column(Text, default="")
+    incumbent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    gng_score: Mapped[float | None] = mapped_column(Float, nullable=True)             # 0..100
+    gng_recommendation: Mapped[str | None] = mapped_column(String(16), nullable=True)  # go|conditional|no_go
+    gng_scores_json: Mapped[str] = mapped_column(Text, default="{}")
+    gng_decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    outcome_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    outcome_notes: Mapped[str] = mapped_column(Text, default="")
+    closed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    converted_project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+
+    source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    partners: Mapped[list["PursuitPartner"]] = relationship(cascade="all, delete-orphan")
+    contacts: Mapped[list["PursuitContact"]] = relationship(cascade="all, delete-orphan")
+    activities: Mapped[list["Activity"]] = relationship(cascade="all, delete-orphan")
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(255), index=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    organization: Mapped[str] = mapped_column(String(255), default="", index=True)
+    org_type: Mapped[str] = mapped_column(String(16), default="client")   # client|agency|partner|competitor
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PursuitContact(Base):
+    __tablename__ = "pursuit_contacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pursuit_id: Mapped[int] = mapped_column(ForeignKey("pursuits.id"), index=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    role: Mapped[str] = mapped_column(String(64), default="influencer")   # decision_maker|influencer|technical|champion
+    __table_args__ = (UniqueConstraint("pursuit_id", "contact_id", name="uq_pursuit_contact"),)
+
+
+class TeamingPartner(Base):
+    __tablename__ = "teaming_partners"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    firm_name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    disciplines: Mapped[str] = mapped_column(String(255), default="")
+    is_mbe: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_wbe: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_dbe: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_sbe: Mapped[bool] = mapped_column(Boolean, default=False)
+    cert_notes: Mapped[str] = mapped_column(Text, default="")
+    rating: Mapped[int | None] = mapped_column(nullable=True)             # 1..5
+    notes: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PursuitPartner(Base):
+    __tablename__ = "pursuit_partners"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pursuit_id: Mapped[int] = mapped_column(ForeignKey("pursuits.id"), index=True)
+    teaming_partner_id: Mapped[int] = mapped_column(ForeignKey("teaming_partners.id"), index=True)
+    role: Mapped[str] = mapped_column(String(64), default="sub")          # prime|sub|jv
+    scope: Mapped[str] = mapped_column(String(255), default="")
+    planned_utilization_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    __table_args__ = (UniqueConstraint("pursuit_id", "teaming_partner_id", name="uq_pursuit_partner"),)
+
+
+class Activity(Base):
+    __tablename__ = "activities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pursuit_id: Mapped[int | None] = mapped_column(ForeignKey("pursuits.id"), nullable=True, index=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(24), default="note")   # call|meeting|email|note|task|milestone
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
