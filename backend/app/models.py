@@ -18,6 +18,19 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AssistantQuery(Base):
+    """A question a person asked the 'Ask AqtPM' assistant — per-person search history."""
+
+    __tablename__ = "assistant_queries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    question: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(String(16), default="quick")
+    answer_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class Project(Base):
     __tablename__ = "projects"
 
