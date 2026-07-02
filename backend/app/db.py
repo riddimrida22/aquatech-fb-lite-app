@@ -44,6 +44,7 @@ def init_db() -> None:
     _ensure_invoice_columns()
     _ensure_invoice_line_columns()
     _ensure_bank_columns()
+    _ensure_dedup_indexes()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -149,6 +150,40 @@ def _ensure_invoice_line_columns() -> None:
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+
+
+def _ensure_dedup_indexes() -> None:
+    """Backstop the Python upserts with DB-level uniqueness on (source, external_id).
+
+    PARTIAL index (only where external_id is a real value) so manual/empty rows —
+    which legitimately share source='manual' with NULL/'' external_id — are never
+    blocked; only sync'd rows keyed by an external id must be unique. Both SQLite
+    (>=3.8) and Postgres support partial unique indexes and `IF NOT EXISTS`. Verified
+    2026-07-02: no existing (source, external_id) duplicates on any table, so this
+    cannot fail on current data. Each wrapped independently so one issue can't block
+    startup.
+    """
+    insp = inspect(engine)
+    targets = {
+        "time_entries": "uq_time_entries_source_extid",
+        "invoices": "uq_invoices_source_extid",
+        "project_expenses": "uq_project_expenses_source_extid",
+    }
+    for table, idx in targets.items():
+        if not insp.has_table(table):
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if not {"source", "external_id"}.issubset(cols):
+            continue
+        stmt = (
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {table} (source, external_id) "
+            f"WHERE external_id IS NOT NULL AND external_id <> ''"
+        )
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception as exc:  # pragma: no cover - defensive; never block startup
+            print(f"[dedup-index] WARNING: could not create {idx} on {table}: {str(exc)[:160]}")
 
 
 def _ensure_bank_columns() -> None:
