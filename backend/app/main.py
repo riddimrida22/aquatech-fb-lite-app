@@ -2980,6 +2980,70 @@ def _iter_parsed_payroll(inbox: Path):
         yield path.name, _payroll_year_label_from_parsed(parsed), parsed
 
 
+def _period_year(period: dict) -> str:
+    """4-digit year for a single pay period (from pay_day, then period-end)."""
+    for src in (str(period.get("pay_day") or ""), str(period.get("period") or "").split(" - ")[-1]):
+        m = re.search(r"\d{1,2}/\d{1,2}/(\d{2,4})", src)
+        if m:
+            y = m.group(1)
+            return y if len(y) == 4 else f"20{y}"
+    return "unknown"
+
+
+def _norm_period_key(period: dict) -> tuple:
+    """Stable identity for a pay period across source files so overlapping
+    cumulative payroll exports (e.g. two Paychex YTD PDFs left in the inbox) are
+    not counted twice.
+
+    The key is (work-period start, work-period end, PAY DAY). Pay day is essential:
+    the same work period can legitimately recur with a different check date — an
+    off-cycle correction or supplemental/bonus run (observed in the 2024 Gusto
+    journal: work period 04/01–04/14 paid both 05/10 and, as a later run, 07/02).
+    A true cumulative-export duplicate shares all three, so it is still collapsed;
+    distinct runs that merely share a work-period range are preserved."""
+    per = (period.get("period") or "").strip()
+    dates = re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", per)
+
+    def _norm(dstr: str) -> str:
+        dstr = (dstr or "").strip()
+        for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(dstr, fmt).date().isoformat()
+            except ValueError:
+                continue
+        return dstr
+
+    pay = _norm(period.get("pay_day") or "")
+    if len(dates) >= 2:
+        return ("range", _norm(dates[0]), _norm(dates[-1]), pay)
+    return ("raw", per, pay)
+
+
+def _deduped_payroll_periods(inbox: Path) -> list[dict]:
+    """Every pay period across all payroll files in the inbox, de-duplicated by
+    pay-period identity (:func:`_norm_period_key`). Each period is the source dict
+    annotated with ``_year`` (from the period's own dates) and ``_file``.
+
+    This is the single guard against the cumulative-PDF double-count: if two
+    overlapping exports both contain a period, only the first is kept — so COGS and
+    the payroll summary count each period exactly once regardless of how many
+    (possibly overlapping) files sit in the inbox. With a single file it is a no-op.
+    """
+    seen: set[tuple] = set()
+    ordered: list[dict] = []
+    for fname, _year_label, parsed in _iter_parsed_payroll(inbox):
+        for period in parsed.get("periods", []):
+            key = _norm_period_key(period)
+            if key in seen:
+                continue
+            seen.add(key)
+            ann = dict(period)
+            ann["_year"] = _period_year(period)
+            ann["_file"] = fname
+            ordered.append(ann)
+    return ordered
+
+
 # =====================================================================
 # Loans + accounting (P&L, Cash Flow, Balance Sheet) endpoints
 # =====================================================================
@@ -3503,36 +3567,38 @@ def accounting_pl(
     try:
         inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
         if inbox.exists():
-            for _fname, _year, parsed in _iter_parsed_payroll(inbox):
-                for period in parsed.get("periods", []):
-                    # Try pay_day first (preferred), fall back to period-end date
-                    pd_str = (period.get("pay_day") or "").strip()
-                    pd: date | None = None
-                    if pd_str:
+            # De-duplicated periods: overlapping cumulative payroll exports in the
+            # inbox are counted once (see _deduped_payroll_periods), so COGS can't
+            # be inflated by a stale/duplicate PDF left behind.
+            for period in _deduped_payroll_periods(inbox):
+                # Try pay_day first (preferred), fall back to period-end date
+                pd_str = (period.get("pay_day") or "").strip()
+                pd: date | None = None
+                if pd_str:
+                    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+                        try:
+                            pd = datetime.strptime(pd_str, fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                if pd is None:
+                    # Fall back to parsing the end of "MM/DD/YYYY - MM/DD/YYYY"
+                    per_str = (period.get("period") or "").strip()
+                    if " - " in per_str:
+                        end_str = per_str.split(" - ")[-1].strip()
                         for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
                             try:
-                                pd = datetime.strptime(pd_str, fmt).date()
+                                pd = datetime.strptime(end_str, fmt).date()
                                 break
                             except ValueError:
                                 continue
-                    if pd is None:
-                        # Fall back to parsing the end of "MM/DD/YYYY - MM/DD/YYYY"
-                        per_str = (period.get("period") or "").strip()
-                        if " - " in per_str:
-                            end_str = per_str.split(" - ")[-1].strip()
-                            for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
-                                try:
-                                    pd = datetime.strptime(end_str, fmt).date()
-                                    break
-                                except ValueError:
-                                    continue
-                    if pd is None or pd < s or pd > e:
-                        continue
-                    t = period.get("totals", {})
-                    cogs += float(t.get("employer_cost", 0))
-                    payroll_breakdown["gross"] += float(t.get("gross", 0))
-                    payroll_breakdown["employer_taxes"] += float(t.get("employer_taxes", 0))
-                    payroll_breakdown["employer_401k"] += float(t.get("employer_401k", 0))
+                if pd is None or pd < s or pd > e:
+                    continue
+                t = period.get("totals", {})
+                cogs += float(t.get("employer_cost", 0))
+                payroll_breakdown["gross"] += float(t.get("gross", 0))
+                payroll_breakdown["employer_taxes"] += float(t.get("employer_taxes", 0))
+                payroll_breakdown["employer_401k"] += float(t.get("employer_401k", 0))
     except Exception:
         # If parsing fails, leave COGS at 0 — UI will show note
         pass
@@ -4419,39 +4485,43 @@ def payroll_journal_summary(
                 "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0}
 
     _year_emps: dict[str, set] = {}
-    # NOTE: a single year can have MULTIPLE source files (e.g. 2026 = Gusto CSV
-    # through the switch + Paychex PDF after). Accumulate across files per year —
-    # do NOT overwrite, or one source's totals get dropped from the summary.
-    for fname, year_label, parsed in _iter_parsed_payroll(inbox):
-        if parsed.get("error") and not parsed.get("periods"):
-            by = out["by_year"].setdefault(year_label, {"file": "", "period_count": 0, "employee_count": 0, "totals": _zero()})
-            by["error"] = str(parsed["error"])[:200]
-            continue
+    _year_files: dict[str, list] = {}
+    # De-duplicated periods: a single year can legitimately span multiple source
+    # files (Gusto CSV through the switch + Paychex PDF after) covering DIFFERENT
+    # periods — those still sum. But the SAME period appearing in two overlapping
+    # cumulative exports is counted once, so a stale/duplicate PDF in the inbox
+    # can no longer double the totals. Aggregated from each period's own totals/rows.
+    for period in _deduped_payroll_periods(inbox):
+        year_label = str(period.get("_year") or "unknown")
+        fname = str(period.get("_file") or "")
+        t = period.get("totals", {}) or {}
         by = out["by_year"].setdefault(year_label, {"file": "", "period_count": 0, "employee_count": 0, "totals": _zero()})
-        by["file"] = f'{by["file"]}, {fname}'.strip(", ") if by["file"] else fname
-        by["period_count"] += len(parsed["periods"])
-        ye = _year_emps.setdefault(year_label, set())
-        ye.update(parsed["employees"].keys())
-        by["employee_count"] = len(ye)
+        by["period_count"] += 1
+        flist = _year_files.setdefault(year_label, [])
+        if fname and fname not in flist:
+            flist.append(fname)
+            by["file"] = ", ".join(flist)
         for k in by["totals"]:
-            by["totals"][k] += float(parsed["totals"].get(k, 0) or 0)
-        if parsed.get("warning"):
-            by["warning"] = f'{by.get("warning", "")}; {parsed["warning"]}'.strip("; ")
-        # yearly_ytd: sum across all files for the year
+            by["totals"][k] += float(t.get(k, 0) or 0)
         ytd = out["yearly_ytd"].setdefault(year_label, _zero())
         for k in ytd:
-            ytd[k] += float(parsed["totals"].get(k, 0) or 0)
-        for emp, vals in parsed["employees"].items():
+            ytd[k] += float(t.get(k, 0) or 0)
+        ye = _year_emps.setdefault(year_label, set())
+        for r in period.get("rows", []) or []:
+            emp = str(r.get("employee") or "?")
+            ye.add(emp)
             cur = out["all_employees"].setdefault(
                 emp, {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0, "by_year": {}}
             )
             for k in ("gross", "employer_taxes", "employer_401k", "employer_cost", "net_pay", "hours"):
-                cur[k] += float(vals.get(k, 0) or 0)
+                cur[k] += float(r.get(k, 0) or 0)
             eby = cur["by_year"].setdefault(year_label, _zero())
             for k in ("gross", "employer_taxes", "employer_401k", "employer_cost", "net_pay", "hours"):
-                eby[k] += float(vals.get(k, 0) or 0)
-        for p in parsed["periods"]:
-            out["all_periods"].append({**p, "year": year_label, "file": fname})
+                eby[k] += float(r.get(k, 0) or 0)
+        by["employee_count"] = len(ye)
+        out["all_periods"].append(
+            {**{k: v for k, v in period.items() if not str(k).startswith("_")}, "year": year_label, "file": fname}
+        )
 
     # Grand total across years
     grand = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0, "employer_cost": 0.0, "net_pay": 0.0, "hours": 0.0}
