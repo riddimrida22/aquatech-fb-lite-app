@@ -4,7 +4,6 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../lib/api";
 import { deriveUserCapabilities } from "../lib/permissions";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
-import { TimeWorkspace } from "./components/TimeWorkspace";
 import { WeeklyTimeEntry } from "./components/WeeklyTimeEntry";
 import { Toast } from "./components/Toast";
 import { StatusBadge } from "./components/StatusBadge";
@@ -57,7 +56,6 @@ type WorkspaceKey =
   | "clients"
   | "projects"
   | "time"
-  | "timesheets"
   | "invoices"
   | "costs"
   | "categorize"
@@ -68,27 +66,56 @@ type WorkspaceKey =
   | "imports"
   | "settings";
 
+type TimeTab = "enter" | "timesheets";
+
 const DEV_AUTH_ENABLED = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true";
 
 // Shared cursor for drill-down (clickable dashboard figures → detail tab)
 const drillStyle = { cursor: "pointer" } as const;
 
-const WORKSPACES: Array<{ key: WorkspaceKey; label: string; hint: string }> = [
+type NavLeaf = { key: WorkspaceKey; label: string; hint: string };
+type NavGroup = { groupKey: string; label: string; hint: string; children: NavLeaf[] };
+type NavEntry = NavLeaf | NavGroup;
+
+function isNavGroup(entry: NavEntry): entry is NavGroup {
+  return "children" in entry;
+}
+
+// Consolidated IA: 6 top-level entries (Time merges enter+timesheets; Financial &
+// Settings are grouped with submenus) — down from 14 flat items.
+const NAV: NavEntry[] = [
   { key: "dashboard", label: "Dashboard", hint: "Snapshot" },
   { key: "clients", label: "Clients", hint: "Relationships" },
   { key: "projects", label: "Projects", hint: "Pipeline + setup" },
-  { key: "time", label: "Time", hint: "Capture work" },
-  { key: "timesheets", label: "Timesheets", hint: "Approval flow" },
-  { key: "invoices", label: "Invoices", hint: "Billing + A/R" },
-  { key: "costs", label: "Costs", hint: "Expenses + tax" },
-  { key: "categorize", label: "Categorize", hint: "Sort transactions" },
-  { key: "payroll", label: "Payroll", hint: "Payroll journal · COGS" },
-  { key: "accounting", label: "Accounting", hint: "P&L · Cash Flow · Loans" },
-  { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log" },
-  { key: "reports", label: "Reports", hint: "Benchmarks" },
-  { key: "imports", label: "Imports", hint: "FreshBooks transition" },
-  { key: "settings", label: "Settings", hint: "Lean admin" },
+  { key: "time", label: "Time", hint: "Hours + timesheets" },
+  {
+    groupKey: "financial",
+    label: "Financial",
+    hint: "Books · payroll · billing",
+    children: [
+      { key: "accounting", label: "Overview", hint: "P&L · Cash Flow · Balance · Loans" },
+      { key: "payroll", label: "Payroll", hint: "Journal · COGS" },
+      { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log" },
+      { key: "categorize", label: "Categorize", hint: "Sort transactions" },
+      { key: "costs", label: "Costs & Expenses", hint: "Spend + tax" },
+      { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables" },
+      { key: "reports", label: "Reports", hint: "Benchmarks" },
+    ],
+  },
+  {
+    groupKey: "admin",
+    label: "Settings",
+    hint: "Setup & data",
+    children: [
+      { key: "settings", label: "Preferences", hint: "Lean admin" },
+      { key: "imports", label: "Imports", hint: "FreshBooks transition" },
+    ],
+  },
 ];
+
+const NAV_LEAVES: NavLeaf[] = NAV.flatMap((entry) => (isNavGroup(entry) ? entry.children : [entry]));
+const labelForWorkspace = (key: WorkspaceKey): string =>
+  NAV_LEAVES.find((leaf) => leaf.key === key)?.label ?? "";
 
 const BUILD_STAMP = "AqtPM rebuild live on Apr 17, 2026";
 
@@ -147,6 +174,8 @@ export default function AquatechPmHome() {
   useAutoSortableTables();
 
   const [workspace, setWorkspace] = useState<WorkspaceKey>("dashboard");
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const [timeTab, setTimeTab] = useState<TimeTab>("enter");
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
@@ -797,17 +826,50 @@ export default function AquatechPmHome() {
           </div>
         </div>
         <nav className="aq-lite-nav">
-          {WORKSPACES.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              className={classNames("aq-lite-nav-item", workspace === item.key && "active")}
-              onClick={() => setWorkspace(item.key)}
-            >
-              <span>{item.label}</span>
-              <small>{item.hint}</small>
-            </button>
-          ))}
+          {NAV.map((entry) => {
+            if (!isNavGroup(entry)) {
+              return (
+                <button
+                  key={entry.key}
+                  type="button"
+                  className={classNames("aq-lite-nav-item", workspace === entry.key && "active")}
+                  onClick={() => setWorkspace(entry.key)}
+                >
+                  <span>{entry.label}</span>
+                  <small>{entry.hint}</small>
+                </button>
+              );
+            }
+            const childKeys = entry.children.map((c) => c.key);
+            const containsActive = childKeys.includes(workspace);
+            const open = entry.groupKey in openGroups ? openGroups[entry.groupKey] : containsActive;
+            return (
+              <div key={entry.groupKey} className="aq-lite-nav-group">
+                <button
+                  type="button"
+                  className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head", containsActive && "active-parent")}
+                  aria-expanded={open}
+                  onClick={() => setOpenGroups((g) => ({ ...g, [entry.groupKey]: !open }))}
+                >
+                  <span>{entry.label}</span>
+                  <small>{open ? "▾" : "▸"} {entry.hint}</small>
+                </button>
+                {open
+                  ? entry.children.map((child) => (
+                      <button
+                        key={child.key}
+                        type="button"
+                        className={classNames("aq-lite-nav-item", "aq-lite-nav-child", workspace === child.key && "active")}
+                        onClick={() => setWorkspace(child.key)}
+                      >
+                        <span>{child.label}</span>
+                        <small>{child.hint}</small>
+                      </button>
+                    ))
+                  : null}
+              </div>
+            );
+          })}
         </nav>
         <div className="aq-lite-sidebar-card">
           <p className="aq-lite-sidebar-label">Business posture</p>
@@ -820,7 +882,7 @@ export default function AquatechPmHome() {
         <header className="aq-lite-topbar">
           <div>
             <p className="aq-lite-eyebrow">Small business operating system</p>
-            <h1>{WORKSPACES.find((item) => item.key === workspace)?.label}</h1>
+            <h1>{labelForWorkspace(workspace)}</h1>
             <div className="aq-lite-build-stamp">{BUILD_STAMP}</div>
           </div>
           <div className="aq-lite-topbar-actions">
@@ -949,7 +1011,7 @@ export default function AquatechPmHome() {
                   <span>Active projects ↗</span>
                   <strong>{headlineMetrics.activeProjects}</strong>
                 </article>
-                <article className="aq-lite-kpi" style={drillStyle} title="View timesheets →" onClick={() => setWorkspace("timesheets")}>
+                <article className="aq-lite-kpi" style={drillStyle} title="View timesheets →" onClick={() => { setTimeTab("timesheets"); setWorkspace("time"); }}>
                   <span>Month hours logged ↗</span>
                   <strong>{formatNumber(companyMonthHours ?? headlineMetrics.monthHours, 1)}</strong>
                 </article>
@@ -989,9 +1051,9 @@ export default function AquatechPmHome() {
               </div>
             </div>
 
-            <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => setWorkspace(k as WorkspaceKey)} />
-            <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => setWorkspace(k as WorkspaceKey)} />
-            <CompReconPanel data={compRecon} onNavigate={(k) => setWorkspace(k as WorkspaceKey)} />
+            <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
+            <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
+            <CompReconPanel data={compRecon} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
 
             <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
@@ -1283,33 +1345,66 @@ export default function AquatechPmHome() {
           />
         ) : null}
 
-        {workspace === "time" && user ? (
-          <WeeklyTimeEntry
-            user={user}
-            projects={projects}
-            wbsByProject={wbsByProject}
-            timeEntries={timeEntries}
-            onProjectPick={handleProjectPick}
-            onSaved={async () => {
-              if (user) await loadWorkspaceData(user);
-            }}
-            isAdmin={capabilities.canApproveTimesheets}
-            staffOptions={staffList.map((u) => ({ id: u.id, name: u.full_name, email: u.email }))}
-          />
-        ) : null}
-
-        {workspace === "timesheets" ? (
-          <TimesheetsWorkspace
-            timesheets={timesheets}
-            adminTimesheets={adminTimesheets}
-            canApproveTimesheets={capabilities.canApproveTimesheets}
-            onGenerateTimesheet={handleGenerateTimesheet}
-            onSubmitTimesheet={handleSubmitTimesheet}
-            onAdminSubmitTimesheet={handleAdminSubmitTimesheet}
-            onAdminApproveTimesheet={handleAdminApproveTimesheet}
-            onAdminReturnTimesheet={handleAdminReturnTimesheet}
-            submitting={submitting}
-          />
+        {workspace === "time" ? (
+          <div className="aq-lite-stack">
+            <div
+              style={{
+                display: "inline-flex",
+                gap: 4,
+                background: "var(--aq-input-bg, rgba(0,0,0,0.06))",
+                borderRadius: 999,
+                padding: 3,
+                marginBottom: 4,
+              }}
+            >
+              {(["enter", "timesheets"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTimeTab(t)}
+                  style={{
+                    border: "none",
+                    cursor: "pointer",
+                    borderRadius: 999,
+                    padding: "6px 16px",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    background: timeTab === t ? "#21737e" : "transparent",
+                    color: timeTab === t ? "#fff" : "inherit",
+                  }}
+                >
+                  {t === "enter" ? "Enter time" : "Timesheets"}
+                </button>
+              ))}
+            </div>
+            {timeTab === "enter" && user ? (
+              <WeeklyTimeEntry
+                user={user}
+                projects={projects}
+                wbsByProject={wbsByProject}
+                timeEntries={timeEntries}
+                onProjectPick={handleProjectPick}
+                onSaved={async () => {
+                  if (user) await loadWorkspaceData(user);
+                }}
+                isAdmin={capabilities.canApproveTimesheets}
+                staffOptions={staffList.map((u) => ({ id: u.id, name: u.full_name, email: u.email }))}
+              />
+            ) : null}
+            {timeTab === "timesheets" ? (
+              <TimesheetsWorkspace
+                timesheets={timesheets}
+                adminTimesheets={adminTimesheets}
+                canApproveTimesheets={capabilities.canApproveTimesheets}
+                onGenerateTimesheet={handleGenerateTimesheet}
+                onSubmitTimesheet={handleSubmitTimesheet}
+                onAdminSubmitTimesheet={handleAdminSubmitTimesheet}
+                onAdminApproveTimesheet={handleAdminApproveTimesheet}
+                onAdminReturnTimesheet={handleAdminReturnTimesheet}
+                submitting={submitting}
+              />
+            ) : null}
+          </div>
         ) : null}
 
         {workspace === "invoices" ? (
