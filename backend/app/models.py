@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -575,6 +575,29 @@ class PursuitPartner(Base):
     scope: Mapped[str] = mapped_column(String(255), default="")
     planned_utilization_pct: Mapped[float] = mapped_column(Float, default=0.0)
     __table_args__ = (UniqueConstraint("pursuit_id", "teaming_partner_id", name="uq_pursuit_partner"),)
+
+
+class LibraryDocument(Base):
+    """Reusable proposal-content repository — RFPs, resumes, past projects, certs,
+    financials, boilerplate. File bytes live in the DB so they survive deploys and
+    are captured by the nightly Postgres backup (the container FS is ephemeral)."""
+
+    __tablename__ = "library_documents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category: Mapped[str] = mapped_column(String(32), default="other", index=True)
+    # rfp | resume | project | certificate | financial | boilerplate | other
+    title: Mapped[str] = mapped_column(String(255), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[str] = mapped_column(String(512), default="")
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # RFPs: new|current|previous
+    pursuit_id: Mapped[int | None] = mapped_column(ForeignKey("pursuits.id"), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(default=0)
+    content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class Activity(Base):
