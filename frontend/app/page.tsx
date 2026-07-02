@@ -14,6 +14,7 @@ import { DedupPanel } from "./components/DedupPanel";
 import { PayrollPortal } from "./components/PayrollPortal";
 import AskAqtPM from "./components/AskAqtPM";
 import { BdWorkspace } from "./components/BdWorkspace";
+import { FreshnessBanner } from "./components/FreshnessBanner";
 import { PayrollExpenseSummary } from "./components/PayrollExpenseSummary";
 import { TimesheetsWorkspace } from "./components/TimesheetsWorkspace";
 import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
@@ -909,6 +910,8 @@ export default function AquatechPmHome() {
             </button>
           </div>
         </header>
+
+        {capabilities.canViewFinancials ? <FreshnessBanner /> : null}
 
         <Toast
           state={error ? { message: error, kind: "error" } : flash ? { message: flash, kind: "success" } : null}
