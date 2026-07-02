@@ -37,6 +37,10 @@ export function CategorizationWorkspace() {
   const [savingId, setSavingId] = useState<number | null>(null);
   const [savedIds, setSavedIds] = useState<Record<number, boolean>>({});
   const [msg, setMsg] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkCat, setBulkCat] = useState("");
+  const [bulkLearn, setBulkLearn] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -93,6 +97,28 @@ export function CategorizationWorkspace() {
     }
   }, [load]);
 
+  const toggleSel = (id: number) =>
+    setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  const applyBulk = useCallback(async () => {
+    if (!bulkCat || selected.size === 0) return;
+    const [group, category] = bulkCat.split("||");
+    if (!category) return;
+    setBulkBusy(true);
+    try {
+      const res = await apiPost<{ updated?: number }>("/bank/transactions/categorize-bulk", {
+        transaction_ids: Array.from(selected), expense_group: group, category, learn_for_merchant: bulkLearn,
+      });
+      setMsg(`Categorized ${res?.updated ?? selected.size} transaction(s)${bulkLearn ? " + learned merchant rules" : ""}.`);
+      setSelected(new Set()); setBulkCat(""); setBulkLearn(false);
+      load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Bulk categorize failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkCat, bulkLearn, selected, load]);
+
   if (loading) return <section className="aq-lite-panel"><p className="aq-lite-muted">Loading transactions…</p></section>;
   if (err) return <section className="aq-lite-panel"><p style={{ color: "var(--aq-red)" }}>{err}</p></section>;
 
@@ -117,10 +143,39 @@ export function CategorizationWorkspace() {
         {msg ? <p style={{ marginTop: 8, fontSize: 12, color: "var(--aq-primary-dark)" }}>{msg}</p> : null}
       </section>
 
+      {selected.size > 0 ? (
+        <section className="aq-lite-panel" style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", paddingTop: 10, paddingBottom: 10 }}>
+          <strong>{selected.size} selected</strong>
+          <select value={bulkCat} onChange={(e) => setBulkCat(e.target.value)} style={{ minWidth: 220 }}>
+            <option value="">— set category for all —</option>
+            {groups.map((g) => (
+              <optgroup key={g.group} label={g.group}>
+                {g.categories.map((c) => <option key={c} value={`${g.group}||${c}`}>{c}</option>)}
+              </optgroup>
+            ))}
+          </select>
+          <label style={{ fontSize: 12, color: "var(--aq-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={bulkLearn} onChange={(e) => setBulkLearn(e.target.checked)} /> learn merchants
+          </label>
+          <button type="button" disabled={!bulkCat || bulkBusy} onClick={applyBulk} style={{ fontWeight: 600 }}>
+            {bulkBusy ? "Applying…" : `Apply to ${selected.size}`}
+          </button>
+          <button type="button" onClick={() => setSelected(new Set())} style={{ background: "transparent", border: "1px solid var(--aq-border)", boxShadow: "none" }}>Clear</button>
+        </section>
+      ) : null}
+
       <section className="aq-lite-panel" style={{ overflowX: "auto" }}>
         <table className="aq-lite-table">
           <thead>
             <tr>
+              <th style={{ width: 28 }}>
+                <input
+                  type="checkbox"
+                  checked={visible.length > 0 && visible.every((r) => selected.has(r.bank_transaction_id))}
+                  onChange={(e) => setSelected(e.target.checked ? new Set(visible.map((r) => r.bank_transaction_id)) : new Set())}
+                  title="Select all shown"
+                />
+              </th>
               <th style={{ textAlign: "left" }}>Date</th>
               <th style={{ textAlign: "left" }}>Merchant / Description</th>
               <th style={{ textAlign: "right" }}>Amount</th>
@@ -132,7 +187,7 @@ export function CategorizationWorkspace() {
           </thead>
           <tbody>
             {visible.length === 0 ? (
-              <tr><td colSpan={7} style={{ color: "var(--aq-muted)", padding: 16 }}>
+              <tr><td colSpan={8} style={{ color: "var(--aq-muted)", padding: 16 }}>
                 {uncatOnly ? "🎉 Nothing left to categorize." : "No transactions."}
               </td></tr>
             ) : null}
@@ -143,6 +198,7 @@ export function CategorizationWorkspace() {
               const dirty = pending[id] != null && pending[id] !== current;
               return (
                 <tr key={id} style={savedIds[id] ? { background: "var(--aq-row-head)" } : undefined}>
+                  <td><input type="checkbox" checked={selected.has(id)} onChange={() => toggleSel(id)} /></td>
                   <td style={{ whiteSpace: "nowrap", color: "var(--aq-muted)" }}>{r.posted_date || "—"}</td>
                   <td>
                     <div style={{ fontWeight: 600 }}>{r.merchant_name || "—"}</div>

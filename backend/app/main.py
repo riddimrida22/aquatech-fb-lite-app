@@ -5412,10 +5412,10 @@ def categorize_bank_transaction(
                 continue
             if _merchant_rule_key(candidate.merchant_name, candidate.name) != merchant_key:
                 continue
-            candidate.category_json = json.dumps([category])
             c_raw = _parse_json_obj(candidate.raw_json)
             if str(c_raw.get("category_source") or "").strip().lower() == "manual":
-                continue
+                continue  # never clobber a manually-set category (check BEFORE writing)
+            candidate.category_json = json.dumps([category])
             c_raw["expense_group"] = expense_group
             c_raw["category"] = category
             c_raw["category_source"] = "merchant_rule"
@@ -5435,6 +5435,59 @@ def categorize_bank_transaction(
     )
     db.commit()
     return {"ok": True}
+
+
+class BankBulkCategorizeRequest(BaseModel):
+    transaction_ids: list[int]
+    expense_group: str
+    category: str
+    learn_for_merchant: bool = False
+
+
+@app.post("/bank/transactions/categorize-bulk")
+def categorize_bank_transactions_bulk(
+    payload: BankBulkCategorizeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict:
+    """Apply one category to many transactions at once (clear the needs-review bucket
+    fast). Optionally learn the category per distinct merchant so future ones auto-file."""
+    expense_group = _truncate_text(payload.expense_group, 64) or "OH"
+    category = _truncate_text(payload.category, 128) or "Uncategorized"
+    ids = list(dict.fromkeys(int(i) for i in (payload.transaction_ids or [])))[:2000]
+    if not ids:
+        raise HTTPException(status_code=400, detail="No transactions selected.")
+    txs = db.scalars(select(BankTransaction).where(BankTransaction.id.in_(ids))).all()
+    learned: set[str] = set()
+    updated = 0
+    for tx in txs:
+        tx.category_json = json.dumps([category])
+        raw_obj = _parse_json_obj(tx.raw_json)
+        raw_obj["expense_group"] = expense_group
+        raw_obj["category"] = category
+        raw_obj["category_source"] = "manual"
+        tx.raw_json = json.dumps(raw_obj)
+        updated += 1
+        if payload.learn_for_merchant:
+            mk = _merchant_rule_key(tx.merchant_name, tx.name)
+            if mk and mk not in learned:
+                learned.add(mk)
+                rule = db.scalar(select(BankMerchantRule).where(
+                    BankMerchantRule.user_id == current_user.id,
+                    BankMerchantRule.merchant_key == mk))
+                if not rule:
+                    db.add(BankMerchantRule(user_id=current_user.id, merchant_key=mk,
+                                            expense_group=expense_group, category=category))
+                else:
+                    rule.expense_group = expense_group
+                    rule.category = category
+                    rule.updated_at = datetime.utcnow()
+    _log_audit_event(db=db, entity_type="bank_transaction", entity_id=0,
+                     action="categorize_bank_transactions_bulk", actor_user_id=current_user.id,
+                     payload={"count": updated, "expense_group": expense_group,
+                              "category": category, "learned_merchants": len(learned)})
+    db.commit()
+    return {"ok": True, "updated": updated, "learned_merchants": len(learned)}
 
 
 @app.post("/bank/import/expense-cat-categorized", response_model=BankImportExpenseCatOut)
