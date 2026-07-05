@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../lib/api";
 import { deriveUserCapabilities } from "../lib/permissions";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
-import { WeeklyTimeEntry } from "./components/WeeklyTimeEntry";
+import { DailyTimeEntry } from "./components/DailyTimeEntry";
 import { Toast } from "./components/Toast";
 import { StatusBadge } from "./components/StatusBadge";
 import { ARAgingPanel } from "./components/ARAgingPanel";
@@ -1471,7 +1471,7 @@ export default function AquatechPmHome() {
               ))}
             </div>
             {timeTab === "enter" && user ? (
-              <WeeklyTimeEntry
+              <DailyTimeEntry
                 user={user}
                 projects={projects}
                 wbsByProject={wbsByProject}
