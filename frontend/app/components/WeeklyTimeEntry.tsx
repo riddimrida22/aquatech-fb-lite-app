@@ -615,20 +615,21 @@ export function WeeklyTimeEntry({
                               aria-label={eff ? "View or edit note" : "Add note"}
                               style={{
                                 position: "absolute",
-                                top: 2,
-                                right: 2,
-                                width: 14,
-                                height: 14,
+                                top: 0,
+                                right: 0,
+                                width: 20,
+                                height: 20,
                                 padding: 0,
-                                lineHeight: "12px",
-                                fontSize: 10,
+                                lineHeight: "18px",
+                                fontSize: 20,
+                                fontWeight: 500,
                                 border: "none",
                                 background: "transparent",
                                 cursor: "pointer",
                                 color: eff ? "var(--aq-primary)" : "var(--aq-border)",
                               }}
                             >
-                              {eff ? "●" : "○"}
+                              +
                             </button>
                           ) : null}
                         </div>

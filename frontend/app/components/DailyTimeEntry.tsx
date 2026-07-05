@@ -98,8 +98,8 @@ export function DailyTimeEntry({
   const [rangeStart, rangeEnd] = useMemo<[Date, Date]>(() => {
     if (view === "day") return [anchor, anchor];
     if (view === "week") return [startOfWeek(anchor), addDays(startOfWeek(anchor), 6)];
-    if (view === "month") return [startOfMonth(anchor), endOfMonth(anchor)];
-    return [new Date(2024, 0, 1), addDays(new Date(), 31)]; // all
+    // month + all are both month-scoped (All adds a team summary with month nav)
+    return [startOfMonth(anchor), endOfMonth(anchor)];
   }, [view, anchor]);
 
   useEffect(() => {
@@ -108,9 +108,10 @@ export function DailyTimeEntry({
       setLoading(true);
       setError(null);
       try {
-        const userParam = viewingSelf ? "" : `&user_id=${viewedUserId}`;
+        const teamMode = view === "all" && isAdmin;
+        const scope = teamMode ? "&team=true" : viewingSelf ? "" : `&user_id=${viewedUserId}`;
         const data = await apiGet<TimeEntry[]>(
-          `/time-entries?start=${iso(rangeStart)}&end=${iso(rangeEnd)}${userParam}`,
+          `/time-entries?start=${iso(rangeStart)}&end=${iso(rangeEnd)}${scope}`,
         );
         if (!cancelled) setEntries(data);
       } catch (err) {
@@ -126,7 +127,7 @@ export function DailyTimeEntry({
     return () => {
       cancelled = true;
     };
-  }, [rangeStart, rangeEnd, viewedUserId, viewingSelf]);
+  }, [rangeStart, rangeEnd, viewedUserId, viewingSelf, view, isAdmin]);
 
   const byDay = useMemo(() => {
     const m = new Map<string, TimeEntry[]>();
@@ -241,7 +242,7 @@ export function DailyTimeEntry({
   function shift(dir: 1 | -1) {
     if (view === "day") setAnchor((a) => addDays(a, dir));
     else if (view === "week") setAnchor((a) => addDays(a, dir * 7));
-    else if (view === "month") setAnchor((a) => new Date(a.getFullYear(), a.getMonth() + dir, 1));
+    else setAnchor((a) => new Date(a.getFullYear(), a.getMonth() + dir, 1)); // month + all
   }
   function goToday() {
     const t = new Date();
@@ -254,8 +255,8 @@ export function DailyTimeEntry({
     const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     if (view === "day") return anchor.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", year: "numeric" });
     if (view === "week") return `${fmt(rangeStart)} – ${rangeEnd.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
-    if (view === "month") return anchor.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-    return "All time";
+    // month + all both show the month
+    return anchor.toLocaleDateString("en-US", { month: "long", year: "numeric" });
   }, [view, anchor, rangeStart, rangeEnd]);
 
   // ---- renderers -----------------------------------------------------------
@@ -426,9 +427,59 @@ export function DailyTimeEntry({
     );
   }
 
-  const allDays = useMemo(() => {
-    return Array.from(byDay.keys()).sort((a, b) => b.localeCompare(a));
-  }, [byDay]);
+  // ALL view = FreshBooks-style team summary: per-member totals (admin) + per-project bars.
+  function TeamSummary() {
+    const byMember = new Map<string, number>();
+    const byProject = new Map<string, number>();
+    for (const e of entries) {
+      const mem = e.user_full_name || `User ${e.user_id}`;
+      byMember.set(mem, (byMember.get(mem) || 0) + (e.hours || 0));
+      const proj = e.project_name || `Project ${e.project_id}`;
+      byProject.set(proj, (byProject.get(proj) || 0) + (e.hours || 0));
+    }
+    const members = Array.from(byMember).sort((a, b) => b[1] - a[1]);
+    const projs = Array.from(byProject).sort((a, b) => b[1] - a[1]);
+    const maxProj = Math.max(1, ...projs.map((p) => p[1]));
+    const multi = members.length > 1;
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: multi ? "240px 1fr" : "1fr", gap: 16 }}>
+        {multi ? (
+          <div style={{ border: "1px solid var(--aq-border)", borderRadius: 10, overflow: "hidden", height: "fit-content" }}>
+            <div style={{ padding: "8px 12px", fontWeight: 600, fontSize: 12, background: "var(--aq-subtle, rgba(0,0,0,0.02))", borderBottom: "1px solid var(--aq-border)" }}>
+              Team members
+            </div>
+            {members.map(([name, hrs]) => (
+              <div key={name} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--aq-border)", fontSize: 13 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+                <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatNumber(hrs, 1)}h</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div>
+          <div style={{ fontSize: 13, color: "var(--aq-muted)", marginBottom: 12 }}>
+            {multi ? "All team members" : viewedName} —{" "}
+            <strong style={{ color: "var(--aq-text)" }}>{formatNumber(rangeTotal, 1)}h</strong> in {periodLabel}
+          </div>
+          {projs.length === 0 ? (
+            <p className="aq-lite-muted">No time entries this month.</p>
+          ) : (
+            projs.map(([name, hrs]) => (
+              <div key={name} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
+                  <span>{name}</span>
+                  <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatNumber(hrs, 1)}h</span>
+                </div>
+                <div style={{ height: 10, borderRadius: 6, background: "var(--aq-subtle, rgba(0,0,0,0.06))", overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${Math.round((hrs / maxProj) * 100)}%`, background: "var(--aq-primary)" }} />
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const editorRow = editor
     ? { pid: Number(editor.projectId), tid: Number(editor.taskId) }
@@ -509,13 +560,9 @@ export function DailyTimeEntry({
           {view !== "week" ? (
             <>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {view !== "all" ? (
-                  <>
-                    <button type="button" onClick={() => shift(-1)} aria-label="Previous" style={{ padding: "4px 10px" }}>‹</button>
-                    <button type="button" onClick={goToday} style={{ padding: "4px 10px" }}>Today</button>
-                    <button type="button" onClick={() => shift(1)} aria-label="Next" style={{ padding: "4px 10px" }}>›</button>
-                  </>
-                ) : null}
+                <button type="button" onClick={() => shift(-1)} aria-label="Previous" style={{ padding: "4px 10px" }}>‹</button>
+                <button type="button" onClick={goToday} style={{ padding: "4px 10px" }}>Today</button>
+                <button type="button" onClick={() => shift(1)} aria-label="Next" style={{ padding: "4px 10px" }}>›</button>
                 <strong style={{ fontSize: 14, minWidth: 160, textAlign: "center" }}>{periodLabel}</strong>
               </div>
 
@@ -535,13 +582,7 @@ export function DailyTimeEntry({
         ) : view === "day" ? (
           <DayCard dISO={iso(anchor)} />
         ) : view === "week" ? null : (
-          <div style={{ display: "grid", gap: 10 }}>
-            {allDays.length === 0 ? (
-              <p className="aq-lite-muted">No time entries.</p>
-            ) : (
-              allDays.map((dISO) => <DayCard key={dISO} dISO={dISO} />)
-            )}
-          </div>
+          <TeamSummary />
         )}
 
         <div style={{ marginTop: 12, display: "flex", gap: 12, alignItems: "center", minHeight: 20 }}>
