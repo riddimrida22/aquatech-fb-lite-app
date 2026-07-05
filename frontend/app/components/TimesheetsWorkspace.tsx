@@ -10,7 +10,7 @@ type TimesheetsWorkspaceProps = {
   timesheets: Timesheet[];
   adminTimesheets: AdminTimesheet[];
   canApproveTimesheets: boolean;
-  onGenerateTimesheet: () => Promise<void>;
+  onGenerateTimesheet: (weekStart?: string) => Promise<void>;
   onSubmitTimesheet: (timesheetId: number) => Promise<void>;
   onAdminSubmitTimesheet: (sheet: AdminTimesheet) => Promise<void>;
   onAdminApproveTimesheet: (sheet: AdminTimesheet) => Promise<void>;
@@ -45,6 +45,8 @@ export function TimesheetsWorkspace({
   const currentSheet = sortedTimesheets[0];
   // Roster is a dropdown (pick a week) instead of a long table — defaults to the newest.
   const [selectedTimesheetId, setSelectedTimesheetId] = useState<number | null>(null);
+  // Any-week generator so future (or prior) weeks become submittable, not just the current one.
+  const [genWeek, setGenWeek] = useState<string>("");
   const selectedSheet =
     timesheets.find((s) => s.id === selectedTimesheetId) ?? sortedTimesheets[0] ?? null;
   const adminCounts = {
@@ -117,9 +119,27 @@ export function TimesheetsWorkspace({
               <p className="aq-lite-eyebrow">Weekly controls</p>
               <h3>My timesheets</h3>
             </div>
-            <button type="button" onClick={() => void onGenerateTimesheet()} disabled={submitting === "timesheet-generate"}>
-              {submitting === "timesheet-generate" ? "Generating…" : "Generate this week"}
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => void onGenerateTimesheet()} disabled={submitting === "timesheet-generate"}>
+                {submitting === "timesheet-generate" ? "Generating…" : "Generate this week"}
+              </button>
+              <span style={{ color: "var(--aq-muted)", fontSize: 11 }}>or pick a week:</span>
+              <input
+                type="date"
+                value={genWeek}
+                onChange={(e) => setGenWeek(e.target.value)}
+                title="Any date — snaps to that week's Monday"
+                style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid var(--aq-border,rgba(0,0,0,0.15))", background: "var(--aq-input-bg,#fff)", color: "inherit", fontSize: 12 }}
+              />
+              <button
+                type="button"
+                onClick={() => void onGenerateTimesheet(genWeek || undefined)}
+                disabled={!genWeek || submitting === "timesheet-generate"}
+                style={{ background: "transparent", color: "var(--aq-primary-dark)", border: "1px solid var(--aq-border)", boxShadow: "none" }}
+              >
+                Generate that week
+              </button>
+            </div>
           </div>
           {timesheets.length === 0 ? (
             <p className="aq-lite-muted">No timesheets yet. Generate the current week to start.</p>
