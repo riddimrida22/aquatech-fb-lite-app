@@ -38,9 +38,15 @@ export function TimesheetsWorkspace({
     "all",
   );
 
-  const currentSheet = timesheets
-    .slice()
-    .sort((a, b) => b.week_start.localeCompare(a.week_start))[0];
+  const sortedTimesheets = useMemo(
+    () => timesheets.slice().sort((a, b) => b.week_start.localeCompare(a.week_start)),
+    [timesheets],
+  );
+  const currentSheet = sortedTimesheets[0];
+  // Roster is a dropdown (pick a week) instead of a long table — defaults to the newest.
+  const [selectedTimesheetId, setSelectedTimesheetId] = useState<number | null>(null);
+  const selectedSheet =
+    timesheets.find((s) => s.id === selectedTimesheetId) ?? sortedTimesheets[0] ?? null;
   const adminCounts = {
     unsubmitted: adminTimesheets.filter((sheet) => sheet.status === "unsubmitted").length,
     draft: adminTimesheets.filter((sheet) => sheet.status === "draft" || sheet.status === "rejected").length,
@@ -115,47 +121,64 @@ export function TimesheetsWorkspace({
               {submitting === "timesheet-generate" ? "Generating…" : "Generate this week"}
             </button>
           </div>
-          <table className="aq-lite-table">
-            <thead>
-              <tr>
-                <th>Week</th>
-                <th>Status</th>
-                <th>Total hours</th>
-                <th data-disable-sort="true" />
-              </tr>
-            </thead>
-            <tbody>
-              {timesheets.map((sheet) => (
-                <tr key={sheet.id}>
-                  <td>
-                    {formatDate(sheet.week_start)} - {formatDate(sheet.week_end)}
-                  </td>
-                  <td><StatusBadge status={sheet.status} /></td>
-                  <td>{formatNumber(sheet.total_hours, 1)}</td>
-                  <td>
-                    {sheet.status === "draft" || sheet.status === "rejected" ? (
+          {timesheets.length === 0 ? (
+            <p className="aq-lite-muted">No timesheets yet. Generate the current week to start.</p>
+          ) : (
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: "var(--aq-muted)", marginBottom: 4 }}>
+                Week
+                <select
+                  value={selectedSheet?.id ?? ""}
+                  onChange={(e) => setSelectedTimesheetId(Number(e.target.value))}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    marginTop: 4,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: "1px solid var(--aq-border,rgba(0,0,0,0.15))",
+                    background: "var(--aq-input-bg,#fff)",
+                    color: "inherit",
+                  }}
+                >
+                  {sortedTimesheets.map((sheet) => (
+                    <option key={sheet.id} value={sheet.id}>
+                      {formatDate(sheet.week_start)} – {formatDate(sheet.week_end)} · {sheet.status} ·{" "}
+                      {formatNumber(sheet.total_hours, 1)}h
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedSheet ? (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    marginTop: 12,
+                    paddingTop: 12,
+                    borderTop: "1px solid var(--aq-border)",
+                  }}
+                >
+                  <StatusBadge status={selectedSheet.status} />
+                  <span style={{ fontWeight: 500 }}>{formatNumber(selectedSheet.total_hours, 1)}h</span>
+                  <span style={{ marginLeft: "auto" }}>
+                    {selectedSheet.status === "draft" || selectedSheet.status === "rejected" ? (
                       <button
                         type="button"
-                        onClick={() => void onSubmitTimesheet(sheet.id)}
-                        disabled={submitting === `timesheet-${sheet.id}`}
+                        onClick={() => void onSubmitTimesheet(selectedSheet.id)}
+                        disabled={submitting === `timesheet-${selectedSheet.id}`}
                       >
-                        {submitting === `timesheet-${sheet.id}` ? "Submitting…" : "Submit"}
+                        {submitting === `timesheet-${selectedSheet.id}` ? "Submitting…" : "Submit for approval"}
                       </button>
                     ) : (
-                      <span className="aq-lite-muted">No action</span>
+                      <span className="aq-lite-muted">No action needed</span>
                     )}
-                  </td>
-                </tr>
-              ))}
-              {timesheets.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="aq-lite-muted">
-                    No timesheets yet.
-                  </td>
-                </tr>
+                  </span>
+                </div>
               ) : null}
-            </tbody>
-          </table>
+            </div>
+          )}
         </section>
 
         <section className="aq-lite-panel">

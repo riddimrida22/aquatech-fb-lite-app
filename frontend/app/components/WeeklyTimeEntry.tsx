@@ -22,6 +22,8 @@ type CellState = {
   value: string; // user input as string (allow blank, partial typing)
   existingId: number | null; // backend TimeEntry id, if any
   initialHours: number; // hours that were on the entry when row loaded
+  note: string; // employee note for this entry (from FreshBooks or entered here)
+  initialNote: string; // note as loaded, to detect edits
 };
 
 type RowState = {
@@ -32,6 +34,7 @@ type RowState = {
   project_name: string;
   task_name: string;
   subtask_name: string;
+  note: string; // line-level note (FreshBooks-style), applied to this line's day entries
   cells: Record<DayKey, CellState>;
 };
 
@@ -74,22 +77,30 @@ function rowKeyOf(projectId: number, taskId: number, subtaskId: number): RowKey 
   return `${projectId}|${taskId}|${subtaskId}`;
 }
 
+function emptyCell(): CellState {
+  return { value: "", existingId: null, initialHours: 0, note: "", initialNote: "" };
+}
+
 function emptyCells(): Record<DayKey, CellState> {
   return {
-    mon: { value: "", existingId: null, initialHours: 0 },
-    tue: { value: "", existingId: null, initialHours: 0 },
-    wed: { value: "", existingId: null, initialHours: 0 },
-    thu: { value: "", existingId: null, initialHours: 0 },
-    fri: { value: "", existingId: null, initialHours: 0 },
-    sat: { value: "", existingId: null, initialHours: 0 },
-    sun: { value: "", existingId: null, initialHours: 0 },
+    mon: emptyCell(),
+    tue: emptyCell(),
+    wed: emptyCell(),
+    thu: emptyCell(),
+    fri: emptyCell(),
+    sat: emptyCell(),
+    sun: emptyCell(),
   };
 }
 
 function dayIndexFromIso(iso: string, weekStart: Date): number {
-  const d = new Date(`${iso}T12:00:00`);
-  const diff = Math.round((d.getTime() - weekStart.getTime()) / (1000 * 60 * 60 * 24));
-  return diff;
+  // Compare both dates at LOCAL midnight so the diff is a clean integer. Parsing the
+  // entry at noon against a midnight weekStart left a 0.5-day gap that Math.round pushed
+  // UP to the next column, shifting every saved entry one day forward on screen.
+  const [y, m, d] = iso.split("-").map(Number);
+  const entry = new Date(y, m - 1, d);
+  const ws = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate());
+  return Math.round((entry.getTime() - ws.getTime()) / (1000 * 60 * 60 * 24));
 }
 
 function formatWeekRange(weekStart: Date): string {
@@ -125,9 +136,12 @@ export function WeeklyTimeEntry({
   const [pickProjectId, setPickProjectId] = useState<string>("");
   const [pickTaskId, setPickTaskId] = useState<string>("");
   const [pickSubtaskId, setPickSubtaskId] = useState<string>("");
+  const [pickNote, setPickNote] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [noteEditor, setNoteEditor] = useState<{ rowKey: RowKey; day: DayKey } | null>(null);
+  const [copyingPrior, setCopyingPrior] = useState(false);
 
   const weekDays = useMemo(() => DAY_KEYS.map((_, i) => addDays(weekStart, i)), [weekStart]);
   const weekStartIso = useMemo(() => isoDate(weekStart), [weekStart]);
@@ -174,6 +188,7 @@ export function WeeklyTimeEntry({
           project_name: entry.project_name || "Project",
           task_name: entry.task_name || "Task",
           subtask_name: entry.subtask_name || "Subtask",
+          note: "",
           cells: emptyCells(),
         };
         grouped.set(key, row);
@@ -181,10 +196,18 @@ export function WeeklyTimeEntry({
       const dayIdx = dayIndexFromIso(entry.work_date, weekStart);
       if (dayIdx < 0 || dayIdx > 6) continue;
       const dayKey = DAY_KEYS[dayIdx];
+      const existing = row.cells[dayKey];
+      // If two entries land on the same project/task/subtask/day (rare), keep the first
+      // entry's id for editing but merge notes so no note is hidden.
+      const mergedNote = existing.note
+        ? existing.note + (entry.note ? `\n---\n${entry.note}` : "")
+        : entry.note || "";
       row.cells[dayKey] = {
         value: String(entry.hours),
-        existingId: entry.id,
+        existingId: existing.existingId ?? entry.id,
         initialHours: entry.hours,
+        note: mergedNote,
+        initialNote: mergedNote,
       };
     }
     setRows(Array.from(grouped.values()).sort((a, b) => a.project_name.localeCompare(b.project_name)));
@@ -218,6 +241,8 @@ export function WeeklyTimeEntry({
         const safe = Number.isNaN(cur) ? 0 : cur;
         if (Math.abs(safe - cell.initialHours) > 0.0001) return true;
         if (safe === 0 && cell.existingId !== null) return true;
+        // a note edit on a cell that has (or will have) an entry is a change too
+        if (cell.note !== cell.initialNote && (cell.existingId !== null || safe > 0)) return true;
       }
     }
     return false;
@@ -243,6 +268,59 @@ export function WeeklyTimeEntry({
         };
       }),
     );
+  }
+
+  function setCellNote(rowKey: RowKey, day: DayKey, note: string) {
+    setRows((prev) =>
+      prev.map((row) => {
+        if (row.key !== rowKey) return row;
+        return { ...row, cells: { ...row.cells, [day]: { ...row.cells[day], note } } };
+      }),
+    );
+  }
+
+  // Copy the project/task/subtask LINES from the previous week (no hours) so the
+  // employee doesn't re-pick the same projects every week — FreshBooks-style.
+  async function handleCopyPriorWeek() {
+    if (copyingPrior || readOnly) return;
+    setCopyingPrior(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const priorStart = isoDate(addDays(weekStart, -7));
+      const priorEnd = isoDate(addDays(weekStart, -1));
+      const userParam = viewingSelf ? "" : `&user_id=${viewedUserId}`;
+      const prior = await apiGet<TimeEntry[]>(
+        `/time-entries?start=${priorStart}&end=${priorEnd}${userParam}`,
+      );
+      const existingKeys = new Set(rows.map((r) => r.key));
+      const additions = new Map<RowKey, RowState>();
+      for (const entry of prior) {
+        const key = rowKeyOf(entry.project_id, entry.task_id, entry.subtask_id);
+        if (existingKeys.has(key) || additions.has(key)) continue;
+        additions.set(key, {
+          key,
+          project_id: entry.project_id,
+          task_id: entry.task_id,
+          subtask_id: entry.subtask_id,
+          project_name: entry.project_name || "Project",
+          task_name: entry.task_name || "Task",
+          subtask_name: entry.subtask_name || "Subtask",
+          note: "",
+          cells: emptyCells(),
+        });
+      }
+      if (additions.size === 0) {
+        setInfo("No new lines to copy from last week.");
+      } else {
+        setRows((prev) => [...prev, ...Array.from(additions.values())]);
+        setInfo(`Copied ${additions.size} line${additions.size === 1 ? "" : "s"} from last week (no hours).`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not copy last week's lines.");
+    } finally {
+      setCopyingPrior(false);
+    }
   }
 
   function removeRow(rowKey: RowKey) {
@@ -313,6 +391,7 @@ export function WeeklyTimeEntry({
       project_name: project.name,
       task_name: task.name,
       subtask_name: subtask.name,
+      note: pickNote.trim(),
       cells: emptyCells(),
     };
     setRows((prev) => [...prev, newRow]);
@@ -320,6 +399,7 @@ export function WeeklyTimeEntry({
     setPickProjectId("");
     setPickTaskId("");
     setPickSubtaskId("");
+    setPickNote("");
     setError(null);
     setInfo(null);
   }
@@ -341,8 +421,10 @@ export function WeeklyTimeEntry({
           const cur = parseFloat(cell.value);
           const safe = Number.isNaN(cur) ? 0 : cur;
           const same = Math.abs(safe - cell.initialHours) < 0.0001;
+          const noteChanged = cell.note !== cell.initialNote;
           if (safe === 0 && cell.existingId === null) continue;
-          if (same && cell.existingId !== null) continue;
+          // nothing changed (hours identical AND note untouched) → skip
+          if (same && !noteChanged && cell.existingId !== null) continue;
           const workDate = isoDate(addDays(weekStart, i));
           try {
             if (safe === 0 && cell.existingId !== null) {
@@ -355,7 +437,7 @@ export function WeeklyTimeEntry({
                 subtask_id: row.subtask_id,
                 work_date: workDate,
                 hours: safe,
-                note: "",
+                note: cell.note || row.note, // preserve/carry the note the employee wrote
               });
               created += 1;
             } else {
@@ -365,7 +447,7 @@ export function WeeklyTimeEntry({
                 subtask_id: row.subtask_id,
                 work_date: workDate,
                 hours: safe,
-                note: "",
+                note: cell.note || row.note, // KEEP the existing note (was being wiped to "")
               });
               updated += 1;
             }
@@ -490,29 +572,69 @@ export function WeeklyTimeEntry({
                     <div className="aq-lite-muted" style={{ fontSize: 12 }}>
                       {row.task_name} · {row.subtask_name}
                     </div>
+                    {row.note ? (
+                      <div
+                        style={{ marginTop: 3, fontSize: 12, color: "var(--aq-muted)", fontStyle: "italic" }}
+                        title={row.note}
+                      >
+                        {row.note}
+                      </div>
+                    ) : null}
                   </td>
-                  {DAY_KEYS.map((d) => (
-                    <td key={d} style={{ padding: 4 }}>
-                      <input
-                        type="number"
-                        min={0}
-                        max={24}
-                        step={0.25}
-                        value={row.cells[d].value}
-                        onChange={(e) => setCell(row.key, d, e.target.value)}
-                        readOnly={readOnly}
-                        disabled={readOnly}
-                        style={{
-                          width: "100%",
-                          textAlign: "center",
-                          padding: "6px 4px",
-                          border: "1px solid var(--aq-border)",
-                          borderRadius: 4,
-                          background: readOnly ? "var(--aq-subtle)" : "var(--aq-card)",
-                        }}
-                      />
-                    </td>
-                  ))}
+                  {DAY_KEYS.map((d) => {
+                    const cell = row.cells[d];
+                    const hasHours = cell.existingId !== null || (parseFloat(cell.value) || 0) > 0;
+                    const eff = cell.note || row.note;
+                    const showNote = hasHours || !!eff;
+                    return (
+                      <td key={d} style={{ padding: 4 }}>
+                        <div style={{ position: "relative" }}>
+                          <input
+                            type="number"
+                            min={0}
+                            max={24}
+                            step={0.25}
+                            value={cell.value}
+                            onChange={(e) => setCell(row.key, d, e.target.value)}
+                            readOnly={readOnly}
+                            disabled={readOnly}
+                            style={{
+                              width: "100%",
+                              textAlign: "center",
+                              padding: "6px 14px 6px 4px",
+                              border: "1px solid var(--aq-border)",
+                              borderRadius: 4,
+                              background: readOnly ? "var(--aq-subtle)" : "var(--aq-card)",
+                            }}
+                          />
+                          {showNote ? (
+                            <button
+                              type="button"
+                              onClick={() => setNoteEditor({ rowKey: row.key, day: d })}
+                              title={eff ? eff : "Add a note"}
+                              aria-label={eff ? "View or edit note" : "Add note"}
+                              style={{
+                                position: "absolute",
+                                top: 2,
+                                right: 2,
+                                width: 14,
+                                height: 14,
+                                padding: 0,
+                                lineHeight: "12px",
+                                fontSize: 10,
+                                border: "none",
+                                background: "transparent",
+                                cursor: "pointer",
+                                color: eff ? "var(--aq-primary)" : "var(--aq-border)",
+                              }}
+                            >
+                              {eff ? "●" : "○"}
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    );
+                  })}
                   <td style={{ textAlign: "center", fontWeight: 600 }}>{formatNumber(rowTotal(row), 1)}</td>
                   <td>
                     <button
@@ -552,70 +674,116 @@ export function WeeklyTimeEntry({
         {/* Add row controls */}
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--aq-border)" }}>
           {!adding ? (
-            <button type="button" onClick={() => setAdding(true)} disabled={readOnly}>
-              + Add line
-            </button>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 2fr auto auto", gap: 8, alignItems: "end" }}>
-              <label>
-                Project
-                <select value={pickProjectId} onChange={(e) => void handlePickProject(e.target.value)}>
-                  <option value="">Select project</option>
-                  {projectsOnly.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Task
-                <select
-                  value={pickTaskId}
-                  onChange={(e) => {
-                    setPickTaskId(e.target.value);
-                    setPickSubtaskId("");
-                  }}
-                  disabled={!pickProjectId}
-                >
-                  <option value="">Select task</option>
-                  {taskOptionsFor(Number(pickProjectId)).map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Subtask
-                <select
-                  value={pickSubtaskId}
-                  onChange={(e) => setPickSubtaskId(e.target.value)}
-                  disabled={!pickTaskId}
-                >
-                  <option value="">Select subtask</option>
-                  {subtaskOptionsFor(Number(pickProjectId), Number(pickTaskId)).map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.code} · {s.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="button" onClick={handleAddRow}>
-                Add
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => setAdding(true)} disabled={readOnly}>
+                + Add line
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setAdding(false);
-                  setPickProjectId("");
-                  setPickTaskId("");
-                  setPickSubtaskId("");
-                  setError(null);
-                }}
+                onClick={() => void handleCopyPriorWeek()}
+                disabled={readOnly || copyingPrior}
+                title="Add last week's projects/tasks as blank lines (no hours)"
               >
-                Cancel
+                {copyingPrior ? "Copying…" : "⧉ Copy last week's lines"}
               </button>
+            </div>
+          ) : (
+            <div
+              style={{
+                border: "1px solid var(--aq-border)",
+                borderRadius: 10,
+                padding: 12,
+                background: "var(--aq-subtle, rgba(0,0,0,0.02))",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, alignItems: "end" }}>
+                <label>
+                  Project
+                  <select value={pickProjectId} onChange={(e) => void handlePickProject(e.target.value)}>
+                    <option value="">Select project</option>
+                    {projectsOnly.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Task
+                  <select
+                    value={pickTaskId}
+                    onChange={(e) => {
+                      setPickTaskId(e.target.value);
+                      setPickSubtaskId("");
+                    }}
+                    disabled={!pickProjectId}
+                  >
+                    <option value="">Select task</option>
+                    {taskOptionsFor(Number(pickProjectId)).map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Subtask
+                  <select
+                    value={pickSubtaskId}
+                    onChange={(e) => setPickSubtaskId(e.target.value)}
+                    disabled={!pickTaskId}
+                  >
+                    <option value="">Select subtask</option>
+                    {subtaskOptionsFor(Number(pickProjectId), Number(pickTaskId)).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.code} · {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <label>
+                Notes
+                <textarea
+                  value={pickNote}
+                  onChange={(e) => setPickNote(e.target.value)}
+                  rows={2}
+                  placeholder="Describe the work done for this line"
+                  style={{
+                    width: "100%",
+                    marginTop: 4,
+                    padding: 8,
+                    border: "1px solid var(--aq-border)",
+                    borderRadius: 6,
+                    background: "var(--aq-input-bg, #fff)",
+                    color: "inherit",
+                    fontFamily: "inherit",
+                    fontSize: 13,
+                    resize: "vertical",
+                  }}
+                />
+              </label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={handleAddRow}>
+                  Add line
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdding(false);
+                    setPickProjectId("");
+                    setPickTaskId("");
+                    setPickSubtaskId("");
+                    setPickNote("");
+                    setError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -645,6 +813,91 @@ export function WeeklyTimeEntry({
             {user.full_name} • {weekStartIso} → {weekEndIso}
           </span>
         </div>
+
+        {/* Note viewer / editor — opened by the ● / ○ indicator on a day cell.
+            Read-only when an admin is viewing another employee (this is how historic
+            FreshBooks notes are browsed). */}
+        {noteEditor
+          ? (() => {
+              const erow = rows.find((r) => r.key === noteEditor.rowKey);
+              if (!erow) return null;
+              const cell = erow.cells[noteEditor.day];
+              const dayIdx = DAY_KEYS.indexOf(noteEditor.day);
+              const dateLabel = addDays(weekStart, dayIdx).toLocaleDateString("en-US", {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+              });
+              return (
+                <div
+                  onClick={() => setNoteEditor(null)}
+                  style={{
+                    position: "fixed",
+                    inset: 0,
+                    background: "rgba(0,0,0,0.35)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    zIndex: 1000,
+                  }}
+                >
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      background: "var(--aq-card)",
+                      border: "1px solid var(--aq-border)",
+                      borderRadius: 8,
+                      padding: 16,
+                      width: "min(520px, 92vw)",
+                      boxShadow: "0 10px 40px rgba(0,0,0,0.25)",
+                    }}
+                  >
+                    <div style={{ marginBottom: 8 }}>
+                      <strong>{erow.project_name}</strong>
+                      <div className="aq-lite-muted" style={{ fontSize: 12 }}>
+                        {erow.task_name} · {erow.subtask_name} — {dateLabel}
+                      </div>
+                    </div>
+                    <textarea
+                      value={cell.note || erow.note}
+                      onChange={(e) => setCellNote(noteEditor.rowKey, noteEditor.day, e.target.value)}
+                      readOnly={readOnly}
+                      autoFocus={!readOnly}
+                      placeholder={readOnly ? "No note recorded." : "Describe the work done for these hours…"}
+                      rows={6}
+                      style={{
+                        width: "100%",
+                        padding: 8,
+                        border: "1px solid var(--aq-border)",
+                        borderRadius: 6,
+                        background: readOnly ? "var(--aq-subtle)" : "var(--aq-card)",
+                        resize: "vertical",
+                        fontFamily: "inherit",
+                        fontSize: 13,
+                      }}
+                    />
+                    <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+                      <button
+                        type="button"
+                        onClick={() => setNoteEditor(null)}
+                        style={{
+                          background: readOnly ? undefined : "var(--aq-primary)",
+                          color: readOnly ? undefined : "white",
+                        }}
+                      >
+                        {readOnly ? "Close" : "Done"}
+                      </button>
+                      {!readOnly ? (
+                        <span className="aq-lite-muted" style={{ fontSize: 12 }}>
+                          Close, then <strong>Save changes</strong> to store the note.
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()
+          : null}
       </section>
     </div>
   );
