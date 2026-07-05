@@ -287,6 +287,29 @@ export default function AquatechPmHome() {
 
   const capabilities = useMemo(() => deriveUserCapabilities(user), [user]);
 
+  // Back-office = anyone with an admin/manager capability. A pure employee has none.
+  const isBackOffice =
+    capabilities.canViewFinancials ||
+    capabilities.canApproveTimesheets ||
+    capabilities.canManageProjects ||
+    capabilities.canManageInvoicing ||
+    capabilities.canManageUsers;
+
+  // The launchpad "timekeeping beta" link lands on /?timesheet_only=1. That forces the
+  // focused time-only view even for admins. A non-admin employee always gets it.
+  const [forceTimeOnly, setForceTimeOnly] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    setForceTimeOnly(params.get("timesheet_only") === "1");
+  }, []);
+  const timeOnly = forceTimeOnly || (!!user && !isBackOffice);
+
+  // Drop time-only users straight onto their own timesheet instead of the Dashboard.
+  useEffect(() => {
+    if (timeOnly) setWorkspace("time");
+  }, [timeOnly]);
+
   const selectedProjectWbs = useMemo(() => {
     const projectId = Number(timeForm.projectId || invoiceForm.projectId || 0);
     if (!projectId) return null;
@@ -849,7 +872,7 @@ export default function AquatechPmHome() {
           </div>
         </div>
         <nav className="aq-lite-nav">
-          {NAV.map((entry) => {
+          {(timeOnly ? NAV.filter((entry) => !isNavGroup(entry) && (entry as NavLeaf).key === "time") : NAV).map((entry) => {
             if (!isNavGroup(entry)) {
               if (entry.requires && !(capabilities as Record<string, boolean>)[entry.requires]) return null;
               return (
@@ -897,11 +920,23 @@ export default function AquatechPmHome() {
             );
           })}
         </nav>
-        <div className="aq-lite-sidebar-card">
-          <p className="aq-lite-sidebar-label">Business posture</p>
-          <strong>{formatCurrency(invoiceStatus?.total_outstanding)} open receivables</strong>
-          <span>{headlineMetrics.activeProjects} active projects</span>
-        </div>
+        {timeOnly ? (
+          forceTimeOnly && isBackOffice ? (
+            <div className="aq-lite-sidebar-card">
+              <p className="aq-lite-sidebar-label">Focused view</p>
+              <a href="/" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
+                <span>Full app →</span>
+                <small>Dashboard, financials, settings</small>
+              </a>
+            </div>
+          ) : null
+        ) : capabilities.canViewFinancials ? (
+          <div className="aq-lite-sidebar-card">
+            <p className="aq-lite-sidebar-label">Business posture</p>
+            <strong>{formatCurrency(invoiceStatus?.total_outstanding)} open receivables</strong>
+            <span>{headlineMetrics.activeProjects} active projects</span>
+          </div>
+        ) : null}
       </aside>
 
       <main className="aq-lite-main">
