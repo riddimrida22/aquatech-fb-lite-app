@@ -29,7 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
-from .authz import get_current_user, permissions_for_role, require_permission
+from .authz import PERMISSIONS_BY_ROLE, get_current_user, permissions_for_role, require_permission
 from .db import SessionLocal, get_db, init_db
 from .models import (
     Activity,
@@ -7844,6 +7844,9 @@ def submit_timesheet(
     db.commit()
     db.refresh(ts)
 
+    # Alert the approver(s) that a timesheet is waiting — best-effort, non-blocking.
+    _notify_timesheet_submitted_async(ts.id, current_user.id)
+
     total_hours = _timesheet_hours(db, current_user.id, ts.week_start, ts.week_end)
     return _to_timesheet_out(ts, total_hours)
 
@@ -11370,6 +11373,71 @@ def _send_timesheet_reminder_email(to_email: str, full_name: str) -> None:
         if settings.SMTP_USERNAME:
             smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
         smtp.send_message(msg)
+
+
+def _send_email(to_email: str, subject: str, body: str) -> bool:
+    """Generic best-effort plain-text send using the configured SMTP settings.
+    Returns False (without raising) when SMTP is not configured or no recipient."""
+    if not settings.SMTP_HOST or not settings.SMTP_FROM_EMAIL or not to_email:
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = settings.SMTP_FROM_EMAIL
+    msg["To"] = to_email
+    msg.set_content(body)
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=20) as smtp:
+        if settings.SMTP_USE_TLS:
+            smtp.starttls()
+        if settings.SMTP_USERNAME:
+            smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+        smtp.send_message(msg)
+    return True
+
+
+def _notify_timesheet_submitted(db: Session, ts: Timesheet, submitter: User) -> None:
+    """Email every approver (roles granting APPROVE_TIMESHEETS) that a timesheet was
+    submitted for approval. Best-effort — must never block or fail the submit."""
+    try:
+        approver_roles = [r for r, perms in PERMISSIONS_BY_ROLE.items() if "APPROVE_TIMESHEETS" in perms]
+        if not approver_roles:
+            return
+        approvers = db.scalars(
+            select(User).where(and_(User.is_active.is_(True), User.role.in_(approver_roles)))
+        ).all()
+        total = _timesheet_hours(db, ts.user_id, ts.week_start, ts.week_end)
+        who = submitter.full_name or submitter.email
+        subject = f"Timesheet submitted for approval — {who} (week of {ts.week_start.isoformat()})"
+        body = (
+            f"{who} submitted their timesheet for your approval.\n\n"
+            f"Week:  {ts.week_start.isoformat()} to {ts.week_end.isoformat()}\n"
+            f"Total: {float(total):.2f} hours\n\n"
+            f"Review and approve here: {settings.FRONTEND_ORIGIN}\n\n"
+            "AquatechPM"
+        )
+        for a in approvers:
+            if a.id == submitter.id or not a.email:
+                continue
+            try:
+                _send_email(a.email, subject, body)
+            except Exception:
+                pass  # one bad address must not stop the others
+    except Exception:
+        pass
+
+
+def _notify_timesheet_submitted_async(timesheet_id: int, submitter_id: int) -> None:
+    """Fire the approver alert on a daemon thread with its own DB session so a slow or
+    unreachable SMTP server never delays (or fails) the employee's submit response."""
+    def _work() -> None:
+        try:
+            with SessionLocal() as db:
+                ts = db.get(Timesheet, timesheet_id)
+                submitter = db.get(User, submitter_id)
+                if ts and submitter:
+                    _notify_timesheet_submitted(db, ts, submitter)
+        except Exception:
+            pass
+    threading.Thread(target=_work, daemon=True).start()
 
 
 def _run_timesheet_reminder_cycle() -> None:

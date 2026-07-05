@@ -32,12 +32,15 @@ export function FreshnessBanner() {
     <div
       style={{
         display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14,
-        padding: "6px 14px", borderRadius: 10, marginBottom: 10, fontSize: 12.5,
-        background: bad ? "rgba(245,158,11,0.12)" : "var(--aq-input-bg, rgba(0,0,0,0.04))",
-        border: bad ? "1px solid rgba(245,158,11,0.35)" : "1px solid var(--aq-border, rgba(0,0,0,0.08))",
+        padding: "8px 14px", borderRadius: 10, marginBottom: 10, fontSize: 13,
+        // Force the theme text color (was inheriting a muted color on the dashboard,
+        // which washed the banner out) — high contrast in both light and dark mode.
+        color: "var(--aq-text)",
+        background: bad ? "rgba(245,158,11,0.16)" : "var(--aq-card)",
+        border: bad ? "1px solid rgba(245,158,11,0.55)" : "1px solid var(--aq-border)",
       }}
     >
-      <span style={{ fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: 0.4, fontSize: 11 }}>
+      <span style={{ fontWeight: 700, color: "var(--aq-muted)", textTransform: "uppercase", letterSpacing: 0.4, fontSize: 11 }}>
         Data freshness
       </span>
       {f.sources.map((s) => (
