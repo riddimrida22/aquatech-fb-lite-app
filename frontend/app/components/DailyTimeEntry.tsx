@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../../lib/api";
 import { Project, ProjectWbs, Subtask, Task, TimeEntry, User, formatNumber } from "./workspaceShared";
+import { WeeklyTimeEntry } from "./WeeklyTimeEntry"; // reused for the Week grid (rows × days)
 
 type View = "day" | "week" | "month" | "all";
 type StaffOption = { id: number; name: string; email: string };
@@ -67,6 +68,7 @@ export function DailyTimeEntry({
   user,
   projects,
   wbsByProject,
+  timeEntries,
   onProjectPick,
   onSaved,
   staffOptions = [],
@@ -435,7 +437,7 @@ export function DailyTimeEntry({
   return (
     <div className="aq-lite-stack">
       <section className="aq-lite-panel">
-        {isAdmin && staffOptions.length > 1 ? (
+        {view !== "week" && isAdmin && staffOptions.length > 1 ? (
           <div
             style={{
               padding: 10,
@@ -504,21 +506,27 @@ export function DailyTimeEntry({
             ))}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {view !== "all" ? (
-              <>
-                <button type="button" onClick={() => shift(-1)} aria-label="Previous" style={{ padding: "4px 10px" }}>‹</button>
-                <button type="button" onClick={goToday} style={{ padding: "4px 10px" }}>Today</button>
-                <button type="button" onClick={() => shift(1)} aria-label="Next" style={{ padding: "4px 10px" }}>›</button>
-              </>
-            ) : null}
-            <strong style={{ fontSize: 14, minWidth: 160, textAlign: "center" }}>{periodLabel}</strong>
-          </div>
+          {view !== "week" ? (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {view !== "all" ? (
+                  <>
+                    <button type="button" onClick={() => shift(-1)} aria-label="Previous" style={{ padding: "4px 10px" }}>‹</button>
+                    <button type="button" onClick={goToday} style={{ padding: "4px 10px" }}>Today</button>
+                    <button type="button" onClick={() => shift(1)} aria-label="Next" style={{ padding: "4px 10px" }}>›</button>
+                  </>
+                ) : null}
+                <strong style={{ fontSize: 14, minWidth: 160, textAlign: "center" }}>{periodLabel}</strong>
+              </div>
 
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, color: "var(--aq-muted)" }}>{view === "all" ? "Total" : "Period total"}</div>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>{formatNumber(rangeTotal, 2)}h {loading ? "…" : ""}</div>
-          </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 11, color: "var(--aq-muted)" }}>{view === "all" ? "Total" : "Period total"}</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{formatNumber(rangeTotal, 2)}h {loading ? "…" : ""}</div>
+              </div>
+            </>
+          ) : (
+            <span style={{ fontSize: 12, color: "var(--aq-muted)" }}>Grid entry — rows × days</span>
+          )}
         </div>
 
         {/* Body */}
@@ -526,13 +534,7 @@ export function DailyTimeEntry({
           <MonthCalendar />
         ) : view === "day" ? (
           <DayCard dISO={iso(anchor)} />
-        ) : view === "week" ? (
-          <div style={{ display: "grid", gap: 10 }}>
-            {Array.from({ length: 7 }, (_, i) => iso(addDays(rangeStart, i))).map((dISO) => (
-              <DayCard key={dISO} dISO={dISO} />
-            ))}
-          </div>
-        ) : (
+        ) : view === "week" ? null : (
           <div style={{ display: "grid", gap: 10 }}>
             {allDays.length === 0 ? (
               <p className="aq-lite-muted">No time entries.</p>
@@ -550,6 +552,21 @@ export function DailyTimeEntry({
           </span>
         </div>
       </section>
+
+      {/* Week = the classic grid (rows × days), reused from WeeklyTimeEntry — it brings
+          its own employee picker + week navigation + Save. */}
+      {view === "week" ? (
+        <WeeklyTimeEntry
+          user={user}
+          projects={projects}
+          wbsByProject={wbsByProject}
+          timeEntries={timeEntries}
+          onProjectPick={onProjectPick}
+          onSaved={onSaved}
+          isAdmin={isAdmin}
+          staffOptions={staffOptions}
+        />
+      ) : null}
 
       {/* Add / edit item modal */}
       {editor ? (
