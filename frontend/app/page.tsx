@@ -60,6 +60,7 @@ type WorkspaceKey =
   | "bd"
   | "time"
   | "invoices"
+  | "invoicegen"
   | "costs"
   | "categorize"
   | "payroll"
@@ -76,7 +77,7 @@ const DEV_AUTH_ENABLED = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true";
 // Shared cursor for drill-down (clickable dashboard figures → detail tab)
 const drillStyle = { cursor: "pointer" } as const;
 
-type NavLeaf = { key: WorkspaceKey; label: string; hint: string };
+type NavLeaf = { key: WorkspaceKey; label: string; hint: string; requires?: string };
 type NavGroup = { groupKey: string; label: string; hint: string; children: NavLeaf[] };
 type NavEntry = NavLeaf | NavGroup;
 
@@ -110,6 +111,7 @@ const NAV: NavEntry[] = [
       { key: "categorize", label: "Categorize", hint: "Sort transactions" },
       { key: "costs", label: "Costs & Expenses", hint: "Spend + tax" },
       { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables" },
+      { key: "invoicegen", label: "Invoice Generator", hint: "Cost-plus + timesheets", requires: "canManageInvoicing" },
       { key: "reports", label: "Reports", hint: "Benchmarks" },
     ],
   },
@@ -849,6 +851,7 @@ export default function AquatechPmHome() {
         <nav className="aq-lite-nav">
           {NAV.map((entry) => {
             if (!isNavGroup(entry)) {
+              if (entry.requires && !(capabilities as Record<string, boolean>)[entry.requires]) return null;
               return (
                 <button
                   key={entry.key}
@@ -876,7 +879,9 @@ export default function AquatechPmHome() {
                   <small>{open ? "▾" : "▸"} {entry.hint}</small>
                 </button>
                 {open
-                  ? entry.children.map((child) => (
+                  ? entry.children
+                      .filter((child) => !child.requires || (capabilities as Record<string, boolean>)[child.requires])
+                      .map((child) => (
                       <button
                         key={child.key}
                         type="button"
@@ -1399,6 +1404,39 @@ export default function AquatechPmHome() {
         ) : null}
 
         {workspace === "bd" ? <BdWorkspace /> : null}
+
+        {workspace === "invoicegen" && capabilities.canManageInvoicing ? (
+          <section className="aq-lite-panel">
+            <div className="aq-lite-panel-head">
+              <h2>Invoice Generator</h2>
+              <span className="aq-lite-chip">Admin only</span>
+            </div>
+            <p className="aq-lite-muted">
+              Generates the NYCDEP cost-plus sub-consultant invoices (HDR / LTCP4, Stantec,
+              JBCON) with the FreshBooks-style backup and the pixel-perfect weekly timesheets,
+              from live time data — the FreshBooks backup is reconciled to the spreadsheet total.
+              The complete package is saved into the correct Drive invoice folder.
+            </p>
+            <p className="aq-lite-muted">
+              It runs on your PC (it needs Excel and the Aquatech Drive). Make sure the local
+              app is running, then open it:
+            </p>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
+              <a
+                href="http://127.0.0.1:8765"
+                target="_blank"
+                rel="noreferrer"
+                className="aq-lite-btn aq-lite-btn-primary"
+              >
+                Open Invoice Generator ↗
+              </a>
+              <span className="aq-lite-muted" style={{ fontSize: 12 }}>
+                Not running? Double-click <code>Run Invoicing.bat</code> in the AqtPM-Invoicing
+                folder, then click here.
+              </span>
+            </div>
+          </section>
+        ) : null}
 
         {workspace === "time" ? (
           <div className="aq-lite-stack">

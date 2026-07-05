@@ -13,6 +13,7 @@ export function deriveUserCapabilities(user: AppUserLike | null | undefined) {
   const canManageRates = hasPermission(user, "MANAGE_RATES");
   const canApproveTimesheets = hasPermission(user, "APPROVE_TIMESHEETS");
   const canViewFinancials = hasPermission(user, "VIEW_FINANCIALS");
+  const canManageInvoicing = hasPermission(user, "MANAGE_INVOICE_TEMPLATES"); // admin-only
   const canViewOperations = canViewFinancials || canManageRates;
   return {
     canManageUsers,
@@ -20,6 +21,7 @@ export function deriveUserCapabilities(user: AppUserLike | null | undefined) {
     canManageRates,
     canApproveTimesheets,
     canViewFinancials,
+    canManageInvoicing,
     canViewOperations,
   };
 }
