@@ -17,6 +17,7 @@ import { BdWorkspace } from "./components/BdWorkspace";
 import { FreshnessBanner } from "./components/FreshnessBanner";
 import { PayrollExpenseSummary } from "./components/PayrollExpenseSummary";
 import { TimesheetsWorkspace } from "./components/TimesheetsWorkspace";
+import { TimesheetSubmitAlert } from "./components/TimesheetSubmitAlert";
 import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
 import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
@@ -157,6 +158,18 @@ function weekStartIso() {
   const monday = new Date(now);
   monday.setDate(now.getDate() - mondayOffset);
   return monday.toISOString().slice(0, 10);
+}
+
+// Snap any YYYY-MM-DD to the Monday of its week (local), for generating a chosen week.
+function mondayOfIso(iso: string) {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return weekStartIso();
+  const dt = new Date(y, m - 1, d);
+  const mondayOffset = (dt.getDay() + 6) % 7;
+  dt.setDate(dt.getDate() - mondayOffset);
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${dt.getFullYear()}-${mm}-${dd}`;
 }
 
 type PeriodPreset = "ytd" | "month" | "lastmonth" | "y2025" | "custom";
@@ -581,13 +594,15 @@ export default function AquatechPmHome() {
     }
   }
 
-  async function handleGenerateTimesheet() {
+  async function handleGenerateTimesheet(weekStart?: string) {
+    // Snap any picked date to that week's Monday so future/prior weeks generate cleanly.
+    const ws = weekStart ? mondayOfIso(weekStart) : weekStartIso();
     setSubmitting("timesheet-generate");
     setFlash(null);
     setError(null);
     try {
-      await apiPost<Timesheet>(`/timesheets/generate?week_start=${weekStartIso()}`);
-      setFlash("This week’s timesheet is ready.");
+      await apiPost<Timesheet>(`/timesheets/generate?week_start=${ws}`);
+      setFlash(ws === weekStartIso() ? "This week’s timesheet is ready." : "Timesheet ready for the selected week.");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to generate timesheet");
@@ -959,6 +974,16 @@ export default function AquatechPmHome() {
         </header>
 
         {capabilities.canViewFinancials ? <FreshnessBanner /> : null}
+
+        {capabilities.canApproveTimesheets && workspace === "dashboard" ? (
+          <TimesheetSubmitAlert
+            adminTimesheets={adminTimesheets}
+            onReview={() => {
+              setTimeTab("timesheets");
+              setWorkspace("time");
+            }}
+          />
+        ) : null}
 
         <Toast
           state={error ? { message: error, kind: "error" } : flash ? { message: flash, kind: "success" } : null}
