@@ -4420,6 +4420,42 @@ def _salary_rate_for(name: str) -> float:
     return 0.0
 
 
+# --- Client BILLING rates (cost-plus). MIRRORS the invoice engine config
+# (AqtPM-Invoicing/app/config.py) — keep in sync. Invoiced rate = direct salary ×
+# multiplier: staff = (1+OH)(1+profit) = 2.354; principal (owner) = (1+OH) = 2.14
+# (owner bills labor+OH, NO profit). These are the 2026 approved rates. Used to price
+# daily revenue at what is ACTUALLY invoiced, instead of the raw bill_rate_applied on
+# an entry (some entries carry a stale flat $125 default).
+BILLING_DIRECT_RATES = {
+    "Zachary Gilliam": 52.26, "Stacey Hodge": 51.64, "Robert Svadlenka": 61.50,
+    "Bertrand Byrne": 97.50, "Ailsa Welch": 75.00, "Roger Wang": 90.00,
+    "Qizhong Guo": 130.00, "George Guo": 130.00,
+}
+BILLING_PRINCIPALS = {"Bertrand Byrne"}
+BILLING_OH_RATE = 1.14
+BILLING_PROFIT_RATE = 0.10
+BILLING_STAFF_MULT = (1.0 + BILLING_OH_RATE) * (1.0 + BILLING_PROFIT_RATE)  # 2.354
+BILLING_PRINCIPAL_MULT = 1.0 + BILLING_OH_RATE                              # 2.14
+
+
+def _invoice_bill_rate(full_name: str) -> float | None:
+    """The client billing rate actually invoiced for this person (direct × multiplier),
+    or None if we don't have a direct rate for them (caller falls back to the entry's
+    stored bill_rate_applied)."""
+    nm = (full_name or "").strip()
+    direct = BILLING_DIRECT_RATES.get(nm)
+    if direct is None:
+        low = nm.lower()
+        for k, v in BILLING_DIRECT_RATES.items():
+            if k.lower() in low or low in k.lower():
+                direct = v
+                break
+    if direct is None:
+        return None
+    mult = BILLING_PRINCIPAL_MULT if nm in BILLING_PRINCIPALS else BILLING_STAFF_MULT
+    return round(direct * mult, 2)
+
+
 @app.get("/accounting/comp-reconciliation")
 def accounting_comp_reconciliation(
     start: str | None = None,
@@ -4608,6 +4644,10 @@ def accounting_daily_profitability(
     day_cost: dict[_date, float] = defaultdict(float)
     day_bill_h: dict[_date, float] = defaultdict(float)
     day_nonbill_h: dict[_date, float] = defaultdict(float)
+    # Price billable hours at the ACTUAL invoiced rate (direct × multiplier), not the
+    # entry's stored bill_rate_applied — some entries carry a stale flat $125 default.
+    _uname = {u.id: u.full_name for u in db.scalars(select(User)).all()}
+    _rate_cache: dict[int, float | None] = {}
     for te in db.scalars(
         select(TimeEntry).where(
             TimeEntry.work_date >= series_start, TimeEntry.work_date <= target
@@ -4617,7 +4657,12 @@ def accounting_daily_profitability(
         cost = h * float(te.cost_rate_applied or 0)
         day_cost[te.work_date] += cost
         if te.is_billable:
-            day_rev[te.work_date] += h * float(te.bill_rate_applied or 0)
+            if te.user_id not in _rate_cache:
+                _rate_cache[te.user_id] = _invoice_bill_rate(_uname.get(te.user_id, ""))
+            rate = _rate_cache[te.user_id]
+            if rate is None:
+                rate = float(te.bill_rate_applied or 0)
+            day_rev[te.work_date] += h * rate
             day_bill_h[te.work_date] += h
         else:
             day_nonbill_h[te.work_date] += h
@@ -4697,6 +4742,7 @@ def accounting_daily_profitability(
         "series": series,
         "notes": [
             "Daily profit = billable hours × bill rate − all hours × cost rate.",
+            "Billable hours are priced at the ACTUAL invoiced rate (direct salary × 2.354 staff / × 2.14 principal, per the cost-plus invoice engine), not the raw stored rate — so revenue matches what's billed.",
             "The cost rate is a fully-loaded wrap (~1.75× direct salary = direct + fringe + overhead), so overhead is ALREADY inside it — it is NOT subtracted a second time.",
             "Non-billable time is costed (at the loaded rate) but earns nothing, so it correctly lowers the day.",
             f"For reference, actual booked non-COGS OPEX averaged ${round(opex_lookback / lookback_months, 2):,.0f}/mo over the last {lookback_months} months; the gap vs the overhead recovered in the loaded rates is over/under-applied overhead, shown in the monthly P&L.",
