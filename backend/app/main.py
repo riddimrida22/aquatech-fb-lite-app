@@ -93,7 +93,10 @@ PAYROLL_KEYWORDS = (
 
 # Subset of PAYROLL_KEYWORDS that should specifically be added to COGS (benefits/WC),
 # not just excluded from OPEX. Currently same set minus pure payroll wires.
-BENEFITS_TO_COGS_KEYWORDS = ("NYSIF", "NU ERA", "NUERA", "HUMAN INTEREST")
+# NYSIF = workers-comp + disability (real employee benefit → COGS). Nu Era (Rob's
+# health) discontinued for 2026. "Human Interest" is the 401(k) RECORDKEEPING fee —
+# a plan-admin/G&A cost, NOT an employee benefit — so it stays in OPEX, not COGS.
+BENEFITS_TO_COGS_KEYWORDS = ("NYSIF",)
 
 PERSONAL_OVERRIDE_KEYWORDS = (
     "ALPACADB", "MOOMOO FINANCIAL", "FUTUINC",
@@ -3713,6 +3716,7 @@ def accounting_pl(
             BankTransaction.posted_date <= e,
             BankTransaction.is_business.is_(True),
             BankTransaction.amount < 0,
+            BankTransaction.pending.is_(False),  # exclude Plaid pending (posted twin double-counts)
             ~BankTransaction.source.in_(superseded_for_benefits),
         )
     ).all():
@@ -3800,6 +3804,7 @@ def accounting_pl(
             BankTransaction.posted_date <= e,
             BankTransaction.is_business.is_(True),
             BankTransaction.amount < 0,
+            BankTransaction.pending.is_(False),  # exclude Plaid pending (posted twin double-counts)
             ~BankTransaction.source.in_(superseded_sources),
         )
     ).all()
@@ -3810,6 +3815,7 @@ def accounting_pl(
             BankTransaction.posted_date <= e,
             BankTransaction.is_business.is_(False),
             BankTransaction.amount < 0,
+            BankTransaction.pending.is_(False),  # exclude Plaid pending (posted twin double-counts)
             ~BankTransaction.source.in_(superseded_sources),
         )
     ).all()
