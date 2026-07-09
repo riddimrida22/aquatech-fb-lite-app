@@ -845,9 +845,12 @@ def _resolve_subtask_for_project(db: Session, project_id: int, cache: dict[int, 
     """
     if project_id in cache:
         return cache[project_id]
-    # Pull all subtasks for this project, join via task
+    # Pull all subtasks for this project, join via task. Ordered by subtask id so the
+    # fallback is deterministic (first-created real subtask) across re-syncs — e.g. for
+    # LTCP4 this resolves to DWF-MODEL once the old default subtask is removed.
     rows = db.execute(
-        select(Subtask, Task).join(Task, Subtask.task_id == Task.id).where(Task.project_id == project_id)
+        select(Subtask, Task).join(Task, Subtask.task_id == Task.id)
+        .where(Task.project_id == project_id).order_by(Subtask.id.asc())
     ).all()
     if not rows:
         cache[project_id] = None  # type: ignore[assignment]
