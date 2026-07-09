@@ -14,6 +14,7 @@ import { DedupPanel } from "./components/DedupPanel";
 import { PayrollPortal } from "./components/PayrollPortal";
 import AskAqtPM from "./components/AskAqtPM";
 import DataGaps from "./components/DataGaps";
+import DailyProfitabilityKPI from "./components/DailyProfitabilityKPI";
 import { BdWorkspace } from "./components/BdWorkspace";
 import { FreshnessBanner } from "./components/FreshnessBanner";
 import { PayrollExpenseSummary } from "./components/PayrollExpenseSummary";
@@ -1161,6 +1162,7 @@ export default function AquatechPmHome() {
 
             {dashTab === "financials" ? (
               <>
+                <DailyProfitabilityKPI ownerAnnualSalary={ownerAnnualSalary} />
                 <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
                 <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
                 <CompReconPanel data={compRecon} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />

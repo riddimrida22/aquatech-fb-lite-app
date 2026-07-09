@@ -4423,6 +4423,194 @@ def accounting_comp_reconciliation(
     }
 
 
+def _business_days_between(a: date, b: date) -> int:
+    """Count Mon-Fri days in [a, b] inclusive. Holidays not excluded (v1)."""
+    if b < a:
+        return 0
+    n = 0
+    d = a
+    while d <= b:
+        if d.weekday() < 5:
+            n += 1
+        d += timedelta(days=1)
+    return n
+
+
+def _sub_months(d: date, months: int) -> date:
+    """First day of the month `months` before the month containing d."""
+    y, m = d.year, d.month - months
+    while m <= 0:
+        m += 12
+        y -= 1
+    return date(y, m, 1)
+
+
+@app.get("/accounting/daily-profitability")
+def accounting_daily_profitability(
+    date: str | None = None,
+    lookback_months: int = 6,
+    include_owner_comp: bool = True,
+    owner_annual_comp: float = 206398.40,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Daily company-profitability reconciliation KPI.
+
+    For a given working day D:
+      earned_margin(D) = Σ(billable hours × bill_rate) − Σ(all hours × cost_rate)
+                         over that day's time entries (revenue produced − labor cost;
+                         non-billable time costs but earns nothing → it drags the day).
+      overhead_per_working_day = (trailing non-COGS OPEX + optional owner reasonable comp)
+                                 ÷ business days in the lookback window.
+      daily_profit(D) = earned_margin(D) − overhead_per_working_day.
+
+    OPEX is pulled from accounting_pl() over the last `lookback_months` COMPLETE
+    calendar months, so it uses the exact same non-COGS definition as the P&L and
+    isn't skewed by the partial current month. Owner comp is included by default
+    (the owner takes distributions, not salary, so booked OPEX understates true cost).
+    """
+    from datetime import date as _date  # local alias; `date` param shadows the class
+
+    today = _date.today()
+    # Target day: explicit, else latest work_date that has entries (≤ today), else today.
+    target: _date | None = None
+    if date:
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+            try:
+                target = datetime.strptime(date.strip(), fmt).date()
+                break
+            except ValueError:
+                continue
+    if target is None:
+        latest = db.scalar(
+            select(func.max(TimeEntry.work_date)).where(TimeEntry.work_date <= today)
+        )
+        target = latest or today
+    if target > today:
+        target = today
+
+    lookback_months = max(1, min(int(lookback_months or 6), 24))
+
+    # --- Overhead: trailing N COMPLETE months ending the last day of the prior month ---
+    lb_end = _date(target.year, target.month, 1) - timedelta(days=1)  # last day of prior month
+    lb_start = _sub_months(target, lookback_months)
+    if lb_end < lb_start:  # target early in a month with tiny history — widen minimally
+        lb_end = target
+    pl = accounting_pl(start=lb_start.isoformat(), end=lb_end.isoformat(), db=db, _=_)
+    opex_lookback = float(pl.get("opex", 0.0) or 0.0)
+    lb_business_days = _business_days_between(lb_start, lb_end) or 1
+    lb_calendar_days = (lb_end - lb_start).days + 1
+
+    owner_comp_lookback = (
+        float(owner_annual_comp or 0.0) * (lb_calendar_days / 365.0)
+        if include_owner_comp else 0.0
+    )
+    opex_per_wd = opex_lookback / lb_business_days
+    owner_per_wd = owner_comp_lookback / lb_business_days
+    overhead_per_wd = opex_per_wd + owner_per_wd
+
+    # --- Per-day earned margin: one pass over entries from series_start..target ---
+    series_start = min(lb_start, _date(target.year, target.month, 1))
+    series_start = target - timedelta(days=45) if (target - series_start).days > 45 else series_start
+    day_rev: dict[_date, float] = defaultdict(float)
+    day_cost: dict[_date, float] = defaultdict(float)
+    day_bill_h: dict[_date, float] = defaultdict(float)
+    day_nonbill_h: dict[_date, float] = defaultdict(float)
+    for te in db.scalars(
+        select(TimeEntry).where(
+            TimeEntry.work_date >= series_start, TimeEntry.work_date <= target
+        )
+    ).all():
+        h = float(te.hours or 0)
+        cost = h * float(te.cost_rate_applied or 0)
+        day_cost[te.work_date] += cost
+        if te.is_billable:
+            day_rev[te.work_date] += h * float(te.bill_rate_applied or 0)
+            day_bill_h[te.work_date] += h
+        else:
+            day_nonbill_h[te.work_date] += h
+
+    def _margin(d: _date) -> float:
+        return round(day_rev.get(d, 0.0) - day_cost.get(d, 0.0), 2)
+
+    # --- Target day figures ---
+    t_rev = round(day_rev.get(target, 0.0), 2)
+    t_cost = round(day_cost.get(target, 0.0), 2)
+    t_bill = round(day_bill_h.get(target, 0.0), 2)
+    t_nonbill = round(day_nonbill_h.get(target, 0.0), 2)
+    t_margin = round(t_rev - t_cost, 2)
+    t_profit = round(t_margin - overhead_per_wd, 2)
+    margin_per_bill_h = round(t_margin / t_bill, 2) if t_bill > 0 else 0.0
+    breakeven_bill_h = round(overhead_per_wd / margin_per_bill_h, 2) if margin_per_bill_h > 0 else None
+
+    # --- Month-to-date running reconciliation ---
+    mtd_start = _date(target.year, target.month, 1)
+    mtd_margin = round(sum(_margin(d) for d in day_rev.keys() | day_cost.keys() if mtd_start <= d <= target), 2)
+    mtd_wd = _business_days_between(mtd_start, target)
+    mtd_overhead = round(overhead_per_wd * mtd_wd, 2)
+    mtd_profit = round(mtd_margin - mtd_overhead, 2)
+
+    # --- Trailing daily series for the sparkline/trend (last ~30 calendar days) ---
+    series = []
+    d = max(series_start, target - timedelta(days=29))
+    while d <= target:
+        m = _margin(d)
+        series.append({
+            "date": d.isoformat(),
+            "earned_margin": m,
+            "daily_profit": round(m - overhead_per_wd, 2) if d.weekday() < 5 else round(m, 2),
+            "is_weekend": d.weekday() >= 5,
+        })
+        d += timedelta(days=1)
+
+    return {
+        "as_of_date": target.isoformat(),
+        "is_weekend": target.weekday() >= 5,
+        "day": {
+            "date": target.isoformat(),
+            "billable_hours": t_bill,
+            "nonbillable_hours": t_nonbill,
+            "revenue": t_rev,
+            "labor_cost": t_cost,
+            "earned_margin": t_margin,
+        },
+        "overhead": {
+            "per_working_day": round(overhead_per_wd, 2),
+            "opex_component": round(opex_per_wd, 2),
+            "owner_comp_component": round(owner_per_wd, 2),
+            "include_owner_comp": include_owner_comp,
+            "owner_annual_comp": round(float(owner_annual_comp or 0.0), 2),
+            "lookback_start": lb_start.isoformat(),
+            "lookback_end": lb_end.isoformat(),
+            "lookback_months": lookback_months,
+            "business_days_in_lookback": lb_business_days,
+            "total_opex_lookback": round(opex_lookback, 2),
+            "avg_monthly_opex": round(opex_lookback / lookback_months, 2),
+        },
+        "daily_profit": t_profit,
+        "break_even": {
+            "billable_hours_needed": breakeven_bill_h,
+            "margin_per_billable_hour": margin_per_bill_h,
+        },
+        "mtd": {
+            "earned_margin": mtd_margin,
+            "overhead": mtd_overhead,
+            "profit": mtd_profit,
+            "working_days_elapsed": mtd_wd,
+        },
+        "series": series,
+        "notes": [
+            "Earned margin = billable hours × bill rate − all hours × cost rate (from timesheet rates).",
+            "Non-billable time is costed but earns nothing, so it correctly lowers the day.",
+            f"Overhead/day = (last {lookback_months} complete months' non-COGS OPEX"
+            + (" + owner reasonable comp" if include_owner_comp else "")
+            + f") ÷ {lb_business_days} business days in the window.",
+            "This is an earned-value (accrual) management KPI — value produced vs the daily nut, not cash collected.",
+            "Business-day counts exclude weekends but not holidays (v1).",
+        ],
+    }
+
+
 class AssistantAskIn(BaseModel):
     question: str
     mode: str = "quick"
