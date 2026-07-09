@@ -1163,7 +1163,7 @@ export default function AquatechPmHome() {
 
             {dashTab === "financials" ? (
               <>
-                <DailyProfitabilityKPI ownerAnnualSalary={ownerAnnualSalary} />
+                <DailyProfitabilityKPI />
                 <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
                 <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
                 <CompReconPanel data={compRecon} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
