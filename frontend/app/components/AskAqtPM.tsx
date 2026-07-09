@@ -6,10 +6,12 @@ import { apiGet, apiPost, apiDelete } from "../../lib/api";
 type KeyNumber = { label: string; value: string };
 type Series = { name: string; data: number[] };
 type Chart = { type: "bar" | "line" | "pie"; title: string; unit?: string; labels: string[]; series: Series[] };
+type Answerability = { status?: "answered" | "partial" | "unanswered"; missing_data?: string; suggested_source?: string };
 type AskResult = {
   answer?: string;
   key_numbers?: KeyNumber[];
   charts?: Chart[];
+  answerability?: Answerability;
   mode?: string;
   model?: string;
   error?: string;
@@ -377,6 +379,36 @@ function AnswerPanel({ result, onClear }: { result: AskResult; onClear: () => vo
       {result.charts?.map((c, i) => (
         <ChartView key={i} chart={c} />
       ))}
+
+      {result.answerability && result.answerability.status && result.answerability.status !== "answered" && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: "11px 14px",
+            borderRadius: 10,
+            background: "rgba(245,158,11,0.10)",
+            border: "1px solid rgba(245,158,11,0.35)",
+            fontSize: 13.5,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            ⚠ {result.answerability.status === "partial" ? "Partial answer — a data gap" : "Data gap — the app can't answer this yet"}
+          </div>
+          {result.answerability.missing_data && (
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ opacity: 0.7 }}>Missing data:</span> {result.answerability.missing_data}
+            </div>
+          )}
+          {result.answerability.suggested_source && (
+            <div>
+              <span style={{ opacity: 0.7 }}>To answer this, add:</span> {result.answerability.suggested_source}
+            </div>
+          )}
+          <div style={{ marginTop: 5, opacity: 0.6, fontSize: 12 }}>
+            Logged for the owner’s <strong>Data gaps</strong> review.
+          </div>
+        </div>
+      )}
 
       {(result.model || result.mode) && (
         <div style={{ marginTop: 10, fontSize: 11, opacity: 0.45 }}>

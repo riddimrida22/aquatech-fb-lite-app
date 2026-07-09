@@ -4448,16 +4448,26 @@ def assistant_ask(
     if not (body.question or "").strip():
         return {"error": "empty_question", "message": "Ask a question first."}
     result = _assistant.ask(body.question, body.mode, db, settings)
-    # Record per-person search history (best-effort — never fail the answer on a log error).
+    # Record per-person search history + data-gap signal (best-effort — never fail the answer on a log error).
     try:
         answer = result.get("answer") if isinstance(result, dict) else None
         preview = (answer or "").strip()[:280] if answer else None
+        ans = result.get("answerability") if isinstance(result, dict) else None
+        ans = ans if isinstance(ans, dict) else {}
+        status = ans.get("status") if ans.get("status") in ("answered", "partial", "unanswered") else "answered"
+        # An outright error (e.g. not configured / API error) is not a data gap — don't file it as one.
+        if isinstance(result, dict) and result.get("error"):
+            status = "answered"
         db.add(
             AssistantQuery(
                 user_id=getattr(user, "id", None),
                 question=body.question.strip()[:2000],
                 mode=(body.mode or "quick")[:16],
                 answer_preview=preview,
+                answer_full=(answer or None),
+                answerability=status,
+                missing_data=(ans.get("missing_data") or None),
+                suggested_source=(ans.get("suggested_source") or None),
             )
         )
         db.commit()
@@ -4487,6 +4497,7 @@ def assistant_history(
                 "question": r.question,
                 "mode": r.mode,
                 "answer_preview": r.answer_preview,
+                "answerability": getattr(r, "answerability", "answered") or "answered",
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows
@@ -4507,6 +4518,76 @@ def assistant_history_clear(
     db.execute(stmt)
     db.commit()
     return {"ok": True}
+
+
+class AssistantGapResolveIn(BaseModel):
+    id: int
+    resolved: bool = True
+    note: str | None = None
+
+
+@app.get("/assistant/gaps")
+def assistant_gaps(
+    include_resolved: bool = False,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_USERS")),
+):
+    """Owner/admin view: every question the assistant could NOT fully answer, with the
+    data that was missing and a suggestion for what to add — the app's data-gap to-do list."""
+    n = max(1, min(int(limit or 200), 500))
+    stmt = (
+        select(AssistantQuery, User.full_name)
+        .join(User, AssistantQuery.user_id == User.id, isouter=True)
+        .where(AssistantQuery.answerability.in_(("partial", "unanswered")))
+        .order_by(AssistantQuery.resolved.asc(), AssistantQuery.created_at.desc())
+        .limit(n)
+    )
+    if not include_resolved:
+        stmt = stmt.where(AssistantQuery.resolved.is_(False))
+    rows = db.execute(stmt).all()
+    open_count = db.scalar(
+        select(func.count(AssistantQuery.id)).where(
+            AssistantQuery.answerability.in_(("partial", "unanswered")),
+            AssistantQuery.resolved.is_(False),
+        )
+    )
+    items = []
+    for q, uname in rows:
+        items.append(
+            {
+                "id": q.id,
+                "question": q.question,
+                "status": q.answerability,
+                "missing_data": q.missing_data,
+                "suggested_source": q.suggested_source,
+                "answer_preview": q.answer_preview,
+                "asked_by": uname,
+                "created_at": q.created_at.isoformat() if q.created_at else None,
+                "resolved": bool(q.resolved),
+                "resolved_at": q.resolved_at.isoformat() if q.resolved_at else None,
+                "resolved_note": q.resolved_note,
+            }
+        )
+    return {"open_count": int(open_count or 0), "items": items}
+
+
+@app.post("/assistant/gaps/resolve")
+def assistant_gap_resolve(
+    body: AssistantGapResolveIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_USERS")),
+):
+    """Mark a surfaced data-gap addressed (or reopen it)."""
+    q = db.get(AssistantQuery, int(body.id))
+    if q is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    q.resolved = bool(body.resolved)
+    q.resolved_at = datetime.utcnow() if body.resolved else None
+    if body.note is not None:
+        q.resolved_note = body.note.strip()[:600] or None
+    db.commit()
+    return {"ok": True, "id": q.id, "resolved": q.resolved}
 
 
 # =====================================================================

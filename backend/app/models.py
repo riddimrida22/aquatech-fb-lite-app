@@ -28,6 +28,15 @@ class AssistantQuery(Base):
     question: Mapped[str] = mapped_column(Text)
     mode: Mapped[str] = mapped_column(String(16), default="quick")
     answer_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer_full: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Data-gap tracking: did the company data actually cover the question?
+    answerability: Mapped[str] = mapped_column(String(16), default="answered", index=True)  # answered|partial|unanswered
+    missing_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # what was needed but absent
+    suggested_source: Mapped[str | None] = mapped_column(Text, nullable=True)  # what to add to the app
+    # Owner triage of a surfaced gap.
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
