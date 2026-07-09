@@ -48,22 +48,17 @@ function shortDate(iso: string): string {
   return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export default function DailyProfitabilityKPI({ ownerAnnualSalary }: { ownerAnnualSalary: number }) {
+export default function DailyProfitabilityKPI() {
   const [data, setData] = useState<DailyProfitability | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [includeOwner, setIncludeOwner] = useState(true);
   const [lookback, setLookback] = useState(6);
   const [dateSel, setDateSel] = useState<string>(""); // "" = latest day with data
 
   const load = useCallback(() => {
     setLoading(true);
     setErr(null);
-    const params = new URLSearchParams({
-      lookback_months: String(lookback),
-      include_owner_comp: includeOwner ? "true" : "false",
-      owner_annual_comp: String(ownerAnnualSalary || 0),
-    });
+    const params = new URLSearchParams({ lookback_months: String(lookback) });
     if (dateSel) params.set("date", dateSel);
     apiGet<DailyProfitability>(`/accounting/daily-profitability?${params.toString()}`)
       .then((r) => {
@@ -74,7 +69,7 @@ export default function DailyProfitabilityKPI({ ownerAnnualSalary }: { ownerAnnu
         setErr(e?.message || "Could not load");
         setLoading(false);
       });
-  }, [lookback, includeOwner, ownerAnnualSalary, dateSel]);
+  }, [lookback, dateSel]);
 
   useEffect(() => {
     load();
@@ -94,10 +89,6 @@ export default function DailyProfitabilityKPI({ ownerAnnualSalary }: { ownerAnnu
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12.5, opacity: 0.85, cursor: "pointer" }}>
-            <input type="checkbox" checked={includeOwner} onChange={(e) => setIncludeOwner(e.target.checked)} />
-            Owner comp
-          </label>
           <select
             value={lookback}
             onChange={(e) => setLookback(Number(e.target.value))}
@@ -159,11 +150,7 @@ export default function DailyProfitabilityKPI({ ownerAnnualSalary }: { ownerAnnu
             <MetricCell
               label="Overhead / working day"
               value={`−${money(data.overhead.per_working_day)}`}
-              sub={
-                includeOwner
-                  ? `${money(data.overhead.opex_component)} OPEX + ${money(data.overhead.owner_comp_component)} owner`
-                  : `${money(data.overhead.avg_monthly_opex)}/mo OPEX ÷ ${data.overhead.business_days_in_lookback} days`
-              }
+              sub={`${money(data.overhead.avg_monthly_opex)}/mo non-COGS OPEX ÷ ${data.overhead.business_days_in_lookback} biz days`}
               color={RED}
             />
             <MetricCell

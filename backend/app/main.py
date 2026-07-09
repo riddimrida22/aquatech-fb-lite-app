@@ -4547,14 +4547,18 @@ def accounting_daily_profitability(
       earned_margin(D) = Σ(billable hours × bill_rate) − Σ(all hours × cost_rate)
                          over that day's time entries (revenue produced − labor cost;
                          non-billable time costs but earns nothing → it drags the day).
-      overhead_per_working_day = (trailing non-COGS OPEX + optional owner reasonable comp)
-                                 ÷ business days in the lookback window.
+      overhead_per_working_day = trailing non-COGS OPEX ÷ business days in the lookback.
       daily_profit(D) = earned_margin(D) − overhead_per_working_day.
 
     OPEX is pulled from accounting_pl() over the last `lookback_months` COMPLETE
     calendar months, so it uses the exact same non-COGS definition as the P&L and
-    isn't skewed by the partial current month. Owner comp is included by default
-    (the owner takes distributions, not salary, so booked OPEX understates true cost).
+    isn't skewed by the partial current month.
+
+    NOTE — owner comp is intentionally NOT added to overhead. The earned margin
+    already costs ALL labor (including the owner's) via each entry's cost_rate, so
+    adding the owner's reasonable comp on top would double-count the owner. The
+    `include_owner_comp`/`owner_annual_comp` params are retained for API compat but
+    no longer affect the number (owner comp is always excluded here).
     """
     from datetime import date as _date  # local alias; `date` param shadows the class
 
@@ -4588,13 +4592,11 @@ def accounting_daily_profitability(
     lb_business_days = _business_days_between(lb_start, lb_end) or 1
     lb_calendar_days = (lb_end - lb_start).days + 1
 
-    owner_comp_lookback = (
-        float(owner_annual_comp or 0.0) * (lb_calendar_days / 365.0)
-        if include_owner_comp else 0.0
-    )
+    # Owner comp intentionally excluded — the earned margin already costs all labor
+    # (incl. the owner) via cost_rate; adding reasonable comp here double-counts the owner.
     opex_per_wd = opex_lookback / lb_business_days
-    owner_per_wd = owner_comp_lookback / lb_business_days
-    overhead_per_wd = opex_per_wd + owner_per_wd
+    owner_per_wd = 0.0
+    overhead_per_wd = opex_per_wd
 
     # --- Per-day earned margin: one pass over entries from series_start..target ---
     series_start = min(lb_start, _date(target.year, target.month, 1))
@@ -4664,9 +4666,9 @@ def accounting_daily_profitability(
         "overhead": {
             "per_working_day": round(overhead_per_wd, 2),
             "opex_component": round(opex_per_wd, 2),
-            "owner_comp_component": round(owner_per_wd, 2),
-            "include_owner_comp": include_owner_comp,
-            "owner_annual_comp": round(float(owner_annual_comp or 0.0), 2),
+            "owner_comp_component": 0.0,
+            "include_owner_comp": False,
+            "owner_annual_comp": 0.0,
             "lookback_start": lb_start.isoformat(),
             "lookback_end": lb_end.isoformat(),
             "lookback_months": lookback_months,
@@ -4687,11 +4689,10 @@ def accounting_daily_profitability(
         },
         "series": series,
         "notes": [
-            "Earned margin = billable hours × bill rate − all hours × cost rate (from timesheet rates).",
+            "Earned margin = billable hours × bill rate − all hours × cost rate (loaded timesheet cost rate, covers all labor incl. the owner).",
             "Non-billable time is costed but earns nothing, so it correctly lowers the day.",
-            f"Overhead/day = (last {lookback_months} complete months' non-COGS OPEX"
-            + (" + owner reasonable comp" if include_owner_comp else "")
-            + f") ÷ {lb_business_days} business days in the window.",
+            f"Overhead/day = last {lookback_months} complete months' non-COGS OPEX ÷ {lb_business_days} business days in the window.",
+            "Owner comp is NOT added to overhead — the owner's time is already costed in the margin via its cost rate (adding it again would double-count).",
             "This is an earned-value (accrual) management KPI — value produced vs the daily nut, not cash collected.",
             "Business-day counts exclude weekends but not holidays (v1).",
         ],
