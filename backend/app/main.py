@@ -4592,11 +4592,14 @@ def accounting_daily_profitability(
     lb_business_days = _business_days_between(lb_start, lb_end) or 1
     lb_calendar_days = (lb_end - lb_start).days + 1
 
-    # Owner comp intentionally excluded — the earned margin already costs all labor
-    # (incl. the owner) via cost_rate; adding reasonable comp here double-counts the owner.
-    opex_per_wd = opex_lookback / lb_business_days
-    owner_per_wd = 0.0
-    overhead_per_wd = opex_per_wd
+    # Overhead is NOT subtracted separately. Each entry's cost_rate is a fully-loaded
+    # wrap rate (~1.75x direct salary = direct + fringe + overhead), so the earned
+    # margin (revenue − loaded cost) is ALREADY net of overhead. Subtracting OPEX on top
+    # would double-count it. opex_per_wd is kept only as a reference figure (actual booked
+    # non-COGS OPEX for the window) — the difference vs the standard overhead recovered in
+    # the loaded rates is over/under-applied overhead, which surfaces in the monthly P&L.
+    opex_per_wd = opex_lookback / lb_business_days  # reference only, not subtracted
+    overhead_per_wd = 0.0
 
     # --- Per-day earned margin: one pass over entries from series_start..target ---
     series_start = min(lb_start, _date(target.year, target.month, 1))
@@ -4628,9 +4631,13 @@ def accounting_daily_profitability(
     t_bill = round(day_bill_h.get(target, 0.0), 2)
     t_nonbill = round(day_nonbill_h.get(target, 0.0), 2)
     t_margin = round(t_rev - t_cost, 2)
-    t_profit = round(t_margin - overhead_per_wd, 2)
+    t_profit = t_margin  # overhead embedded in the loaded cost rate — nothing more to subtract
+    t_margin_pct = round(t_margin / t_rev, 4) if t_rev else 0.0
     margin_per_bill_h = round(t_margin / t_bill, 2) if t_bill > 0 else 0.0
-    breakeven_bill_h = round(overhead_per_wd / margin_per_bill_h, 2) if margin_per_bill_h > 0 else None
+    # Break-even = billable hours (at the day's avg bill rate) needed to cover the day's
+    # full loaded labor cost, including non-billable time.
+    _avg_bill = (t_rev / t_bill) if t_bill > 0 else 0.0
+    breakeven_bill_h = round(t_cost / _avg_bill, 2) if _avg_bill > 0 else None
 
     # --- Month-to-date running reconciliation ---
     mtd_start = _date(target.year, target.month, 1)
@@ -4662,19 +4669,19 @@ def accounting_daily_profitability(
             "revenue": t_rev,
             "labor_cost": t_cost,
             "earned_margin": t_margin,
+            "margin_pct": t_margin_pct,
         },
+        # Overhead is embedded in the loaded cost rate — NOT subtracted separately.
+        # These fields are reference context only (per_working_day is 0 by design).
         "overhead": {
-            "per_working_day": round(overhead_per_wd, 2),
-            "opex_component": round(opex_per_wd, 2),
-            "owner_comp_component": 0.0,
-            "include_owner_comp": False,
-            "owner_annual_comp": 0.0,
+            "per_working_day": 0.0,
+            "embedded_in_cost_rate": True,
+            "reference_avg_monthly_opex": round(opex_lookback / lookback_months, 2),
+            "reference_total_opex_lookback": round(opex_lookback, 2),
             "lookback_start": lb_start.isoformat(),
             "lookback_end": lb_end.isoformat(),
             "lookback_months": lookback_months,
             "business_days_in_lookback": lb_business_days,
-            "total_opex_lookback": round(opex_lookback, 2),
-            "avg_monthly_opex": round(opex_lookback / lookback_months, 2),
         },
         "daily_profit": t_profit,
         "break_even": {
@@ -4683,18 +4690,17 @@ def accounting_daily_profitability(
         },
         "mtd": {
             "earned_margin": mtd_margin,
-            "overhead": mtd_overhead,
-            "profit": mtd_profit,
+            "overhead": 0.0,
+            "profit": mtd_margin,
             "working_days_elapsed": mtd_wd,
         },
         "series": series,
         "notes": [
-            "Earned margin = billable hours × bill rate − all hours × cost rate (loaded timesheet cost rate, covers all labor incl. the owner).",
-            "Non-billable time is costed but earns nothing, so it correctly lowers the day.",
-            f"Overhead/day = last {lookback_months} complete months' non-COGS OPEX ÷ {lb_business_days} business days in the window.",
-            "Owner comp is NOT added to overhead — the owner's time is already costed in the margin via its cost rate (adding it again would double-count).",
-            "This is an earned-value (accrual) management KPI — value produced vs the daily nut, not cash collected.",
-            "Business-day counts exclude weekends but not holidays (v1).",
+            "Daily profit = billable hours × bill rate − all hours × cost rate.",
+            "The cost rate is a fully-loaded wrap (~1.75× direct salary = direct + fringe + overhead), so overhead is ALREADY inside it — it is NOT subtracted a second time.",
+            "Non-billable time is costed (at the loaded rate) but earns nothing, so it correctly lowers the day.",
+            f"For reference, actual booked non-COGS OPEX averaged ${round(opex_lookback / lookback_months, 2):,.0f}/mo over the last {lookback_months} months; the gap vs the overhead recovered in the loaded rates is over/under-applied overhead, shown in the monthly P&L.",
+            "Earned-value (accrual) management KPI — value produced vs loaded cost, not cash collected.",
         ],
     }
 
