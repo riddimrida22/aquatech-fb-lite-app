@@ -75,6 +75,7 @@ Status legend: **🔒 Locked** (settled — approval required to change) · **�
 | D-023 | 🔒 | The **employee/"viewing" picker is admin-only**; employees only ever see/enter their own timesheet. | Privacy / least privilege. | 2026-07-05 |
 | D-024 | 🔒 | Submit alert to approvers = **in-app dashboard popup** (SMTP is off in prod), not email. Approvers = Bertrand + Ailsa (admin role). | Email unreliable; in-app is the live path. | 2026-07-05 |
 | D-025 | 🔒 | Entry UI mirrors **FreshBooks Day / Week / Month / All** views; Week = grid (rows × days), per-day multi-item with own notes. | Usability parity to cut FB. | 2026-07-05 |
+| D-027 | 🔒 | **Overhead/internal projects (e.g. Aquatech Operations) ARE selectable in the timesheet entry pickers** (Day/Week/Month + grid) so non-billable admin / BD / training / PTO time is loggable. They remain **excluded** from the dashboard "active projects" count and from invoicing (billable only). | A complete timesheet needs internal time too. | 2026-07-09 |
 | D-026 | 🔒 | **Aquatech-sourced time SUPERSEDES FreshBooks-sourced time.** When both exist (or Aquatech time is loaded later) for the same **(employee, work date, project)**, the FreshBooks copy is **removed** and Aquatech's is kept. Enforced on every FB sync AND whenever Aquatech time is created/edited. | FB has no subtasks and **truncates revenue decimals** (invoices off by cents); Aquatech time is more precise and is the system of record for the transition. | 2026-07-09 |
 
 ---

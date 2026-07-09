@@ -479,7 +479,9 @@ export function WeeklyTimeEntry({
   }
 
   const projectsOnly = useMemo(
-    () => projects.filter((project) => project.is_active && !project.is_overhead),
+    // Include active overhead/internal projects (e.g. Aquatech Operations) so non-billable
+    // admin/BD/training time is loggable in the week grid too.
+    () => projects.filter((project) => project.is_active),
     [projects],
   );
 
