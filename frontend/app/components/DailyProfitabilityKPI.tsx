@@ -16,19 +16,17 @@ type DailyProfitability = {
     revenue: number;
     labor_cost: number;
     earned_margin: number;
+    margin_pct: number;
   };
   overhead: {
     per_working_day: number;
-    opex_component: number;
-    owner_comp_component: number;
-    include_owner_comp: boolean;
-    owner_annual_comp: number;
+    embedded_in_cost_rate: boolean;
+    reference_avg_monthly_opex: number;
+    reference_total_opex_lookback: number;
     lookback_start: string;
     lookback_end: string;
     lookback_months: number;
     business_days_in_lookback: number;
-    total_opex_lookback: number;
-    avg_monthly_opex: number;
   };
   daily_profit: number;
   break_even: { billable_hours_needed: number | null; margin_per_billable_hour: number };
@@ -85,7 +83,7 @@ export default function DailyProfitabilityKPI() {
           <p className="aq-lite-eyebrow" style={{ margin: 0 }}>Daily reconciliation</p>
           <h3 style={{ margin: "2px 0 0", fontSize: 18 }}>Company profitability — daily</h3>
           <p className="aq-lite-muted" style={{ fontSize: 12.5, margin: "3px 0 0", maxWidth: 560 }}>
-            The day&apos;s billable margin vs the daily overhead nut — are we above water today?
+            Billable value produced vs fully-loaded labor cost (overhead is baked into the cost rate) — did today pay for itself?
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -142,25 +140,26 @@ export default function DailyProfitabilityKPI() {
             </div>
 
             <MetricCell
-              label="Earned margin (day)"
-              value={money(data.day.earned_margin)}
-              sub={`${money(data.day.revenue)} billed − ${money(data.day.labor_cost)} labor`}
-              color={data.day.earned_margin >= 0 ? GREEN : RED}
+              label="Revenue (day)"
+              value={money(data.day.revenue)}
+              sub={`${data.day.billable_hours}h billable × bill rate`}
+              color={GREEN}
             />
             <MetricCell
-              label="Overhead / working day"
-              value={`−${money(data.overhead.per_working_day)}`}
-              sub={`${money(data.overhead.avg_monthly_opex)}/mo non-COGS OPEX ÷ ${data.overhead.business_days_in_lookback} biz days`}
+              label="Loaded labor cost (day)"
+              value={`−${money(data.day.labor_cost)}`}
+              sub="all hours × loaded cost rate (incl. overhead)"
               color={RED}
             />
             <MetricCell
-              label="Break-even billable hrs"
-              value={data.break_even.billable_hours_needed != null ? `${data.break_even.billable_hours_needed} h` : "—"}
+              label="Margin %"
+              value={`${(data.day.margin_pct * 100).toFixed(1)}%`}
               sub={
-                data.break_even.margin_per_billable_hour > 0
-                  ? `at ${money(data.break_even.margin_per_billable_hour)}/billable-hr margin`
+                data.break_even.billable_hours_needed != null
+                  ? `break-even ≈ ${data.break_even.billable_hours_needed} billable hrs`
                   : "no billable hours this day"
               }
+              color={data.day.margin_pct >= 0 ? GREEN : RED}
             />
           </div>
 
@@ -180,9 +179,7 @@ export default function DailyProfitabilityKPI() {
             <span style={{ fontWeight: 700, opacity: 0.7, textTransform: "uppercase", fontSize: 11, letterSpacing: 0.4, alignSelf: "center" }}>
               Month to date
             </span>
-            <MtdItem label="Profit" value={data.mtd.profit} money />
-            <MtdItem label="Earned margin" value={data.mtd.earned_margin} money />
-            <MtdItem label="Overhead" value={-Math.abs(data.mtd.overhead)} money />
+            <MtdItem label="Profit (loaded margin)" value={data.mtd.profit} money />
             <span style={{ alignSelf: "center", opacity: 0.6 }}>{data.mtd.working_days_elapsed} working days elapsed</span>
           </div>
 
@@ -220,8 +217,8 @@ export default function DailyProfitabilityKPI() {
                 <li key={i}>{n}</li>
               ))}
               <li>
-                Overhead window: {shortDate(data.overhead.lookback_start)}–{shortDate(data.overhead.lookback_end)} ·
-                total non-COGS OPEX {money(data.overhead.total_opex_lookback)} over {data.overhead.business_days_in_lookback} business days.
+                Reference only (NOT subtracted): booked non-COGS OPEX was {money(data.overhead.reference_total_opex_lookback)} over{" "}
+                {shortDate(data.overhead.lookback_start)}–{shortDate(data.overhead.lookback_end)} — overhead lives inside the loaded cost rate; the gap vs what the rate recovers is over/under-applied overhead in the P&L.
               </li>
             </ul>
           </details>
