@@ -1328,3 +1328,42 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 [data-theme="dark"] .aq-lite-badge-info { background: #1c2c44; border-color: #34507a; color: #9cc0ef; }
 [data-theme="dark"] .aq-lite-badge-neutral,
 [data-theme="dark"] .aq-lite-badge-mute { background: var(--aq-subtle); border-color: var(--aq-border); color: var(--aq-muted); }
+
+/* Data-freshness ribbon — explicit, theme-aware contrast so it never blends into
+   the dashboard's page gradient (var(--aq-card) was too close to the background,
+   and the muted label washed out). Strong band + strong text in BOTH modes. */
+.aq-freshness {
+  background: #dbe6f1;            /* light: clearly darker than the page gradient */
+  border: 1px solid #93a6bd;
+  color: #17293c;                 /* near-black navy — high contrast on the band */
+}
+.aq-freshness strong { color: #0f2033; }
+.aq-freshness-label {
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 11px;
+  color: #2c5f6b;                 /* teal accent, still high-contrast */
+}
+.aq-freshness-alert { color: #b42318; font-weight: 700; }
+.aq-freshness--stale {
+  background: #fbe4b8;            /* unmistakable amber band */
+  border: 1px solid #d99521;
+  color: #4a3410;
+}
+.aq-freshness--stale .aq-freshness-label { color: #8a5a12; }
+.aq-freshness--stale strong { color: #3a2909; }
+
+[data-theme="dark"] .aq-freshness {
+  background: #24313f;
+  border-color: #4a5f78;
+  color: #eaf1f8;
+}
+[data-theme="dark"] .aq-freshness strong { color: #ffffff; }
+[data-theme="dark"] .aq-freshness-label { color: #8fd0dd; }
+[data-theme="dark"] .aq-freshness--stale {
+  background: #3a2f16;
+  border-color: #b98a2c;
+  color: #f7e4bd;
+}
+[data-theme="dark"] .aq-freshness--stale .aq-freshness-label { color: #e9cf9a; }
