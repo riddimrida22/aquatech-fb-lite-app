@@ -8532,11 +8532,13 @@ def list_decisions(_: User = Depends(require_permission("VIEW_FINANCIALS"))) -> 
             continue
         m = re.match(r"^\|\s*(D-\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|", line)
         if m and cur is not None:
+            def _clean(s: str) -> str:
+                return s.replace("**", "").replace("`", "")
             cur["items"].append({  # type: ignore[union-attr]
                 "id": m.group(1),
                 "locked": "🔒" in m.group(2),
-                "decision": m.group(3),
-                "rationale": m.group(4),
+                "decision": _clean(m.group(3)),
+                "rationale": _clean(m.group(4)),
                 "settled": m.group(5),
             })
     return {
