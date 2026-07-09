@@ -54,7 +54,9 @@ _SOURCES = [
     ("balance_sheet", "accounting_balance_sheet"),
     ("employee_comp", "accounting_comp_reconciliation"),
     ("payroll_by_year", "payroll_journal_summary"),
+    ("payroll_hours", "payroll_hours_report"),
     ("accounts_receivable", "ar_summary"),
+    ("invoice_revenue_status", "invoice_revenue_status"),
     ("project_performance", "project_performance_range"),
     ("unbilled_work", "unbilled_hours_report"),
 ]
@@ -136,8 +138,25 @@ _ANSWER_SCHEMA = {
             },
         },
         "charts": {"type": "array", "items": _CHART_SCHEMA},
+        "answerability": {
+            "type": "object",
+            "description": "Whether the COMPANY DATA actually contained what was needed to answer.",
+            "properties": {
+                "status": {"type": "string", "enum": ["answered", "partial", "unanswered"]},
+                "missing_data": {
+                    "type": "string",
+                    "description": "If partial/unanswered: the specific data that was needed but ABSENT from COMPANY DATA (e.g. 'per-vendor bills', 'time entries older than 2024'). Empty string if fully answered.",
+                },
+                "suggested_source": {
+                    "type": "string",
+                    "description": "If partial/unanswered: a concrete, actionable suggestion for what the app should add so this question can be answered next time (e.g. 'import accounts-payable / vendor bills', 'track a billable flag per project'). Empty string if fully answered.",
+                },
+            },
+            "required": ["status", "missing_data", "suggested_source"],
+            "additionalProperties": False,
+        },
     },
-    "required": ["answer", "key_numbers", "charts"],
+    "required": ["answer", "key_numbers", "charts", "answerability"],
     "additionalProperties": False,
 }
 
@@ -147,9 +166,10 @@ Rules:
 - Ground every claim in the data. Cite exact numbers (dollars in USD, hours, percentages). Never invent figures.
 - If the data does not contain the answer, say so plainly and name what's missing — do not guess.
 - All money is USD. Format as $12,345 (no decimals unless cents matter). Percentages to one decimal.
+- ALWAYS set `answerability`. Use "answered" only if the COMPANY DATA fully answers the question. Use "partial" if you could answer part but some needed data is absent. Use "unanswered" if the data doesn't contain what's needed at all. When "partial" or "unanswered", set `missing_data` to the SPECIFIC data that was missing, and `suggested_source` to a concrete, actionable suggestion for what the app should add/track so this exact question could be answered next time. When "answered", set both strings to "". Do not mark a question "unanswered" just because it's off-topic (not about the company) — only for genuine data gaps.
 - {mode_instructions}
 
-Return JSON matching the schema: `answer` (markdown), `key_numbers` (headline stats to highlight), `charts` (visualizations).
+Return JSON matching the schema: `answer` (markdown), `key_numbers` (headline stats to highlight), `charts` (visualizations), `answerability` (whether the data actually covered the question).
 
 COMPANY DATA (JSON, current as of today):
 {context}
@@ -235,6 +255,14 @@ def ask(question: str, mode: str, db, settings) -> dict:
 
     data.setdefault("key_numbers", [])
     data.setdefault("charts", [])
+    a = data.get("answerability")
+    if not isinstance(a, dict):
+        a = {}
+    data["answerability"] = {
+        "status": a.get("status") if a.get("status") in ("answered", "partial", "unanswered") else "answered",
+        "missing_data": (a.get("missing_data") or "").strip()[:600],
+        "suggested_source": (a.get("suggested_source") or "").strip()[:600],
+    }
     data["mode"] = mode
     data["model"] = model
     try:

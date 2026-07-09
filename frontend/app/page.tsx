@@ -13,6 +13,7 @@ import { TransfersPanel } from "./components/TransfersPanel";
 import { DedupPanel } from "./components/DedupPanel";
 import { PayrollPortal } from "./components/PayrollPortal";
 import AskAqtPM from "./components/AskAqtPM";
+import DataGaps from "./components/DataGaps";
 import { BdWorkspace } from "./components/BdWorkspace";
 import { FreshnessBanner } from "./components/FreshnessBanner";
 import { PayrollExpenseSummary } from "./components/PayrollExpenseSummary";
@@ -1000,6 +1001,7 @@ export default function AquatechPmHome() {
         {workspace === "dashboard" ? (
           <section className="aq-lite-stack">
             {capabilities.canViewFinancials ? <AskAqtPM /> : null}
+            {capabilities.canManageUsers ? <DataGaps /> : null}
             {capabilities.canViewFinancials ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
                 <span style={{ opacity: 0.6, fontSize: "0.8em", marginRight: "0.2rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>Period</span>

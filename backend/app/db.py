@@ -44,6 +44,7 @@ def init_db() -> None:
     _ensure_invoice_columns()
     _ensure_invoice_line_columns()
     _ensure_bank_columns()
+    _ensure_assistant_columns()
     _ensure_dedup_indexes()
 
 
@@ -76,6 +77,33 @@ def _ensure_project_columns() -> None:
             conn.execute(text(stmt))
         if "is_billable" not in cols:
             conn.execute(text("UPDATE projects SET is_billable = CASE WHEN is_overhead THEN FALSE ELSE TRUE END WHERE is_billable IS NULL"))
+
+
+def _ensure_assistant_columns() -> None:
+    insp = inspect(engine)
+    if not insp.has_table("assistant_queries"):
+        return
+    cols = {c["name"] for c in insp.get_columns("assistant_queries")}
+    statements: list[str] = []
+    if "answer_full" not in cols:
+        statements.append("ALTER TABLE assistant_queries ADD COLUMN answer_full TEXT")
+    if "answerability" not in cols:
+        statements.append("ALTER TABLE assistant_queries ADD COLUMN answerability VARCHAR(16) DEFAULT 'answered'")
+    if "missing_data" not in cols:
+        statements.append("ALTER TABLE assistant_queries ADD COLUMN missing_data TEXT")
+    if "suggested_source" not in cols:
+        statements.append("ALTER TABLE assistant_queries ADD COLUMN suggested_source TEXT")
+    if "resolved" not in cols:
+        statements.append("ALTER TABLE assistant_queries ADD COLUMN resolved BOOLEAN DEFAULT FALSE")
+    if "resolved_at" not in cols:
+        statements.append("ALTER TABLE assistant_queries ADD COLUMN resolved_at TIMESTAMP")
+    if "resolved_note" not in cols:
+        statements.append("ALTER TABLE assistant_queries ADD COLUMN resolved_note TEXT")
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 def _ensure_user_columns() -> None:
