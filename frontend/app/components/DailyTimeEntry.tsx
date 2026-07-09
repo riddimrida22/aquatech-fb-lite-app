@@ -147,7 +147,9 @@ export function DailyTimeEntry({
   );
 
   const projectsOnly = useMemo(
-    () => projects.filter((p) => p.is_active && !p.is_overhead),
+    // Include active OVERHEAD/internal projects (e.g. Aquatech Operations) so admin/BD/
+    // training/PTO time is loggable — a complete timesheet needs non-billable time too.
+    () => projects.filter((p) => p.is_active),
     [projects],
   );
   const tasksFor = (pid: number): Task[] => wbsByProject[pid]?.tasks ?? [];

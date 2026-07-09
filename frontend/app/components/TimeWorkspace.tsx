@@ -123,7 +123,7 @@ export function TimeWorkspace({
               <select value={timeForm.projectId} onChange={(event) => void onProjectPick(event.target.value)} required>
                 <option value="">Select project</option>
                 {projects
-                  .filter((project) => !project.is_overhead && project.is_active)
+                  .filter((project) => project.is_active)
                   .map((project) => (
                     <option key={project.id} value={project.id}>
                       {project.name}
