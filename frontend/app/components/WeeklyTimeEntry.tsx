@@ -255,7 +255,8 @@ export function WeeklyTimeEntry({
 
   const subtaskOptionsFor = (projectId: number, taskId: number): Subtask[] => {
     const tasks = taskOptionsFor(projectId);
-    return tasks.find((t) => t.id === taskId)?.subtasks ?? [];
+    // Hide FB-TRANS transitional buckets from the picker (FB-only; D-029).
+    return (tasks.find((t) => t.id === taskId)?.subtasks ?? []).filter((s) => (s.code || "").toUpperCase() !== "FB-TRANS");
   };
 
   function setCell(rowKey: RowKey, day: DayKey, value: string) {

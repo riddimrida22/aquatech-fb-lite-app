@@ -8548,6 +8548,47 @@ def list_decisions(_: User = Depends(require_permission("VIEW_FINANCIALS"))) -> 
     }
 
 
+@app.get("/reports/freshbooks-hours")
+def freshbooks_hours(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("APPROVE_TIMESHEETS")),
+) -> dict[str, object]:
+    """Transitional 'FreshBooks hours' view — time still sourced from FreshBooks
+    (source=freshbooks_api), quarantined during the cut-over. Shrinks as the team logs in
+    the app (Aquatech time supersedes FB — D-026). Retired once FreshBooks is exited."""
+    rows = db.execute(
+        select(
+            Project.name,
+            func.count(TimeEntry.id),
+            func.coalesce(func.sum(TimeEntry.hours), 0.0),
+            func.min(TimeEntry.work_date),
+            func.max(TimeEntry.work_date),
+        )
+        .join(Project, Project.id == TimeEntry.project_id)
+        .where(TimeEntry.source == "freshbooks_api")
+        .group_by(Project.name)
+        .order_by(func.coalesce(func.sum(TimeEntry.hours), 0.0).desc())
+    ).all()
+    items = [
+        {"project": n or "(unassigned)", "entries": int(c), "hours": round(float(h), 1),
+         "first": a.isoformat() if a else None, "last": b.isoformat() if b else None}
+        for n, c, h, a, b in rows
+    ]
+    fb_h = round(sum(i["hours"] for i in items), 1)
+    fb_e = sum(i["entries"] for i in items)
+    aqt_h = round(float(db.scalar(
+        select(func.coalesce(func.sum(TimeEntry.hours), 0.0)).where(TimeEntry.source == "manual")
+    ) or 0.0), 1)
+    aqt_e = int(db.scalar(select(func.count(TimeEntry.id)).where(TimeEntry.source == "manual")) or 0)
+    total = fb_h + aqt_h
+    return {
+        "fb_hours": fb_h, "fb_entries": fb_e,
+        "aquatech_hours": aqt_h, "aquatech_entries": aqt_e,
+        "pct_migrated": round(100.0 * aqt_h / total, 1) if total else 0.0,
+        "items": items,
+    }
+
+
 @app.get("/timesheets/adoption")
 def timesheet_adoption(
     week_start: date | None = None,
