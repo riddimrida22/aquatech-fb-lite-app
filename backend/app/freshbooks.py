@@ -855,8 +855,13 @@ def _resolve_subtask_for_project(db: Session, project_id: int, cache: dict[int, 
     if not rows:
         cache[project_id] = None  # type: ignore[assignment]
         return None
-    # Prefer a non-NO-SUBTASK code
-    pick = next((r for r in rows if (r[0].code or "").upper() != "NO-SUBTASK"), rows[0])
+    # Prefer a dedicated "FB-TRANS" transitional bucket if the project has one, so NEW
+    # FreshBooks-imported time is quarantined there instead of a real work subtask
+    # (D-029). Otherwise prefer a real (non-NO-SUBTASK) subtask.
+    pick = (
+        next((r for r in rows if (r[0].code or "").upper() == "FB-TRANS"), None)
+        or next((r for r in rows if (r[0].code or "").upper() != "NO-SUBTASK"), rows[0])
+    )
     sub, tsk = pick
     cache[project_id] = (tsk.id, sub.id)
     return (tsk.id, sub.id)
@@ -1059,10 +1064,16 @@ def sync_time_entries(
                     db.add(row)
                     outcome = "inserted"
                 else:
+                    # Preserve the existing task/subtask when the project is unchanged, so a
+                    # re-sync does NOT re-route already-placed FB time (e.g. LTCP4 history that
+                    # lives in DWF-MODEL, or any manual re-categorization). Only re-resolve the
+                    # subtask if the entry actually moved projects. (D-029 / D-026)
+                    same_project = row.project_id == aqt_pid
                     row.user_id = aqt_uid
                     row.project_id = aqt_pid
-                    row.task_id = task_id
-                    row.subtask_id = subtask_id
+                    if not same_project:
+                        row.task_id = task_id
+                        row.subtask_id = subtask_id
                     row.work_date = work_date
                     row.hours = hours
                     row.note = note

@@ -6,6 +6,7 @@ import { AdminTimesheet, Timesheet, formatDate, formatNumber } from "./workspace
 import { StatusBadge } from "./StatusBadge";
 import { GroupedList } from "./GroupedList";
 import AdoptionTracker from "./AdoptionTracker";
+import FreshBooksHours from "./FreshBooksHours";
 
 type TimesheetsWorkspaceProps = {
   timesheets: Timesheet[];
@@ -227,6 +228,7 @@ export function TimesheetsWorkspace({
       </div>
 
       {canApproveTimesheets ? <AdoptionTracker /> : null}
+      {canApproveTimesheets ? <FreshBooksHours /> : null}
 
       {canApproveTimesheets ? (
         <section className="aq-lite-panel">

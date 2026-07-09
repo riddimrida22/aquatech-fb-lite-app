@@ -154,7 +154,9 @@ export function DailyTimeEntry({
   );
   const tasksFor = (pid: number): Task[] => wbsByProject[pid]?.tasks ?? [];
   const subtasksFor = (pid: number, tid: number): Subtask[] =>
-    tasksFor(pid).find((t) => t.id === tid)?.subtasks ?? [];
+    // Hide FB-TRANS transitional buckets — employees log to real subtasks; FB time is
+    // quarantined there by the sync (D-029).
+    (tasksFor(pid).find((t) => t.id === tid)?.subtasks ?? []).filter((s) => (s.code || "").toUpperCase() !== "FB-TRANS");
 
   async function openNew(dateIso: string) {
     if (readOnly) return;
