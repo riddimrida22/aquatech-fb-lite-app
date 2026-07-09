@@ -4011,6 +4011,93 @@ def accounting_pl(
     }
 
 
+@app.get("/accounting/pl-monthly")
+def accounting_pl_monthly(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Month-by-month P&L rollup — one row per calendar month, BOTH cash and
+    accrual bases. Reuses accounting_pl() per month so every line matches the
+    single-period P&L exactly. Defaults to the trailing 12 complete months
+    through the current month.
+    """
+    from datetime import date as _date
+
+    today = _date.today()
+    # Parse bounds; default = trailing 12 months ending this month.
+    def _parse(s: str | None) -> _date | None:
+        if not s:
+            return None
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+            try:
+                return datetime.strptime(s.strip(), fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    e_d = _parse(end) or today
+    s_d = _parse(start) or _sub_months(e_d, 11)  # 11 back + current = 12 months
+    # Normalize to month boundaries.
+    cur = _date(s_d.year, s_d.month, 1)
+    last_month_start = _date(e_d.year, e_d.month, 1)
+
+    _MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    months: list[dict[str, object]] = []
+    tot = {
+        "revenue_cash": 0.0, "revenue_accrual": 0.0, "cogs": 0.0, "opex": 0.0,
+        "interest_expense": 0.0, "fees_expense": 0.0,
+        "net_income_cash": 0.0, "net_income_accrual": 0.0,
+    }
+    while cur <= last_month_start:
+        # last day of `cur` month
+        nxt = _date(cur.year + 1, 1, 1) if cur.month == 12 else _date(cur.year, cur.month + 1, 1)
+        m_end = nxt - timedelta(days=1)
+        pl = accounting_pl(start=cur.isoformat(), end=m_end.isoformat(), db=db, _=_)
+        row = {
+            "month": f"{cur.year}-{cur.month:02d}",
+            "label": f"{_MONTH_ABBR[cur.month]} {cur.year}",
+            "start": cur.isoformat(),
+            "end": m_end.isoformat(),
+            "revenue_cash": pl["revenue_cash"],
+            "revenue_accrual": pl["revenue_accrual"],
+            "cogs": pl["cogs"],
+            "opex": pl["opex"],
+            "interest_expense": pl["interest_expense"],
+            "fees_expense": pl["fees_expense"],
+            "net_income_cash": pl["net_income_cash"],
+            "net_income_accrual": pl["net_income_accrual"],
+            "net_margin_cash": pl["net_margin_cash"],
+            "net_margin_accrual": pl["net_margin_accrual"],
+        }
+        months.append(row)
+        for k in tot:
+            tot[k] += float(row[k] or 0.0)
+        cur = nxt
+
+    def _m(num: float, den: float) -> float:
+        return round(num / den, 4) if den else 0.0
+
+    totals = {k: round(v, 2) for k, v in tot.items()}
+    totals["net_margin_cash"] = _m(tot["net_income_cash"], tot["revenue_cash"])
+    totals["net_margin_accrual"] = _m(tot["net_income_accrual"], tot["revenue_accrual"])
+
+    return {
+        "period": {"start": cur.isoformat() if not months else months[0]["start"],
+                   "end": months[-1]["end"] if months else e_d.isoformat()},
+        "months": months,
+        "totals": totals,
+        "notes": [
+            "Each month is the same P&L as the single-period view — cash and accrual side by side.",
+            "Revenue (cash) = invoices paid in the month; Revenue (accrual) = invoices issued in the month.",
+            "COGS = Gusto employer cost + benefits/workers-comp + categorized direct-project costs.",
+        ],
+    }
+
+
 @app.get("/accounting/cashflow")
 def accounting_cashflow(
     start: str | None = None,
