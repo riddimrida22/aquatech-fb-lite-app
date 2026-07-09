@@ -7946,6 +7946,11 @@ def create_time_entry(
         cost_rate_applied=rate.cost_rate,
     )
     db.add(entry)
+    db.flush()
+    # D-026: Aquatech time supersedes FreshBooks — drop the FB copy for this (user, day, project).
+    fb_integration.purge_fb_time_superseded_by_aquatech(
+        db, only_user_id=current_user.id, only_work_date=payload.work_date, only_project_id=payload.project_id
+    )
     db.commit()
     db.refresh(entry)
     return _to_time_entry_out(entry)
@@ -8138,6 +8143,11 @@ def update_time_entry(
     entry.bill_rate_applied = rate.bill_rate
     entry.cost_rate_applied = rate.cost_rate
 
+    db.flush()
+    # D-026: Aquatech time supersedes FreshBooks — drop the FB copy for this (user, day, project).
+    fb_integration.purge_fb_time_superseded_by_aquatech(
+        db, only_user_id=entry.user_id, only_work_date=payload.work_date, only_project_id=payload.project_id
+    )
     db.commit()
     db.refresh(entry)
     return _to_time_entry_out(entry)

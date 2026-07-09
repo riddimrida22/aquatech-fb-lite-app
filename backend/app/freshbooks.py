@@ -1105,11 +1105,79 @@ def sync_time_entries(
                 counts["deleted_orphans"] += 1
         db.flush()
 
+    # HARD RULE (DECISIONS.md D-026): Aquatech-sourced time supersedes FreshBooks time.
+    # After importing, drop any FB copy for a (user, day, project) the team has logged in
+    # the app — FB has no subtasks and truncates revenue decimals, so Aquatech's is truth.
+    counts["superseded_by_aquatech"] = purge_fb_time_superseded_by_aquatech(db)
+
     return {
         "count": counts["inserted"] + counts["updated"],
         "by_outcome": counts,
         "sample": sample,
     }
+
+
+def purge_fb_time_superseded_by_aquatech(
+    db: Session,
+    only_user_id: int | None = None,
+    only_work_date: "date | None" = None,
+    only_project_id: int | None = None,
+) -> int:
+    """HARD RULE (DECISIONS.md D-026): Aquatech-sourced (``manual``) time is the system of
+    record and SUPERSEDES FreshBooks-sourced (``freshbooks_api``) time. Where the team has
+    logged Aquatech time for a **(user_id, work_date, project_id)**, the FreshBooks copy of
+    that same scope is deleted (FB lacks subtasks and truncates revenue decimals).
+
+    Call with no scope args to reconcile the whole table (after an FB sync); pass a scope to
+    reconcile just one entry's (user, day, project) after a manual create/edit.
+    """
+    if only_user_id is not None:
+        has_aqt = db.scalar(
+            select(TimeEntry.id).where(
+                TimeEntry.source == "manual",
+                TimeEntry.user_id == only_user_id,
+                TimeEntry.work_date == only_work_date,
+                TimeEntry.project_id == only_project_id,
+            ).limit(1)
+        )
+        if not has_aqt:
+            return 0
+        removed = 0
+        for fb in db.scalars(
+            select(TimeEntry).where(
+                TimeEntry.source == "freshbooks_api",
+                TimeEntry.user_id == only_user_id,
+                TimeEntry.work_date == only_work_date,
+                TimeEntry.project_id == only_project_id,
+            )
+        ).all():
+            db.delete(fb)
+            removed += 1
+        if removed:
+            db.flush()
+        return removed
+
+    # Whole-table reconcile: build the set of Aquatech-covered (user, day, project) scopes.
+    aqt_scopes = {
+        (u, d, p)
+        for u, d, p in db.execute(
+            select(TimeEntry.user_id, TimeEntry.work_date, TimeEntry.project_id)
+            .where(TimeEntry.source == "manual")
+            .distinct()
+        ).all()
+    }
+    if not aqt_scopes:
+        return 0
+    removed = 0
+    for fb in db.scalars(
+        select(TimeEntry).where(TimeEntry.source == "freshbooks_api")
+    ).all():
+        if (fb.user_id, fb.work_date, fb.project_id) in aqt_scopes:
+            db.delete(fb)
+            removed += 1
+    if removed:
+        db.flush()
+    return removed
 
 
 def sync_time_only(db: Session) -> dict[str, Any]:
