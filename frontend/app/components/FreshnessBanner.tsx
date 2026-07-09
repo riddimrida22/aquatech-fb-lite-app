@@ -28,27 +28,25 @@ export function FreshnessBanner() {
   }, []);
   if (!f || !f.sources.length) return null;
   const bad = f.overall !== "ok";
+  // Colors come from the `.aq-freshness` classes in globals.css, which set an
+  // explicit, theme-aware background + text pair per light/dark mode. (The prior
+  // approach used var(--aq-card)/var(--aq-text): the near-white card blended into
+  // the page gradient and the muted label washed out.)
   return (
     <div
+      className={`aq-freshness${bad ? " aq-freshness--stale" : ""}`}
       style={{
         display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14,
         padding: "8px 14px", borderRadius: 10, marginBottom: 10, fontSize: 13,
-        // Force the theme text color (was inheriting a muted color on the dashboard,
-        // which washed the banner out) — high contrast in both light and dark mode.
-        color: "var(--aq-text)",
-        background: bad ? "rgba(245,158,11,0.16)" : "var(--aq-card)",
-        border: bad ? "1px solid rgba(245,158,11,0.55)" : "1px solid var(--aq-border)",
       }}
     >
-      <span style={{ fontWeight: 700, color: "var(--aq-muted)", textTransform: "uppercase", letterSpacing: 0.4, fontSize: 11 }}>
-        Data freshness
-      </span>
+      <span className="aq-freshness-label">Data freshness</span>
       {f.sources.map((s) => (
         <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 5 }} title={s.detail || ""}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: DOT[s.status] || "#9ca3af" }} />
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: DOT[s.status] || "#9ca3af", flex: "none" }} />
           {s.label}: <strong>{ageLabel(s.age_hours)}</strong>
           {(s.status === "reauth_required" || s.status === "error") && (
-            <span style={{ color: "#ef4444", fontWeight: 600 }}>· needs reconnect</span>
+            <span className="aq-freshness-alert">· needs reconnect</span>
           )}
         </span>
       ))}
