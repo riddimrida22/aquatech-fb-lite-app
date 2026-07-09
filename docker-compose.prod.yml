@@ -64,6 +64,8 @@ services:
       # Watched inbox for folder-based imports (FreshBooks/Chase CSVs, Paychex/Gusto payroll).
       # Host path is gitignored (holds financial PII); drop source files here, then Rescan in the UI.
       - ./data/imports/AqtPM-Uploads:/app/data/imports/AqtPM-Uploads
+      # Settled Decisions Register — served read-only by GET /decisions (single source of truth).
+      - ./DECISIONS.md:/app/DECISIONS.md:ro
     depends_on:
       db:
         condition: service_healthy

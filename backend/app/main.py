@@ -8511,6 +8511,41 @@ def all_timesheets(
     return out
 
 
+@app.get("/decisions")
+def list_decisions(_: User = Depends(require_permission("VIEW_FINANCIALS"))) -> dict[str, object]:
+    """Serve the Settled Decisions Register (DECISIONS.md) as structured data so it can be
+    viewed in the app. Single source of truth = the repo's DECISIONS.md (mounted read-only)."""
+    import pathlib
+    p = pathlib.Path("/app/DECISIONS.md")
+    if not p.exists():
+        p = pathlib.Path(__file__).resolve().parents[2] / "DECISIONS.md"  # dev fallback (repo root)
+    if not p.exists():
+        return {"available": False, "sections": [], "updated": None}
+    text = p.read_text(encoding="utf-8")
+    sections: list[dict[str, object]] = []
+    cur: dict[str, object] | None = None
+    for line in text.splitlines():
+        h = re.match(r"^##\s+([A-Z]\.\s+.*)$", line)
+        if h:
+            cur = {"title": h.group(1).strip(), "items": []}
+            sections.append(cur)
+            continue
+        m = re.match(r"^\|\s*(D-\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|", line)
+        if m and cur is not None:
+            cur["items"].append({  # type: ignore[union-attr]
+                "id": m.group(1),
+                "locked": "🔒" in m.group(2),
+                "decision": m.group(3),
+                "rationale": m.group(4),
+                "settled": m.group(5),
+            })
+    return {
+        "available": True,
+        "sections": [s for s in sections if s["items"]],
+        "count": sum(len(s["items"]) for s in sections),  # type: ignore[arg-type]
+    }
+
+
 @app.get("/timesheets/adoption")
 def timesheet_adoption(
     week_start: date | None = None,
