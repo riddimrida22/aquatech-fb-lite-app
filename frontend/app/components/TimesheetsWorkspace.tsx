@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { AdminTimesheet, Timesheet, formatDate, formatNumber } from "./workspaceShared";
 import { StatusBadge } from "./StatusBadge";
 import { GroupedList } from "./GroupedList";
+import AdoptionTracker from "./AdoptionTracker";
 
 type TimesheetsWorkspaceProps = {
   timesheets: Timesheet[];
@@ -224,6 +225,8 @@ export function TimesheetsWorkspace({
           </div>
         </section>
       </div>
+
+      {canApproveTimesheets ? <AdoptionTracker /> : null}
 
       {canApproveTimesheets ? (
         <section className="aq-lite-panel">
