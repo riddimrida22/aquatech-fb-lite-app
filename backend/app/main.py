@@ -8436,6 +8436,69 @@ def all_timesheets(
     return out
 
 
+@app.get("/timesheets/adoption")
+def timesheet_adoption(
+    week_start: date | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("APPROVE_TIMESHEETS")),
+) -> dict[str, object]:
+    """Weekly in-app adoption tracker — for the FreshBooks cut-over.
+
+    Lists every active user and whether they logged time IN THE APP for the week,
+    so an approver can see at a glance who has switched off FreshBooks and chase the
+    stragglers. Unlike /timesheets/all (which only surfaces weeks that already have
+    entries), this includes people with ZERO app entries — the ones still on FB.
+    """
+    ws = _week_start(week_start or date.today())
+    we = ws + timedelta(days=6)
+
+    users = db.scalars(
+        select(User).where(User.is_active.is_(True)).order_by(User.full_name.asc())
+    ).all()
+
+    agg = db.execute(
+        select(
+            TimeEntry.user_id,
+            func.coalesce(func.sum(TimeEntry.hours), 0.0),
+            func.count(TimeEntry.id),
+            func.max(TimeEntry.created_at),
+        )
+        .where(TimeEntry.work_date >= ws, TimeEntry.work_date <= we)
+        .group_by(TimeEntry.user_id)
+    ).all()
+    by_user = {uid: (float(h or 0.0), int(c), last) for uid, h, c, last in agg}
+
+    sheets = db.scalars(select(Timesheet).where(Timesheet.week_start == ws)).all()
+    status_by_user = {s.user_id: s.status for s in sheets}
+
+    items: list[dict[str, object]] = []
+    logged = 0
+    for u in users:
+        hours, entries, last = by_user.get(u.id, (0.0, 0, None))
+        has_logged = entries > 0
+        if has_logged:
+            logged += 1
+        items.append({
+            "user_id": u.id,
+            "name": u.full_name or u.email,
+            "email": u.email,
+            "hours": round(hours, 2),
+            "entries": entries,
+            "has_logged": has_logged,
+            "timesheet_status": status_by_user.get(u.id, "none"),
+            "last_entry_at": last.isoformat() if last else None,
+        })
+    # Not-yet-logged first (the ones to chase), then by name.
+    items.sort(key=lambda r: (r["has_logged"], str(r["name"]).lower()))
+    return {
+        "week_start": ws.isoformat(),
+        "week_end": we.isoformat(),
+        "logged": logged,
+        "total": len(users),
+        "items": items,
+    }
+
+
 @app.get("/dashboards/project-margin")
 def project_margin(
     start: date,
