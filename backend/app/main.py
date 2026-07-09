@@ -4650,10 +4650,12 @@ def accounting_daily_profitability(
     day_cost: dict[_date, float] = defaultdict(float)
     day_bill_h: dict[_date, float] = defaultdict(float)
     day_nonbill_h: dict[_date, float] = defaultdict(float)
-    # Price billable hours at the ACTUAL invoiced rate (direct × multiplier), not the
-    # entry's stored bill_rate_applied — some entries carry a stale flat $125 default.
+    # Revenue = billable hours × the ACTUAL per-project bill rate stored on each entry
+    # (rates vary by project). Only when an entry's rate is missing or is the stale flat
+    # $125 default (from before per-project rates were applied) do we fall back to the
+    # person's standard invoiced rate (direct × multiplier).
     _uname = {u.id: u.full_name for u in db.scalars(select(User)).all()}
-    _rate_cache: dict[int, float | None] = {}
+    _std_cache: dict[int, float | None] = {}
     for te in db.scalars(
         select(TimeEntry).where(
             TimeEntry.work_date >= series_start, TimeEntry.work_date <= target
@@ -4663,11 +4665,15 @@ def accounting_daily_profitability(
         cost = h * float(te.cost_rate_applied or 0)
         day_cost[te.work_date] += cost
         if te.is_billable:
-            if te.user_id not in _rate_cache:
-                _rate_cache[te.user_id] = _invoice_bill_rate(_uname.get(te.user_id, ""))
-            rate = _rate_cache[te.user_id]
-            if rate is None:
-                rate = float(te.bill_rate_applied or 0)
+            ba = float(te.bill_rate_applied or 0)
+            if ba > 0 and abs(ba - 125.0) > 0.01:
+                rate = ba  # real per-project rate on the entry
+            else:
+                if te.user_id not in _std_cache:
+                    _std_cache[te.user_id] = _invoice_bill_rate(_uname.get(te.user_id, ""))
+                rate = _std_cache[te.user_id]
+                if rate is None:
+                    rate = ba  # no standard rate known — use whatever the entry has
             day_rev[te.work_date] += h * rate
             day_bill_h[te.work_date] += h
         else:
@@ -4748,7 +4754,7 @@ def accounting_daily_profitability(
         "series": series,
         "notes": [
             "Daily profit = billable hours × bill rate − all hours × cost rate.",
-            "Billable hours are priced at the ACTUAL invoiced rate (direct salary × 2.354 staff / × 2.14 principal, per the cost-plus invoice engine), not the raw stored rate — so revenue matches what's billed.",
+            "Billable hours are priced at each entry's actual per-project bill rate; a stale $125 default falls back to the person's standard invoiced rate (direct × 2.354 staff / × 2.14 principal).",
             "The cost rate is a fully-loaded wrap (~1.75× direct salary = direct + fringe + overhead), so overhead is ALREADY inside it — it is NOT subtracted a second time.",
             "Non-billable time is costed (at the loaded rate) but earns nothing, so it correctly lowers the day.",
             f"For reference, actual booked non-COGS OPEX averaged ${round(opex_lookback / lookback_months, 2):,.0f}/mo over the last {lookback_months} months; the gap vs the overhead recovered in the loaded rates is over/under-applied overhead, shown in the monthly P&L.",
