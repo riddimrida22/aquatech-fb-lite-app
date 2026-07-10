@@ -28,10 +28,10 @@ Status legend: **🔒 Locked** (settled — approval required to change) · **�
 | D-001 | 🔒 | The KPI is **earned-value (accrual)** — value produced vs cost on the day, not cash collected. | Management "are we above water per day" read. | 2026-07-09 |
 | D-002 | 🔒 | Overhead averaging denominator = **working (business) days**; lookback = **trailing 6 complete months** (3/6/12 selector in UI). | Fair to billable margin; smooths lumpy months. | 2026-07-09 |
 | D-003 | 🔒 | **Owner reasonable comp is NOT added to overhead.** | Owner's time is already costed in the margin via `cost_rate`; adding comp double-counts. | 2026-07-09 |
-| D-004 | 🔒 | **Overhead is embedded in the loaded cost rate (~1.75× wrap) — OPEX is NOT subtracted separately.** OPEX is shown as reference only. | The cost rate already contains overhead; subtracting OPEX double-counts. | 2026-07-09 |
+| D-004 | 🔒 | **Overhead is embedded in the loaded cost rate — OPEX is NOT subtracted separately.** OPEX is shown as reference only. **[AMENDED 2026-07-10 → D-030]** the loading is no longer a fixed ~1.75× guess; it is a **derived overhead rate** computed from actual trailing financials. | The cost rate already contains overhead; subtracting OPEX double-counts. | 2026-07-09 (amended 2026-07-10) |
 | D-005 | 🔒 | The **owner's labor is IN the direct-labor base** (his hours are costed at market). | Owner charges time direct; treated as labor, not a profit-taker. | 2026-07-09 |
 | D-006 | 🔒 | **Daily revenue = billable hours × the entry's actual per-project bill rate.** Fall back to the person's standard invoiced rate only when the entry rate is missing or the stale flat **$125** default. | Bill rates vary by project; the per-entry rate is authoritative. | 2026-07-09 |
-| D-007 | 🔒 | **Daily cost = all hours × `cost_rate_applied`** (loaded wrap). Non-billable time is costed but earns nothing (correctly drags the day). | Fully-loaded labor cost. | 2026-07-09 |
+| D-007 | 🔒 | **[SUPERSEDED 2026-07-10 by D-030]** ~~Daily cost = all hours × `cost_rate_applied`~~. **Now: daily cost = CLIENT (direct) hours × derived loaded rate; overhead-project hours cost $0** (their cost is inside the overhead pool → costing them again double-counts). Identity: Σ client_h × loaded = direct labor + overhead pool = total cost. | Absorption model; overhead counted exactly once. | 2026-07-09 (superseded 2026-07-10) |
 | D-008 | 🔒 | **Principal (owner) is billed at direct × 2.14** (labor + OH, **no profit markup**); **staff at direct × 2.354** (labor + OH + 10% profit). Bertrand standard = **$208.65** (97.50 × 2.14). | Matches the cost-plus invoice engine. | 2026-07-09 |
 
 ## B. Overhead & Rates
@@ -39,14 +39,14 @@ Status legend: **🔒 Locked** (settled — approval required to change) · **�
 | ID | 🔒 | Decision | Rationale | Settled |
 |---|---|---|---|---|
 | D-009 | 🔒 | The **114% overhead rate** in the billing config is the **client-offered minimum** — a legitimate contractual rate. It is **NOT** reconciled/trued-up to actual (~66%); these are **not cost-plus/reimbursable** contracts. | Owner: it's the offered minimum; the 114%-vs-66% gap is margin. | 2026-07-09 |
-| D-010 | 🔒 | Actual overhead ≈ **66%** (owner-in-labor-base, first-order). The AqtPM `cost_rate` loads ~76% — a known slight over-cost; **left as-is** unless owner requests truing to 66%. | Directional; not yet trued. | 2026-07-09 |
+| D-010 | 🔒 | **[SUPERSEDED 2026-07-10 by D-030]** ~~Actual overhead ≈ 66%; cost_rate loads ~76%, left as-is.~~ **Now measured from actuals: overhead rate ≈ 40.4%** (reasonable-comp direct-labor base, FY2025), **derived not assumed.** | Trued to actuals via D-030 engine. | 2026-07-09 (superseded 2026-07-10) |
 | D-011 | 🔒 | **Billing direct rates (2026):** Zachary 52.26, Stacey 51.64, Robert 61.50, Bertrand 97.50, Ailsa 75.00, Roger 90.00, Guo 130.00. Mirrored from the invoice engine config. | Source of truth for `_invoice_bill_rate`. | 2026-07-09 |
 
 ## C. COGS & Payroll
 
 | ID | 🔒 | Decision | Rationale | Settled |
 |---|---|---|---|---|
-| D-012 | 🔒 | **COGS = employer cost** (gross wages + employer payroll taxes + employer 401(k) match) from the Gusto/Paychex journal **+ NYSIF benefits + categorized direct-project costs.** | Consulting: fully-loaded labor is COGS. | 2026-06 |
+| D-012 | 🔒 | **COGS = employer cost** (gross wages + employer payroll taxes + employer 401(k) match) from the Gusto/Paychex journal **+ NYSIF benefits + categorized direct-project costs.** **[AMENDED 2026-07-10 → D-031]** payroll is now **split by hours**: only the **billable (client-project) share = COGS Labor**; the **overhead-project share = Non-Billable labor**, reclassified to overhead below gross profit. | Consulting: only DIRECT labor is COGS; indirect labor is overhead. | 2026-06 (amended 2026-07-10) |
 | D-013 | 🔒 | Paychex **"PDF Reports" are per-period** — **ADD** each new report to the inbox; do NOT replace/remove prior ones (each is one distinct pay period). De-dup is by period key. | Avoids losing periods; parser de-dups. | 2026-07-09 |
 | D-014 | 🔒 | **Plaid `pending` transactions are excluded** from all accounting (P&L OPEX + benefits). | Pending + posted twins double-count. | 2026-07-09 |
 | D-015 | 🔒 | **NYSIF** (workers-comp + disability) is the only benefit in COGS. **Nu Era** = discontinued 2026 ($0). **Human Interest** = 401(k) recordkeeping fee → **OPEX/G&A**, not COGS-benefits. | Correct benefit classification. | 2026-07-09 |
@@ -67,6 +67,13 @@ Status legend: **🔒 Locked** (settled — approval required to change) · **�
 |---|---|---|---|---|
 | D-021 | 🔒 | Owner **reasonable W-2 comp = $206,398.40/yr**, used only by the P&L **"after salary"** toggle (owner takes distributions, not salary). This is **separate from** the daily KPI, which does not add owner comp (see D-003). | S-corp reasonable-comp basis. | 2026-06 |
 
+## G. Derived Overhead Rate (cost side of the daily P/L)
+
+| ID | 🔒 | Decision | Rationale | Settled |
+|---|---|---|---|---|
+| D-031 | 🔒 | **Period labor cost is split into COGS Labor vs Non-Billable.** Each person's ACTUAL payroll (employer cost from the Gusto/Paychex journal) is allocated by their **billable-vs-overhead hour ratio** in the period. **COGS Labor** (billable/client-project share) stays in COGS; **Non-Billable labor** (admin/BD/PTO/overhead-project share) is reclassified to **overhead** below gross profit. Reconciles exactly to total payroll. Name-matching restricts to users who logged hours (avoids stale duplicate user records) and requires first+last match. FY2025: COGS Labor $216,705, Non-Billable $6,566. | Gross margin should reflect DIRECT labor only; indirect labor is overhead. | 2026-07-10 |
+| D-030 | 🔒 | **The overhead rate is DERIVED from actual trailing-12-month financials, not a fixed multiplier.** Build-up: **Direct labor** = reasonable-comp salary (D-021 basis, e.g. Bertrand $99.23/h) × **client-project** hours × (1 + fringe). **Overhead pool** = indirect labor (admin/BD/PTO/overhead-project hours × reasonable comp × (1+fringe)) **+ all non-labor OPEX** (rent, travel, software, insurance, …). **Overhead rate = pool ÷ direct labor.** **Loaded cost rate** per person = `reasonable_salary × (1+fringe%) × (1+OH%)`. **Billing floor** = loaded × (1+profit 10%). Daily P/L costs **client hours × loaded rate; overhead hours cost $0** (recovered via the rate — counted once). Engine: `GET /accounting/overhead-rate`. FY2025: fringe 12.6%, **OH rate 40.4%**. | Owner: "the OH rate must be the entire non-labor cost pool allocated intelligently to each employee's rate, so we know the true cost to run the business." Owner costed at reasonable comp so cost isn't understated by distributions. | 2026-07-10 |
+
 ## F. Timesheet Module (FreshBooks replacement)
 
 | ID | 🔒 | Decision | Rationale | Settled |
@@ -86,6 +93,8 @@ Status legend: **🔒 Locked** (settled — approval required to change) · **�
 *(Every approved change to a 🔒 Locked decision is recorded here: date · decision · what changed · approved by.)*
 
 - 2026-07-09 — Register created; seeded with D-001…D-025 from the 2026-07 financial-accuracy work. Approved by: Bertrand (owner).
+- 2026-07-10 — **Added D-031 (COGS Labor vs Non-Billable split).** Amended **D-012**: payroll split by billable/overhead hours; only billable share is COGS, overhead share moves below gross profit. Total cost & net income unchanged; gross margin now reflects direct labor only. Approved by: Bertrand — "break it out to COGS Labor vs Non-Billable cost."
+- 2026-07-10 — **Added D-030 (derived overhead rate).** Amended **D-004** (loading is now derived, not a fixed ~1.75× guess); **superseded D-007** (daily cost is now client-hours × derived loaded rate, overhead hours cost $0, vs all-hours × stored rate); **superseded D-010** (overhead measured at ~40.4% from actuals, vs the earlier ~66% assumption). Owner labor costed at reasonable comp (D-021 basis) for the daily P/L cost side. Approved by: Bertrand (owner) — "yes and yes" to reasonable-comp basis + completing the overhead pool. | Note: D-003 (owner comp not *added on top*) still holds — the owner is costed inside the rate, not double-added.
 
 ---
 *Maintained by Claude on Bertrand's instruction (2026-07-09). Nothing here changes without his express approval.*

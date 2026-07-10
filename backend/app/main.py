@@ -3754,6 +3754,7 @@ def accounting_pl(
     # so un-reviewed spend can't quietly ride inside the net margin.
     _review_group = "⚠ Needs review (manual)"
     needs_review_count = 0
+    needs_review_items: list[dict] = []
     cogs_from_tx = 0.0
     cogs_tx_by_group: dict[str, float] = defaultdict(float)
     interest_in_loans = 0.0
@@ -3865,6 +3866,7 @@ def accounting_pl(
             opex_by_group[group] += amt
             if group == _review_group:
                 needs_review_count += 1
+                needs_review_items.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": cat})
     # Pass 2: hardware/travel purchases on personal account that are actually business
     for tx in personal_outflows:
         nm_upper = (tx.name or "").upper()
@@ -3888,6 +3890,7 @@ def accounting_pl(
                 opex_by_group[group] += amt
                 if group == _review_group:
                     needs_review_count += 1
+                    needs_review_items.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": cat})
 
     # Pass 3: FB-only business expenses (paid on a personal card not linked to AqtPM,
     # so the bank-side rows we have don't see them). Pull from active csv_fb_expenses
@@ -3924,6 +3927,7 @@ def accounting_pl(
             opex_by_group[group] += amt
             if group == _review_group:
                 needs_review_count += 1
+                needs_review_items.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": fb_label})
 
     # Interest + fees from LoanPayment records — but EXCLUDE Fundbox. Fundbox is
     # paid sometimes from checking, sometimes on the company credit card (for the
@@ -3954,10 +3958,18 @@ def accounting_pl(
     # Direct-project costs categorized on transactions (subconsultants, materials, field
     # services) join the loaded-labor COGS computed from the payroll journal above.
     cogs += cogs_from_tx
+    # --- Labor split: COGS Labor (billable/direct) stays in COGS; Non-Billable labor
+    # (indirect: admin/BD/PTO) is an OVERHEAD cost — moved out of COGS to below gross
+    # profit. Total cost (and net income) is unchanged; only the classification moves,
+    # so gross margin reflects DIRECT labor only.
+    _labor = _labor_cost_split(db, s, e)
+    nonbillable_labor = _labor["nonbillable_labor"]
+    cogs_labor_billable = _labor["cogs_labor"]
+    cogs = round(cogs - nonbillable_labor, 2)  # remove indirect labor from COGS
     gross_profit_cash = revenue - cogs
     gross_profit_accrual = revenue_accrual - cogs
-    net_income_cash = revenue - cogs - opex - interest_expense - fees_expense
-    net_income_accrual = revenue_accrual - cogs - opex - interest_expense - fees_expense
+    net_income_cash = revenue - cogs - nonbillable_labor - opex - interest_expense - fees_expense
+    net_income_accrual = revenue_accrual - cogs - nonbillable_labor - opex - interest_expense - fees_expense
 
     def _margin(num: float, den: float) -> float:
         return round(num / den, 4) if den else 0.0
@@ -3967,6 +3979,9 @@ def accounting_pl(
         "revenue_cash": revenue,
         "revenue_accrual": revenue_accrual,
         "cogs": cogs,
+        "cogs_labor": cogs_labor_billable,
+        "nonbillable_labor_cost": nonbillable_labor,
+        "labor_split_by_employee": _labor["by_employee"],
         "cogs_breakdown": {
             # Loaded labor (gross + employer taxes + 401(k)) + benefits + categorized
             # direct-project costs (subconsultants / materials / field services).
@@ -4001,6 +4016,7 @@ def accounting_pl(
         # Un-reviewed spend that still counts in OpEx/margin — surfaced so it can't hide.
         "needs_review_total": round(opex_by_group.get(_review_group, 0.0), 2),
         "needs_review_count": needs_review_count,
+        "needs_review_items": sorted(needs_review_items, key=lambda r: -r["amount"]),
         "interest_expense": interest_expense,
         "fees_expense": fees_expense,
         "fundbox_financing_cost": fundbox_financing_cost,
@@ -4365,6 +4381,7 @@ def accounting_business_health(
     gross_profit = float(pl.get(f"gross_profit_{_sfx}", revenue - cogs) or 0.0)
     gross_margin = pl.get(f"gross_margin_{_sfx}", 0.0)
     opex = float(pl.get("opex", 0.0) or 0.0)
+    nonbillable_labor = float(pl.get("nonbillable_labor_cost", 0.0) or 0.0)
     net_income = float(pl.get(f"net_income_{_sfx}", 0.0) or 0.0)
     net_margin = pl.get(f"net_margin_{_sfx}", 0.0)
 
@@ -4387,12 +4404,14 @@ def accounting_business_health(
         "waterfall": {
             "revenue": round(revenue, 2),
             "cogs": round(cogs, 2),
+            "cogs_labor": round(float(pl.get("cogs_labor", 0.0) or 0.0), 2),
             "cogs_breakdown": pl.get("cogs_breakdown", {}),
             "gross_profit": round(gross_profit, 2),
             "gross_margin": gross_margin,
-            "indirect_total": round(opex, 2),
+            "nonbillable_labor": round(nonbillable_labor, 2),
+            "indirect_total": round(opex + nonbillable_labor, 2),
             "indirect_by_group": pl.get("opex_by_group", []),
-            "operating_income": round(gross_profit - opex, 2),
+            "operating_income": round(gross_profit - nonbillable_labor - opex, 2),
             "financing_cost": financing_cost,
             "net_income": round(net_income, 2),
             "net_margin": net_margin,
@@ -4574,6 +4593,211 @@ def _sub_months(d: date, months: int) -> date:
     return date(y, m, 1)
 
 
+def _labor_cost_split(db: Session, s: date, e: date) -> dict:
+    """Split ACTUAL payroll (employer cost) over [s, e] into **COGS Labor** (billable /
+    client-project labor — the direct cost of revenue) vs **Non-Billable labor** (indirect:
+    admin / BD / PTO / overhead-project time — an overhead cost, not COGS). Each person's
+    employer cost is allocated by their billable-vs-overhead hour ratio in the window.
+    Reconciles exactly to total payroll (cogs_labor + nonbillable + unallocated = total)."""
+    inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
+    paycost: dict[str, float] = defaultdict(float)
+    if inbox.exists():
+        for period in _deduped_payroll_periods(inbox):
+            pd_str = (period.get("pay_day") or "").strip()
+            pd: date | None = None
+            for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+                try:
+                    pd = datetime.strptime(pd_str, fmt).date()
+                    break
+                except ValueError:
+                    continue
+            if pd is None or pd < s or pd > e:
+                continue
+            for r in period.get("rows", []):
+                paycost[(r.get("employee") or "").strip()] += float(r.get("employer_cost") or 0)
+
+    def _toks(n: str) -> set:
+        return set(t for t in (n or "").replace(",", " ").lower().split() if len(t) >= 3)
+
+    # Per-user client (billable) vs overhead hours in the window — one query.
+    hours: dict[int, list] = defaultdict(lambda: [0.0, 0.0])  # uid -> [client_h, overhead_h]
+    for uid, is_ovh, h in db.execute(
+        select(TimeEntry.user_id, Project.is_overhead, func.sum(TimeEntry.hours))
+        .join(Project, Project.id == TimeEntry.project_id)
+        .where(TimeEntry.work_date >= s.isoformat(), TimeEntry.work_date <= e.isoformat())
+        .group_by(TimeEntry.user_id, Project.is_overhead)
+    ).all():
+        hours[uid][1 if is_ovh else 0] += float(h or 0)
+
+    users = {u.id: u for u in db.scalars(select(User)).all()}
+    # Candidates = users who actually logged hours (avoids stale duplicate user records).
+    candidates = [(uid, _toks(users[uid].full_name)) for uid in hours
+                  if (hours[uid][0] + hours[uid][1]) > 0 and _toks(users[uid].full_name)]
+
+    cogs_labor = nonbillable = unallocated = 0.0
+    by_emp: list[dict] = []
+    for jn, ec in paycost.items():
+        jt = _toks(jn)
+        best_uid, best_n = None, 0
+        for uid, ut in candidates:
+            n = len(jt & ut)
+            if n > best_n:
+                best_n, best_uid = n, uid
+        if best_uid is None or best_n < 2:  # require BOTH names to match (first + last)
+            unallocated += ec  # e.g. "Off Cycle Payroll" header rows ($0), or truly unmatched
+            continue
+        ch, oh = hours[best_uid]
+        th = ch + oh
+        c = ec * ch / th
+        n = ec * oh / th
+        cogs_labor += c
+        nonbillable += n
+        by_emp.append({"name": users[best_uid].full_name, "employer_cost": round(ec, 2),
+                       "client_hours": round(ch, 1), "overhead_hours": round(oh, 1),
+                       "cogs_labor": round(c, 2), "nonbillable_labor": round(n, 2)})
+    cogs_labor += unallocated  # special/unmatched journal rows (off-cycle, prior-provider) → direct
+    return {
+        "cogs_labor": round(cogs_labor, 2),
+        "nonbillable_labor": round(nonbillable, 2),
+        "unallocated": round(unallocated, 2),
+        "total": round(cogs_labor + nonbillable, 2),
+        "by_employee": sorted(by_emp, key=lambda r: -r["employer_cost"]),
+    }
+
+
+# --- Derived overhead rate (replaces the fixed ~1.75× cost-rate guess) -------------
+# Consulting cost build-up from ACTUAL trailing financials:
+#   Direct labor (DL) = reasonable-comp salary × client-project hours × (1 + fringe)
+#   Overhead pool     = indirect labor (admin/BD/overhead hours × reasonable comp × (1+fringe))
+#                       + all non-labor OPEX (rent, travel, software, insurance, …)
+#   Overhead rate     = Overhead pool ÷ Direct labor      (a % of direct labor)
+#   Loaded cost rate  = reasonable salary × (1 + fringe) × (1 + overhead rate)   [per person]
+#   Billing floor     = loaded cost rate × (1 + profit)
+# Owner is costed at reasonable comp (S-corp basis) so "cost to run the business" is
+# truthful even though he takes distributions rather than salary. Overhead is counted
+# EXACTLY once — indirect labor and OPEX live only in the pool, never also on the rate.
+OVERHEAD_DEFAULT_FRINGE = 0.126  # fallback if no payroll journal in window
+
+
+def _payroll_fringe_rate(db: Session, s: date, e: date) -> tuple[float, dict]:
+    """Employer fringe rate = (employer payroll taxes + employer 401k match) ÷ gross,
+    from the payroll journal over [s, e] (pay-day basis). Falls back to a default."""
+    inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
+    gross = burden = 0.0
+    if inbox.exists():
+        for period in _deduped_payroll_periods(inbox):
+            pd_str = (period.get("pay_day") or "").strip()
+            pd: date | None = None
+            for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+                try:
+                    pd = datetime.strptime(pd_str, fmt).date()
+                    break
+                except ValueError:
+                    continue
+            if pd is None or pd < s or pd > e:
+                continue
+            t = period.get("totals", {})
+            gross += float(t.get("gross", 0))
+            burden += float(t.get("employer_taxes", 0)) + float(t.get("employer_401k", 0))
+    rate = (burden / gross) if gross > 0 else OVERHEAD_DEFAULT_FRINGE
+    return rate, {"gross": round(gross, 2), "employer_burden": round(burden, 2)}
+
+
+def _compute_overhead_rate(db: Session, s: date, e: date) -> dict:
+    """Derive the firm overhead rate and each employee's fully-loaded cost rate from
+    actual trailing financials over [s, e]."""
+    fringe_rate, fringe_detail = _payroll_fringe_rate(db, s, e)
+
+    # Per-user client (direct) vs overhead (indirect) hours over the window.
+    rows = db.execute(
+        select(User.id, User.full_name, Project.is_overhead, func.sum(TimeEntry.hours))
+        .join(TimeEntry, TimeEntry.user_id == User.id)
+        .join(Project, Project.id == TimeEntry.project_id)
+        .where(TimeEntry.work_date >= s.isoformat(), TimeEntry.work_date <= e.isoformat())
+        .group_by(User.id, User.full_name, Project.is_overhead)
+    ).all()
+
+    per_user: dict[int, dict] = {}
+    direct_labor = indirect_labor = 0.0
+    for uid, name, is_ovh, hrs in rows:
+        h = float(hrs or 0)
+        if h == 0:
+            continue
+        sal = _salary_rate_for(name)  # reasonable-comp hourly (DEP/1120-S basis)
+        loaded_labor = sal * h * (1 + fringe_rate)
+        pu = per_user.setdefault(uid, {"name": name, "salary_rate": sal, "client_hours": 0.0, "overhead_hours": 0.0})
+        if is_ovh:
+            indirect_labor += loaded_labor
+            pu["overhead_hours"] += h
+        else:
+            direct_labor += loaded_labor
+            pu["client_hours"] += h
+
+    # Non-labor OPEX pool = P&L OPEX over the window (already excludes COGS, transfers,
+    # owner draws; still includes any un-reviewed items — surfaced separately).
+    pl = accounting_pl(start=s.isoformat(), end=e.isoformat(), db=db, _=None)  # type: ignore[arg-type]
+    nonlabor_opex = float(pl.get("opex", 0.0) or 0.0)
+    needs_review = float(pl.get("needs_review_total", 0.0) or 0.0)
+
+    overhead_pool = indirect_labor + nonlabor_opex
+    overhead_rate = (overhead_pool / direct_labor) if direct_labor > 0 else 0.0
+    profit_rate = BILLING_PROFIT_RATE
+
+    employees = []
+    for uid, pu in sorted(per_user.items(), key=lambda kv: -(kv[1]["salary_rate"])):
+        sal = pu["salary_rate"]
+        cost_base = round(sal * (1 + fringe_rate), 2)                 # salary + fringe
+        loaded = round(cost_base * (1 + overhead_rate), 2)           # + overhead
+        billing_floor = round(loaded * (1 + profit_rate), 2)         # + profit
+        employees.append({
+            "user_id": uid, "name": pu["name"],
+            "salary_rate": round(sal, 2),
+            "client_hours": round(pu["client_hours"], 1),
+            "overhead_hours": round(pu["overhead_hours"], 1),
+            "cost_rate_labor": cost_base,      # salary + fringe (no OH)
+            "cost_rate_loaded": loaded,        # salary + fringe + overhead  ← daily P/L cost
+            "billing_floor": billing_floor,    # loaded × (1 + profit)       ← invoice floor
+        })
+
+    return {
+        "window": {"start": s.isoformat(), "end": e.isoformat()},
+        "fringe_rate": round(fringe_rate, 4),
+        "fringe_detail": fringe_detail,
+        "overhead_rate": round(overhead_rate, 4),
+        "profit_rate": profit_rate,
+        "pools": {
+            "direct_labor": round(direct_labor, 2),
+            "indirect_labor": round(indirect_labor, 2),
+            "nonlabor_opex": round(nonlabor_opex, 2),
+            "overhead_pool": round(overhead_pool, 2),
+        },
+        "needs_review_in_opex": round(needs_review, 2),
+        "employees": employees,
+        "basis": "reasonable-comp (S-corp) direct-labor $; overhead allocated as % of direct labor",
+    }
+
+
+@app.get("/accounting/overhead-rate")
+def accounting_overhead_rate(
+    start: str | None = None,
+    end: str | None = None,
+    months: int = 12,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Firm overhead rate + per-employee fully-loaded cost rate, derived from actual
+    trailing financials. Default window = last `months` complete calendar months."""
+    today = date.today()
+    if start and end:
+        s = datetime.strptime(start, "%Y-%m-%d").date()
+        e = datetime.strptime(end, "%Y-%m-%d").date()
+    else:
+        months = max(1, min(int(months or 12), 36))
+        e = date(today.year, today.month, 1) - timedelta(days=1)  # last day of prior month
+        s = _sub_months(today, months)
+    return _compute_overhead_rate(db, s, e)
+
+
 @app.get("/accounting/daily-profitability")
 def accounting_daily_profitability(
     date: str | None = None,
@@ -4656,13 +4880,26 @@ def accounting_daily_profitability(
     # person's standard invoiced rate (direct × multiplier).
     _uname = {u.id: u.full_name for u in db.scalars(select(User)).all()}
     _std_cache: dict[int, float | None] = {}
+    # --- Derived fully-loaded cost rates (salary + fringe + overhead) from actual
+    # trailing-12-month financials. Overhead is recovered on CLIENT (direct) hours ONLY;
+    # overhead-project hours (admin/BD/PTO) are already inside the overhead pool, so
+    # costing them again would double-count. Hence: client hour → loaded rate; overhead
+    # hour → $0 direct cost. Identity: Σ client_h × loaded = direct labor + overhead pool
+    # = total cost, so the daily margins sum to true operating profit.
+    _oh = _compute_overhead_rate(db, _sub_months(target, 12), lb_end)
+    _rate_map = {e["user_id"]: e["cost_rate_loaded"] for e in _oh["employees"]}
+    _ovh_proj = {p.id: bool(p.is_overhead) for p in db.scalars(select(Project)).all()}
     for te in db.scalars(
         select(TimeEntry).where(
             TimeEntry.work_date >= series_start, TimeEntry.work_date <= target
         )
     ).all():
         h = float(te.hours or 0)
-        cost = h * float(te.cost_rate_applied or 0)
+        if _ovh_proj.get(te.project_id, False):
+            cost = 0.0  # overhead time is recovered via the loaded rate on client hours
+        else:
+            _lr = _rate_map.get(te.user_id)
+            cost = h * (_lr if _lr is not None else float(te.cost_rate_applied or 0))
         day_cost[te.work_date] += cost
         if te.is_billable:
             ba = float(te.bill_rate_applied or 0)
