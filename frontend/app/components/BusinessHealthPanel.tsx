@@ -25,9 +25,11 @@ export type BusinessHealth = {
   waterfall: {
     revenue: number;
     cogs: number;
+    cogs_labor?: number;
     cogs_breakdown: CogsBreak;
     gross_profit: number;
     gross_margin?: number;
+    nonbillable_labor?: number;
     indirect_total: number;
     indirect_by_group: Grp[];
     operating_income: number;
@@ -144,7 +146,7 @@ export function ProfitLossPanel({
         </div>
         <div style={subRow}>
           <span>
-            wages {money(cb.gross_wages)} · payroll tax {money(cb.employer_payroll_taxes)} · 401k{" "}
+            COGS Labor (billable) {money(w.cogs_labor)} · payroll tax {money(cb.employer_payroll_taxes)} · 401k{" "}
             {money(cb.employer_401k_match)} · benefits {money(cb.benefits_workers_comp)} · direct{" "}
             {money(cb.direct_project_costs)}
           </span>
@@ -159,6 +161,12 @@ export function ProfitLossPanel({
           <span>− Total indirect expenses</span>
           <strong style={negStrong}>({money(w.indirect_total)})</strong>
         </div>
+        {w.nonbillable_labor ? (
+          <div style={subRow}>
+            <span>Non-Billable labor (admin / BD / PTO)</span>
+            <span>{money(w.nonbillable_labor)}</span>
+          </div>
+        ) : null}
         {(w.indirect_by_group || []).map((g) => (
           <div style={subRow} key={g.group}>
             <span>{g.group}</span>
