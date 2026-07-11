@@ -16,7 +16,6 @@ import AskAqtPM from "./components/AskAqtPM";
 import DataGaps from "./components/DataGaps";
 import DailyProfitabilityKPI from "./components/DailyProfitabilityKPI";
 import OverheadRatePanel from "./components/OverheadRatePanel";
-import MonthlyPLPanel from "./components/MonthlyPLPanel";
 import DecisionsRegister from "./components/DecisionsRegister";
 import { BdWorkspace } from "./components/BdWorkspace";
 import { FreshnessBanner } from "./components/FreshnessBanner";
@@ -1171,7 +1170,6 @@ export default function AquatechPmHome() {
                 <ProfitLossPanel data={businessHealth} ownerAnnualSalary={ownerAnnualSalary} onOwnerSalaryChange={setOwnerAnnualSalary} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
                 <CashFlowPanel data={cashflow} debt={businessHealth?.debt_outstanding ?? null} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
                 <CompReconPanel data={compRecon} onNavigate={(k) => { if (k === "timesheets") { setTimeTab("timesheets"); setWorkspace("time"); } else { setWorkspace(k as WorkspaceKey); } }} />
-                <MonthlyPLPanel />
               </>
             ) : null}
 
