@@ -4624,7 +4624,7 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
     for uid, is_ovh, h in db.execute(
         select(TimeEntry.user_id, Project.is_overhead, func.sum(TimeEntry.hours))
         .join(Project, Project.id == TimeEntry.project_id)
-        .where(TimeEntry.work_date >= s.isoformat(), TimeEntry.work_date <= e.isoformat())
+        .where(TimeEntry.work_date >= s, TimeEntry.work_date <= e)
         .group_by(TimeEntry.user_id, Project.is_overhead)
     ).all():
         hours[uid][1 if is_ovh else 0] += float(h or 0)
@@ -4713,7 +4713,7 @@ def _compute_overhead_rate(db: Session, s: date, e: date) -> dict:
         select(User.id, User.full_name, Project.is_overhead, func.sum(TimeEntry.hours))
         .join(TimeEntry, TimeEntry.user_id == User.id)
         .join(Project, Project.id == TimeEntry.project_id)
-        .where(TimeEntry.work_date >= s.isoformat(), TimeEntry.work_date <= e.isoformat())
+        .where(TimeEntry.work_date >= s, TimeEntry.work_date <= e)
         .group_by(User.id, User.full_name, Project.is_overhead)
     ).all()
 
