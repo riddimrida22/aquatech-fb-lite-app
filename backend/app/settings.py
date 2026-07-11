@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # AI Assistant ("Ask AqtPM") — natural-language company Q&A
     ANTHROPIC_API_KEY: str = ""
     ASSISTANT_MODEL: str = "claude-opus-4-8"
+    # iCloud (CardDAV) contact sync — app-specific password only; never a real Apple password
+    APPLE_ID: str = ""
+    APPLE_APP_PASSWORD: str = ""
+    ICLOUD_CARDDAV_URL: str = "https://contacts.icloud.com/.well-known/carddav"
     # Daily auto-sync of external integrations (bank + accounting)
     PLAID_DAILY_SYNC_ENABLED: bool = True
     FRESHBOOKS_DAILY_SYNC_ENABLED: bool = True
