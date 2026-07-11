@@ -87,6 +87,12 @@ Status legend: **🔒 Locked** (settled — approval required to change) · **�
 | D-027 | 🔒 | **Overhead/internal projects (e.g. Aquatech Operations) ARE selectable in the timesheet entry pickers** (Day/Week/Month + grid) so non-billable admin / BD / training / PTO time is loggable. They remain **excluded** from the dashboard "active projects" count and from invoicing (billable only). | A complete timesheet needs internal time too. | 2026-07-09 |
 | D-026 | 🔒 | **Aquatech-sourced time SUPERSEDES FreshBooks-sourced time.** When both exist (or Aquatech time is loaded later) for the same **(employee, work date, project)**, the FreshBooks copy is **removed** and Aquatech's is kept. Enforced on every FB sync AND whenever Aquatech time is created/edited. | FB has no subtasks and **truncates revenue decimals** (invoices off by cents); Aquatech time is more precise and is the system of record for the transition. | 2026-07-09 |
 
+## H. Contacts / BD Address Book
+
+| ID | 🔒 | Decision | Rationale | Settled |
+|---|---|---|---|---|
+| D-032 | 🟡 | **Contact de-dup + prune rules** (`app/contacts_cleanup.py`, `dedupe_contacts.py`). Two contacts are the **same person** when they share a non-empty normalized **email**, OR a non-empty normalized **full name** AND **organization** (transitively grouped). The **survivor** is the most-populated record (tie → lowest/oldest id); missing fields are filled from duplicates, distinct notes unioned, a specific `org_type` preferred over default `client`. A contact is **empty** when every text field (full_name, title, organization, email, phone, notes) is blank. References are preserved: `pursuit_contacts`/`activities` on a duplicate are **repointed to the survivor** (dropping a pursuit link that would violate the (pursuit_id, contact_id) unique constraint); an empty contact's links are dropped and its activities unlinked. Tool is **dry-run by default**, `--apply` to commit, idempotent. | Imports + manual entry leave duplicate and blank contact rows; consolidate without losing pursuit/activity history. | 2026-07-11 (proposed) |
+
 ---
 
 ## Change Log
