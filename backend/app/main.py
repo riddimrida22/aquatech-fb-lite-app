@@ -4801,6 +4801,7 @@ def accounting_overhead_rate(
 @app.get("/accounting/daily-profitability")
 def accounting_daily_profitability(
     date: str | None = None,
+    period: str = "day",
     lookback_months: int = 6,
     include_owner_comp: bool = True,
     owner_annual_comp: float = 206398.40,
@@ -4848,6 +4849,27 @@ def accounting_daily_profitability(
 
     lookback_months = max(1, min(int(lookback_months or 6), 24))
 
+    period = (period or "day").lower().strip()
+    if period not in ("day", "week", "month"):
+        period = "day"
+    _MON = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    def _month_bounds(d: _date):
+        first = _date(d.year, d.month, 1)
+        nxt = _date(d.year + (d.month // 12), (d.month % 12) + 1, 1)
+        return first, nxt - timedelta(days=1)
+
+    # Selected period window [pstart, pend], anchored on `target`; pend capped at today.
+    if period == "day":
+        pstart = pend = target
+    elif period == "week":
+        pstart = target - timedelta(days=target.weekday())  # Monday
+        pend = min(pstart + timedelta(days=6), today)
+    else:  # month
+        pstart, _mend = _month_bounds(target)
+        pend = min(_mend, today)
+    target = pend  # "as of" = latest day shown in the period
+
     # --- Overhead: trailing N COMPLETE months ending the last day of the prior month ---
     lb_end = _date(target.year, target.month, 1) - timedelta(days=1)  # last day of prior month
     lb_start = _sub_months(target, lookback_months)
@@ -4867,9 +4889,14 @@ def accounting_daily_profitability(
     opex_per_wd = opex_lookback / lb_business_days  # reference only, not subtracted
     overhead_per_wd = 0.0
 
-    # --- Per-day earned margin: one pass over entries from series_start..target ---
-    series_start = min(lb_start, _date(target.year, target.month, 1))
-    series_start = target - timedelta(days=45) if (target - series_start).days > 45 else series_start
+    # --- Per-day earned margin: cover enough history for the period trend ---
+    if period == "day":
+        trend_start = pend - timedelta(days=29)
+    elif period == "week":
+        trend_start = pstart - timedelta(weeks=11)
+    else:
+        trend_start = _sub_months(pstart, 11)
+    series_start = min(pstart, trend_start)
     day_rev: dict[_date, float] = defaultdict(float)
     day_cost: dict[_date, float] = defaultdict(float)
     day_bill_h: dict[_date, float] = defaultdict(float)
@@ -4916,46 +4943,80 @@ def accounting_daily_profitability(
         else:
             day_nonbill_h[te.work_date] += h
 
-    def _margin(d: _date) -> float:
-        return round(day_rev.get(d, 0.0) - day_cost.get(d, 0.0), 2)
+    def _rng(dct: dict, a: _date, b: _date) -> float:
+        return round(sum(v for dd, v in dct.items() if a <= dd <= b), 2)
 
-    # --- Target day figures ---
-    t_rev = round(day_rev.get(target, 0.0), 2)
-    t_cost = round(day_cost.get(target, 0.0), 2)
-    t_bill = round(day_bill_h.get(target, 0.0), 2)
-    t_nonbill = round(day_nonbill_h.get(target, 0.0), 2)
+    def _margin_rng(a: _date, b: _date) -> float:
+        return round(_rng(day_rev, a, b) - _rng(day_cost, a, b), 2)
+
+    # --- Selected-period figures ---
+    t_rev = _rng(day_rev, pstart, pend)
+    t_cost = _rng(day_cost, pstart, pend)
+    t_bill = _rng(day_bill_h, pstart, pend)
+    t_nonbill = _rng(day_nonbill_h, pstart, pend)
     t_margin = round(t_rev - t_cost, 2)
-    t_profit = t_margin  # overhead embedded in the loaded cost rate — nothing more to subtract
+    t_profit = t_margin
     t_margin_pct = round(t_margin / t_rev, 4) if t_rev else 0.0
     margin_per_bill_h = round(t_margin / t_bill, 2) if t_bill > 0 else 0.0
-    # Break-even = billable hours (at the day's avg bill rate) needed to cover the day's
-    # full loaded labor cost, including non-billable time.
     _avg_bill = (t_rev / t_bill) if t_bill > 0 else 0.0
     breakeven_bill_h = round(t_cost / _avg_bill, 2) if _avg_bill > 0 else None
+    period_wd = _business_days_between(pstart, pend)
 
-    # --- Month-to-date running reconciliation ---
-    mtd_start = _date(target.year, target.month, 1)
-    mtd_margin = round(sum(_margin(d) for d in day_rev.keys() | day_cost.keys() if mtd_start <= d <= target), 2)
-    mtd_wd = _business_days_between(mtd_start, target)
-    mtd_overhead = round(overhead_per_wd * mtd_wd, 2)
-    mtd_profit = round(mtd_margin - mtd_overhead, 2)
+    if period == "day":
+        plabel = f"{_MON[target.month]} {target.day}, {target.year}"
+    elif period == "week":
+        plabel = f"Week of {_MON[pstart.month]} {pstart.day}"
+    else:
+        plabel = f"{_MON[target.month]} {target.year}"
 
-    # --- Trailing daily series for the sparkline/trend (last ~30 calendar days) ---
+    prev_anchor = pstart - timedelta(days=1)
+    next_anchor = pend + timedelta(days=1)
+    nav = {"prev": prev_anchor.isoformat(), "next": (next_anchor.isoformat() if next_anchor <= today else None)}
+
+    # --- Trend: last N comparable periods ---
     series = []
-    d = max(series_start, target - timedelta(days=29))
-    while d <= target:
-        m = _margin(d)
-        series.append({
-            "date": d.isoformat(),
-            "earned_margin": m,
-            "daily_profit": round(m - overhead_per_wd, 2) if d.weekday() < 5 else round(m, 2),
-            "is_weekend": d.weekday() >= 5,
-        })
-        d += timedelta(days=1)
+    if period == "day":
+        d = max(series_start, pend - timedelta(days=29))
+        while d <= pend:
+            m = _margin_rng(d, d)
+            series.append({"date": d.isoformat(), "label": f"{_MON[d.month]} {d.day}", "earned_margin": m, "daily_profit": m, "is_weekend": d.weekday() >= 5})
+            d += timedelta(days=1)
+    elif period == "week":
+        for i in range(11, -1, -1):
+            ws = pstart - timedelta(weeks=i)
+            we = min(ws + timedelta(days=6), today)
+            m = _margin_rng(ws, we)
+            series.append({"date": ws.isoformat(), "label": f"{_MON[ws.month]} {ws.day}", "earned_margin": m, "daily_profit": m, "is_weekend": False})
+    else:
+        for i in range(11, -1, -1):
+            ms = _sub_months(pstart, i)
+            _, me0 = _month_bounds(ms)
+            me = min(me0, today)
+            m = _margin_rng(ms, me)
+            series.append({"date": ms.isoformat(), "label": f"{_MON[ms.month]} '{str(ms.year)[2:]}", "earned_margin": m, "daily_profit": m, "is_weekend": False})
+
+    mtd_start = _date(target.year, target.month, 1)
+    mtd_margin = _margin_rng(mtd_start, target)
+    mtd_wd = _business_days_between(mtd_start, target)
 
     return {
         "as_of_date": target.isoformat(),
-        "is_weekend": target.weekday() >= 5,
+        "period_kind": period,
+        "is_weekend": target.weekday() >= 5 and period == "day",
+        "period": {
+            "kind": period,
+            "label": plabel,
+            "start": pstart.isoformat(),
+            "end": pend.isoformat(),
+            "billable_hours": t_bill,
+            "nonbillable_hours": t_nonbill,
+            "revenue": t_rev,
+            "labor_cost": t_cost,
+            "earned_margin": t_margin,
+            "margin_pct": t_margin_pct,
+            "working_days": period_wd,
+        },
+        "nav": nav,
         "day": {
             "date": target.isoformat(),
             "billable_hours": t_bill,
