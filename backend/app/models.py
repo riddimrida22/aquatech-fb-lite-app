@@ -544,6 +544,8 @@ class Contact(Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
+    icloud_uid: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)   # links to the iCloud vCard UID
+    icloud_etag: Mapped[str | None] = mapped_column(String(255), nullable=True)               # last-synced CardDAV ETag
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

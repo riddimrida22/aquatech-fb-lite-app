@@ -45,6 +45,7 @@ def init_db() -> None:
     _ensure_invoice_line_columns()
     _ensure_bank_columns()
     _ensure_assistant_columns()
+    _ensure_contact_columns()
     _ensure_dedup_indexes()
 
 
@@ -173,6 +174,23 @@ def _ensure_invoice_line_columns() -> None:
     statements: list[str] = []
     if "note" not in cols:
         statements.append("ALTER TABLE invoice_lines ADD COLUMN note TEXT DEFAULT ''")
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+
+
+def _ensure_contact_columns() -> None:
+    insp = inspect(engine)
+    if not insp.has_table("contacts"):
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    statements: list[str] = []
+    if "icloud_uid" not in cols:
+        statements.append("ALTER TABLE contacts ADD COLUMN icloud_uid VARCHAR(255)")
+    if "icloud_etag" not in cols:
+        statements.append("ALTER TABLE contacts ADD COLUMN icloud_etag VARCHAR(255)")
     if not statements:
         return
     with engine.begin() as conn:

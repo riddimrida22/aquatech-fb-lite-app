@@ -5531,6 +5531,55 @@ def create_contact(body: ContactIn, db: Session = Depends(get_db),
     return {"id": c.id, "full_name": c.full_name, "organization": c.organization, "org_type": c.org_type}
 
 
+@app.post("/contacts/cleanup")
+def cleanup_contacts(apply: bool = Query(default=False), db: Session = Depends(get_db),
+                     _: User = Depends(require_permission("MANAGE_PROJECTS"))):
+    """Consolidate duplicate + remove empty contacts. Dry-run unless apply=true."""
+    from .contacts_cleanup import run_cleanup
+    return run_cleanup(db, apply=apply)
+
+
+@app.get("/contacts/icloud/status")
+def icloud_status(db: Session = Depends(get_db),
+                  _: User = Depends(require_permission("MANAGE_PROJECTS"))):
+    from . import icloud_contacts
+    linked = db.scalar(select(func.count()).select_from(Contact).where(Contact.icloud_uid.isnot(None)))
+    apple_id = (getattr(get_settings(), "APPLE_ID", "") or "").strip()
+    masked = (apple_id[:2] + "***" + apple_id[apple_id.find("@"):]) if "@" in apple_id else ""
+    return {"configured": icloud_contacts.is_configured(), "apple_id": masked,
+            "linked_contacts": linked or 0}
+
+
+@app.post("/contacts/icloud/pull")
+def icloud_pull(dedup: bool = Query(default=True), db: Session = Depends(get_db),
+                _: User = Depends(require_permission("MANAGE_PROJECTS"))):
+    """Import contacts from iCloud, then (by default) consolidate duplicates."""
+    from . import icloud_contacts
+    client = icloud_contacts.build_client_from_settings()
+    if client is None:
+        raise HTTPException(status_code=400,
+                            detail="iCloud not configured — set APPLE_ID and APPLE_APP_PASSWORD.")
+    try:
+        return icloud_contacts.pull_from_icloud(db, client, dedup=dedup)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"iCloud pull failed: {str(exc)[:200]}")
+
+
+@app.post("/contacts/icloud/push")
+def icloud_push(db: Session = Depends(get_db),
+                _: User = Depends(require_permission("MANAGE_PROJECTS"))):
+    """Push the app's contacts up to iCloud (create/update each vCard)."""
+    from . import icloud_contacts
+    client = icloud_contacts.build_client_from_settings()
+    if client is None:
+        raise HTTPException(status_code=400,
+                            detail="iCloud not configured — set APPLE_ID and APPLE_APP_PASSWORD.")
+    try:
+        return icloud_contacts.push_to_icloud(db, client)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"iCloud push failed: {str(exc)[:200]}")
+
+
 @app.get("/teaming-partners")
 def list_partners(db: Session = Depends(get_db), _: User = Depends(require_permission("VIEW_FINANCIALS"))):
     rows = db.scalars(select(TeamingPartner).where(TeamingPartner.is_active.is_(True))
