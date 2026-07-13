@@ -1,16 +1,18 @@
 "use client";
 
-import { AccountsPayable, formatCurrency } from "./workspaceShared";
+import { AccountsPayable, formatCurrency, formatDate } from "./workspaceShared";
 
 const CAT_LABEL: Record<string, string> = {
   financing: "Financing",
   credit_card: "Credit card",
-  salary: "Unpaid salary",
+  salary: "Unpaid wages",
+  owner_comp: "Deferred owner comp",
 };
 const CAT_COLOR: Record<string, string> = {
   financing: "#b42318",
   credit_card: "#d1561b",
   salary: "#8a5b1f",
+  owner_comp: "#6b5bd1",
 };
 
 /** What the business owes — by entity, with a description — plus the net position. */
@@ -24,6 +26,9 @@ export function AccountsPayablePanel({ payable, owedToYou }: { payable: Accounts
     );
   }
   const net = owedToYou - payable.total;
+  const ownerComp = payable.owner_comp ?? [];
+  const ownerTotal = payable.total_owner_comp ?? 0;
+  const asOf = formatDate(payable.as_of);
   return (
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
@@ -33,7 +38,10 @@ export function AccountsPayablePanel({ payable, owedToYou }: { payable: Accounts
             {formatCurrency(payable.total)}
           </h3>
           <p className="aq-lite-muted" style={{ fontSize: 12, margin: "3px 0 0" }}>
-            {formatCurrency(payable.total_financing)} financing · {formatCurrency(payable.total_salary)} unpaid salary
+            {formatCurrency(payable.total_financing)} financing · {formatCurrency(payable.total_salary)} unpaid wages
+          </p>
+          <p className="aq-lite-muted" style={{ fontSize: 10.5, margin: "2px 0 0", opacity: 0.7 }}>
+            Loan balances as of {asOf} · wages accrued YTD
           </p>
         </div>
       </div>
@@ -61,6 +69,26 @@ export function AccountsPayablePanel({ payable, owedToYou }: { payable: Accounts
           </div>
         ))}
       </div>
+
+      {/* Deferred owner comp — memo only, NOT part of the A/P total */}
+      {ownerComp.length > 0 && (
+        <div style={{
+          marginTop: 14, padding: "12px 14px", borderRadius: 12,
+          background: "rgba(107,91,209,0.07)", border: "1px dashed rgba(107,91,209,0.4)",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "#6b5bd1", fontWeight: 700 }}>
+              Deferred owner comp <span style={{ fontWeight: 500, textTransform: "none", opacity: 0.8 }}>· memo, not in A/P</span>
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#6b5bd1" }}>{formatCurrency(ownerTotal)}</div>
+          </div>
+          {ownerComp.map((it, i) => (
+            <div key={`owner-${i}`} className="aq-lite-muted" style={{ fontSize: 11.5, marginTop: 6 }}>
+              <strong style={{ color: "inherit" }}>{it.entity}</strong> — {it.description}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Net position — the one number that says where you stand */}
       <div style={{

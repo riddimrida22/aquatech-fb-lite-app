@@ -182,15 +182,18 @@ export type PayableItem = {
   label: string;
   amount: number;
   description: string;
-  category: "financing" | "credit_card" | "salary";
+  category: "financing" | "credit_card" | "salary" | "owner_comp";
 };
 
 export type AccountsPayable = {
   as_of: string;
+  salary_period?: { start: string; end: string };
   items: PayableItem[];
+  owner_comp?: PayableItem[];
   total: number;
   total_financing: number;
   total_salary: number;
+  total_owner_comp?: number;
 };
 
 export type UnbilledEmployeeRow = {
