@@ -9601,7 +9601,9 @@ def accounts_payable(
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
     """What the business owes, by entity + description. Two sources: outstanding
-    loan/financing principal, and unpaid salary (earned − W-2 paid, all-time)."""
+    loan/financing principal the business owes, and unpaid salary (earned − W-2
+    paid, YTD). Excludes loans the business MADE (company-as-lender owner loans /
+    'Loan to Shareholder' advances) — those are receivables (assets), not A/P."""
     LOAN_DESC = {
         "line_of_credit": "Line of credit", "credit_card": "Credit card",
         "term_loan": "Term loan", "owner_loan": "Owner loan", "sba": "SBA loan",
@@ -9611,6 +9613,11 @@ def accounts_payable(
         bal = float(loan.principal_current or 0.0)
         if bal <= 0.01:
             continue
+        # Direction check: an owner_loan whose LENDER is the company itself is money
+        # the business lent OUT (a shareholder receivable), not something it owes.
+        lender = (loan.lender or "").lower()
+        if loan.loan_type == "owner_loan" and "aquatech" in lender:
+            continue
         items.append({
             "entity": loan.lender or loan.name,
             "label": loan.name,
@@ -9618,9 +9625,10 @@ def accounts_payable(
             "description": LOAN_DESC.get(loan.loan_type, "Loan"),
             "category": "credit_card" if loan.loan_type == "credit_card" else "financing",
         })
-    # Unpaid salary: all-time earned (timesheet x reasonable-comp rate) minus W-2 paid,
-    # per person, positive gaps only. Owner's line is an accrued reasonable-comp gap.
-    comp = accounting_comp_reconciliation(start="2000-01-01", end=date.today().isoformat(), db=db, _=_)
+    # Unpaid salary: YTD earned (timesheet x reasonable-comp rate) minus W-2 paid,
+    # per person, positive gaps only. Owner's line is this year's reasonable-comp gap.
+    ytd_start = date(date.today().year, 1, 1).isoformat()
+    comp = accounting_comp_reconciliation(start=ytd_start, end=date.today().isoformat(), db=db, _=_)
     for r in comp.get("rows", []):
         gap = float(r.get("gap") or 0.0)
         if gap <= 0.01:
@@ -9629,7 +9637,7 @@ def accounts_payable(
             "entity": r.get("name"),
             "label": r.get("name"),
             "amount": round(gap, 2),
-            "description": "Unpaid salary (earned − W-2 paid, all-time)",
+            "description": "Unpaid salary (earned − W-2 paid, YTD)",
             "category": "salary",
         })
     items.sort(key=lambda x: -float(x["amount"]))
