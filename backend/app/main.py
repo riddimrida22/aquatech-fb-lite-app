@@ -9625,30 +9625,46 @@ def accounts_payable(
             "description": LOAN_DESC.get(loan.loan_type, "Loan"),
             "category": "credit_card" if loan.loan_type == "credit_card" else "financing",
         })
-    # Unpaid salary: YTD earned (timesheet x reasonable-comp rate) minus W-2 paid,
-    # per person, positive gaps only. Owner's line is this year's reasonable-comp gap.
+    # Unpaid wages: YTD earned (timesheet hours x rate) minus W-2 paid, per person,
+    # positive gaps only. For regularly-paid employees this equals what's accrued
+    # since the last payroll run (Ailsa is genuinely behind; others are ~1 trailing
+    # period). The OWNER (Bertrand) draws minimal W-2 and takes distributions, so his
+    # gap is a reasonable-comp shortfall / deferred owner comp — shown separately and
+    # kept OUT of the "you owe" A/P total, because it isn't a vendor/wage bill.
     ytd_start = date(date.today().year, 1, 1).isoformat()
-    comp = accounting_comp_reconciliation(start=ytd_start, end=date.today().isoformat(), db=db, _=_)
+    today_iso = date.today().isoformat()
+    comp = accounting_comp_reconciliation(start=ytd_start, end=today_iso, db=db, _=_)
+    owner_comp: list[dict[str, object]] = []
     for r in comp.get("rows", []):
         gap = float(r.get("gap") or 0.0)
         if gap <= 0.01:
             continue
-        items.append({
-            "entity": r.get("name"),
-            "label": r.get("name"),
-            "amount": round(gap, 2),
-            "description": "Unpaid salary (earned − W-2 paid, YTD)",
-            "category": "salary",
-        })
+        name = str(r.get("name") or "")
+        if "bertrand" in name.lower():
+            owner_comp.append({
+                "entity": name, "label": name, "amount": round(gap, 2),
+                "description": "Deferred owner comp — you draw minimal W-2 and take distributions; this is your YTD reasonable-comp shortfall, not a bill.",
+                "category": "owner_comp",
+            })
+        else:
+            items.append({
+                "entity": name, "label": name, "amount": round(gap, 2),
+                "description": "Unpaid wages — accrued since last payroll (YTD earned − W-2 paid)",
+                "category": "salary",
+            })
     items.sort(key=lambda x: -float(x["amount"]))
     fin = round(sum(float(i["amount"]) for i in items if i["category"] in ("financing", "credit_card")), 2)
     sal = round(sum(float(i["amount"]) for i in items if i["category"] == "salary"), 2)
+    owner = round(sum(float(o["amount"]) for o in owner_comp), 2)
     return {
-        "as_of": date.today().isoformat(),
+        "as_of": today_iso,
+        "salary_period": {"start": ytd_start, "end": today_iso},
         "items": items,
-        "total": round(fin + sal, 2),
+        "owner_comp": owner_comp,
+        "total": round(fin + sal, 2),          # true "you owe": financing + unpaid wages
         "total_financing": fin,
-        "total_salary": sal,
+        "total_salary": sal,                    # employee unpaid wages only
+        "total_owner_comp": owner,              # deferred owner comp (memo, not in total)
     }
 
 

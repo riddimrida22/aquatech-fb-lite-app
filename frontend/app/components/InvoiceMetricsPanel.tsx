@@ -74,6 +74,9 @@ export function InvoiceMetricsPanel({ invoices }: { invoices: Invoice[] }) {
             {a.openCount} open invoice{a.openCount === 1 ? "" : "s"}
             {a.financedCount > 0 ? ` · ${formatCurrency(a.advanced)} already advanced by financier` : ""}
           </p>
+          <p className="aq-lite-muted" style={{ fontSize: 10.5, margin: "2px 0 0", opacity: 0.7 }}>
+            Open balances as of {new Date(`${today}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+          </p>
         </div>
         <div style={{ textAlign: "right" }}>
           <div className="aq-lite-muted" style={{ fontSize: 12 }}>Overdue</div>
