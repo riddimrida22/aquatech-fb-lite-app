@@ -96,6 +96,8 @@ export type Invoice = {
   subtotal_amount: number;
   amount_paid: number;
   balance_due: number;
+  financed_pct?: number;   // 0 = not financed; 0.70 = 70% advanced by financier
+  financed_source?: string;
   project_id: number | null;
   line_count: number;
 };
@@ -173,6 +175,22 @@ export type InvoiceRevenueStatus = {
     outstanding: number;
     overdue: number;
   }>;
+};
+
+export type PayableItem = {
+  entity: string;
+  label: string;
+  amount: number;
+  description: string;
+  category: "financing" | "credit_card" | "salary";
+};
+
+export type AccountsPayable = {
+  as_of: string;
+  items: PayableItem[];
+  total: number;
+  total_financing: number;
+  total_salary: number;
 };
 
 export type UnbilledEmployeeRow = {

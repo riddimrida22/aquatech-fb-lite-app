@@ -8,6 +8,8 @@ import { DailyTimeEntry } from "./components/DailyTimeEntry";
 import { Toast } from "./components/Toast";
 import { StatusBadge } from "./components/StatusBadge";
 import { ARAgingPanel } from "./components/ARAgingPanel";
+import { InvoiceMetricsPanel } from "./components/InvoiceMetricsPanel";
+import { AccountsPayablePanel } from "./components/AccountsPayablePanel";
 import { ProfitLossPanel, CashFlowPanel, CompReconPanel, BusinessHealth } from "./components/BusinessHealthPanel";
 import { TransfersPanel } from "./components/TransfersPanel";
 import { DedupPanel } from "./components/DedupPanel";
@@ -40,6 +42,7 @@ import {
   Invoice,
   InvoicePreview,
   InvoiceRevenueStatus,
+  AccountsPayable,
   CashFlow,
   CompRecon,
   UnbilledHoursReport,
@@ -263,7 +266,10 @@ export default function AquatechPmHome() {
       .then((d) => setCashflow(d)).catch(() => setCashflow(null));
     apiGet<CompRecon>(`/accounting/comp-reconciliation?start=${finPeriod.start}&end=${finPeriod.end}`)
       .then((d) => setCompRecon(d)).catch(() => setCompRecon(null));
+    apiGet<AccountsPayable>(`/reports/accounts-payable`)
+      .then((d) => setPayable(d)).catch(() => setPayable(null));
   }, [finPeriod.start, finPeriod.end, accountingBasis, user]);
+  const [payable, setPayable] = useState<AccountsPayable | null>(null);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
   const [projectExpenses, setProjectExpenses] = useState<ProjectExpense[]>([]);
@@ -1571,6 +1577,10 @@ export default function AquatechPmHome() {
         {workspace === "invoices" ? (
           <div className="aq-lite-stack">
             <div className="aq-lite-grid aq-lite-grid-2">
+              <InvoiceMetricsPanel invoices={invoices} />
+              <AccountsPayablePanel payable={payable} owedToYou={invoiceStatus?.total_outstanding ?? 0} />
+            </div>
+            <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
                   <div>
@@ -1733,15 +1743,27 @@ export default function AquatechPmHome() {
                     <span style={{ color: "var(--aq-muted)" }}>{formatDate(invoice.issue_date)}</span>
                     <span style={{ textAlign: "right" }}>{formatCurrency(invoice.subtotal_amount)}</span>
                     <span style={{ textAlign: "right", color: "var(--aq-muted)" }}>{formatCurrency(invoice.amount_paid)}</span>
-                    <span
-                      style={{
-                        textAlign: "right",
-                        fontWeight: 600,
-                        color: (invoice.balance_due || 0) > 0 ? "var(--aq-red)" : "var(--aq-green)",
-                      }}
-                    >
-                      {(invoice.balance_due || 0) > 0 ? formatCurrency(invoice.balance_due) : "Paid"}
-                    </span>
+                    {(() => {
+                      const bal = invoice.balance_due || 0; // already net of any financing advance
+                      const pct = Math.min(Math.max(invoice.financed_pct || 0, 0), 1);
+                      const advanced = (invoice.subtotal_amount || 0) * pct;
+                      if (bal <= 0.01) {
+                        return <span style={{ textAlign: "right", fontWeight: 600, color: "var(--aq-green)" }}>Paid</span>;
+                      }
+                      return (
+                        <span style={{ textAlign: "right", fontWeight: 600, color: "var(--aq-red)" }}>
+                          {formatCurrency(bal)}
+                          {pct > 0 ? (
+                            <span
+                              title={`${formatCurrency(advanced)} (${Math.round(pct * 100)}%) already advanced by ${invoice.financed_source || "financier"}; ${formatCurrency(bal)} holdback still owed`}
+                              style={{ display: "block", fontSize: 9.5, fontWeight: 500, color: "#1f8a5b" }}
+                            >
+                              {Math.round(pct * 100)}% advanced
+                            </span>
+                          ) : null}
+                        </span>
+                      );
+                    })()}
                   </div>
                 )}
                 initiallyOpen="first"
