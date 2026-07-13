@@ -1437,6 +1437,8 @@ class InvoiceOut(BaseModel):
     subtotal_amount: float
     amount_paid: float
     balance_due: float
+    financed_pct: float = 0.0
+    financed_source: str = ""
     total_cost: float
     total_profit: float
     recurring_schedule_id: int | None = None
@@ -9556,17 +9558,19 @@ def invoice_revenue_status(
         select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
         .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
     ) or 0.0)
-    # BOC-financed receivables: BOC advances ~70% against these invoices (a recourse
-    # LOAN per BOC's loan statements, not a client payment). The client still owes the
-    # full amount, but the firm's NET receivable is the ~30% reserve. We expose AR net
-    # of the BOC advances (matches FreshBooks' "outstanding") WITHOUT booking loan
-    # proceeds as revenue. Financed set per Bertrand 2026-06; extend as new invoices
-    # are financed.
-    BOC_FINANCED = ("HDRAQ-013B", "HDRAQ13-A", "HDRAQ-014", "HDRAQ-015", "WSMV009")
+    # Financing advances: a financier (BOC) advances `financed_pct` of an invoice's ORIGINAL
+    # amount as a recourse loan and it is BOOKED AS A PAYMENT on the invoice — so balance_due
+    # is ALREADY the net (un-advanced) reserve owed. total_outstanding is therefore already
+    # net of financing; we do NOT subtract again. boc_advances below is informational only:
+    # how much cash has been pulled forward via financing on still-open invoices.
     boc_advances = float(db.scalar(
-        select(func.coalesce(func.sum(Invoice.balance_due * 0.70), 0.0))
-        .where(Invoice.invoice_number.in_(BOC_FINANCED))
+        select(func.coalesce(func.sum(Invoice.subtotal_amount * Invoice.financed_pct), 0.0))
+        .where(Invoice.financed_pct > 0, Invoice.balance_due > 0)
     ) or 0.0)
+    financed_count = int(db.scalar(
+        select(func.count()).select_from(Invoice)
+        .where(Invoice.financed_pct > 0, Invoice.balance_due > 0)
+    ) or 0)
     _total_out = float(summary.get("total_outstanding", 0.0))
     return {
         "as_of": date.today().isoformat(),
@@ -9574,7 +9578,8 @@ def invoice_revenue_status(
         "invoiced_period": invoiced_period,
         "collected_period": collected_period,
         "boc_financed_advances": round(boc_advances, 2),
-        "outstanding_net_of_boc": round(_total_out - boc_advances, 2),
+        "outstanding_net_of_boc": round(_total_out, 2),  # balance_due already net of advances
+        "financed_invoice_count": financed_count,
         "invoice_count_total": int(summary.get("invoice_count_total", 0)),
         "invoice_count_open": int(summary.get("invoice_count_open", 0)),
         "total_invoiced": float(summary.get("total_invoiced", 0.0)),
@@ -9587,6 +9592,55 @@ def invoice_revenue_status(
         "unbilled_by_client": unbilled_rows,
         "unbilled_by_client_project": unbilled_project_rows,
         "top_clients": summary.get("top_clients", []),
+    }
+
+
+@app.get("/reports/accounts-payable")
+def accounts_payable(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """What the business owes, by entity + description. Two sources: outstanding
+    loan/financing principal, and unpaid salary (earned − W-2 paid, all-time)."""
+    LOAN_DESC = {
+        "line_of_credit": "Line of credit", "credit_card": "Credit card",
+        "term_loan": "Term loan", "owner_loan": "Owner loan", "sba": "SBA loan",
+    }
+    items: list[dict[str, object]] = []
+    for loan in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+        bal = float(loan.principal_current or 0.0)
+        if bal <= 0.01:
+            continue
+        items.append({
+            "entity": loan.lender or loan.name,
+            "label": loan.name,
+            "amount": round(bal, 2),
+            "description": LOAN_DESC.get(loan.loan_type, "Loan"),
+            "category": "credit_card" if loan.loan_type == "credit_card" else "financing",
+        })
+    # Unpaid salary: all-time earned (timesheet x reasonable-comp rate) minus W-2 paid,
+    # per person, positive gaps only. Owner's line is an accrued reasonable-comp gap.
+    comp = accounting_comp_reconciliation(start="2000-01-01", end=date.today().isoformat(), db=db, _=_)
+    for r in comp.get("rows", []):
+        gap = float(r.get("gap") or 0.0)
+        if gap <= 0.01:
+            continue
+        items.append({
+            "entity": r.get("name"),
+            "label": r.get("name"),
+            "amount": round(gap, 2),
+            "description": "Unpaid salary (earned − W-2 paid, all-time)",
+            "category": "salary",
+        })
+    items.sort(key=lambda x: -float(x["amount"]))
+    fin = round(sum(float(i["amount"]) for i in items if i["category"] in ("financing", "credit_card")), 2)
+    sal = round(sum(float(i["amount"]) for i in items if i["category"] == "salary"), 2)
+    return {
+        "as_of": date.today().isoformat(),
+        "items": items,
+        "total": round(fin + sal, 2),
+        "total_financing": fin,
+        "total_salary": sal,
     }
 
 

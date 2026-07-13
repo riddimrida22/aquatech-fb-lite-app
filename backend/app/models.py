@@ -207,6 +207,12 @@ class Invoice(Base):
     subtotal_amount: Mapped[float] = mapped_column(Float, default=0.0)
     amount_paid: Mapped[float] = mapped_column(Float, default=0.0)
     balance_due: Mapped[float] = mapped_column(Float, default=0.0)
+    # Invoice-factoring: fraction of this invoice advanced by a financier (e.g. BOC
+    # advances ~0.70). 0 = not financed. Advance = balance_due * financed_pct is a
+    # recourse LOAN, not a client payment — it reduces the firm's NET receivable
+    # without booking loan proceeds as revenue. Set per invoice as they're financed.
+    financed_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    financed_source: Mapped[str] = mapped_column(String(64), default="")
     total_cost: Mapped[float] = mapped_column(Float, default=0.0)
     total_profit: Mapped[float] = mapped_column(Float, default=0.0)
     recurring_schedule_id: Mapped[int | None] = mapped_column(ForeignKey("recurring_invoice_schedules.id"), nullable=True, index=True)
