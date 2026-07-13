@@ -188,6 +188,7 @@ export type PayableItem = {
 export type AccountsPayable = {
   as_of: string;
   salary_period?: { start: string; end: string };
+  wages_week_end?: string;
   items: PayableItem[];
   owner_comp?: PayableItem[];
   total: number;

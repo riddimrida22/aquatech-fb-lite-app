@@ -41,7 +41,8 @@ export function AccountsPayablePanel({ payable, owedToYou }: { payable: Accounts
             {formatCurrency(payable.total_financing)} financing · {formatCurrency(payable.total_salary)} unpaid wages
           </p>
           <p className="aq-lite-muted" style={{ fontSize: 10.5, margin: "2px 0 0", opacity: 0.7 }}>
-            Loan balances as of {asOf} · wages accrued YTD
+            Loan balances as of {asOf}
+            {payable.wages_week_end ? ` · wages: week ending ${formatDate(payable.wages_week_end)} + back-wages` : " · wages current"}
           </p>
         </div>
       </div>

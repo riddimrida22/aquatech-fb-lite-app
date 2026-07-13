@@ -9625,33 +9625,72 @@ def accounts_payable(
             "description": LOAN_DESC.get(loan.loan_type, "Loan"),
             "category": "credit_card" if loan.loan_type == "credit_card" else "financing",
         })
-    # Unpaid wages: YTD earned (timesheet hours x rate) minus W-2 paid, per person,
-    # positive gaps only. For regularly-paid employees this equals what's accrued
-    # since the last payroll run (Ailsa is genuinely behind; others are ~1 trailing
-    # period). The OWNER (Bertrand) draws minimal W-2 and takes distributions, so his
-    # gap is a reasonable-comp shortfall / deferred owner comp — shown separately and
-    # kept OUT of the "you owe" A/P total, because it isn't a vendor/wage bill.
+    # Unpaid wages owed. Payroll is current through the last pay run, so for
+    # regularly-paid staff the only wages owed are the CURRENT week (the 7 days
+    # ending last Sunday) at their actual pay rate. Ailsa is genuinely behind, so
+    # she carries her full accumulated YTD balance. The OWNER (Bertrand) draws
+    # minimal W-2 and takes distributions, so his YTD gap is a reasonable-comp
+    # shortfall / deferred owner comp — shown separately, OUT of the A/P total.
+    PAY_RATE = {  # verified 2026 pay rates (gross/hours from latest Paychex period)
+        "bertrand": 99.23, "roger": 90.00, "ailsa": 78.50, "robert": 61.50,
+        "zachary": 53.00, "stacey": 52.50, "courtney": 35.00,
+    }
+    OWNER_FIRST = "bertrand"
+    BACKWAGE_FIRST = {"ailsa"}  # genuinely behind -> full accumulated YTD balance
+
     ytd_start = date(date.today().year, 1, 1).isoformat()
-    today_iso = date.today().isoformat()
+    today = date.today()
+    today_iso = today.isoformat()
     comp = accounting_comp_reconciliation(start=ytd_start, end=today_iso, db=db, _=_)
-    owner_comp: list[dict[str, object]] = []
+    gap_by_first: dict[str, tuple[str, float]] = {}
     for r in comp.get("rows", []):
-        gap = float(r.get("gap") or 0.0)
-        if gap <= 0.01:
-            continue
-        name = str(r.get("name") or "")
-        if "bertrand" in name.lower():
-            owner_comp.append({
-                "entity": name, "label": name, "amount": round(gap, 2),
-                "description": "Deferred owner comp — you draw minimal W-2 and take distributions; this is your YTD reasonable-comp shortfall, not a bill.",
-                "category": "owner_comp",
-            })
-        else:
+        nm = str(r.get("name") or "")
+        toks = nm.split()
+        gap_by_first[toks[0].lower() if toks else ""] = (nm, float(r.get("gap") or 0.0))
+
+    # current week = the 7 days ending last Sunday
+    last_sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+    week_start = last_sunday - timedelta(days=6)
+    week_hrs: dict[int, float] = defaultdict(float)
+    for te in db.scalars(select(TimeEntry).where(
+            TimeEntry.work_date >= week_start, TimeEntry.work_date <= last_sunday)).all():
+        week_hrs[int(te.user_id)] += float(te.hours or 0)
+    wk_lbl = f"{last_sunday:%b %d, %Y}"
+
+    owner_comp: list[dict[str, object]] = []
+    # owner deferred comp (memo, not in total)
+    if gap_by_first.get(OWNER_FIRST, ("", 0.0))[1] > 0.01:
+        nm, g = gap_by_first[OWNER_FIRST]
+        owner_comp.append({
+            "entity": nm, "label": nm, "amount": round(g, 2),
+            "description": "Deferred owner comp — you draw minimal W-2 and take distributions; this is your YTD reasonable-comp shortfall, not a bill.",
+            "category": "owner_comp",
+        })
+    # employees genuinely behind -> full accumulated back-wages
+    for first in BACKWAGE_FIRST:
+        if gap_by_first.get(first, ("", 0.0))[1] > 0.01:
+            nm, g = gap_by_first[first]
             items.append({
-                "entity": name, "label": name, "amount": round(gap, 2),
-                "description": "Unpaid wages — accrued since last payroll (YTD earned − W-2 paid)",
+                "entity": nm, "label": nm, "amount": round(g, 2),
+                "description": "Unpaid back-wages — accumulated YTD (earned − W-2 paid)",
                 "category": "salary",
             })
+    # everyone else -> current week only (paid current through last pay run)
+    for u in db.scalars(select(User)).all():
+        nm = u.full_name or u.email or ""
+        toks = nm.split()
+        first = toks[0].lower() if toks else ""
+        if not first or first == OWNER_FIRST or first in BACKWAGE_FIRST:
+            continue
+        h = float(week_hrs.get(int(u.id), 0.0))
+        amt = round(h * PAY_RATE.get(first, 0.0), 2)
+        if amt <= 0.01:
+            continue
+        items.append({
+            "entity": nm, "label": nm, "amount": amt,
+            "description": f"Unpaid wages — week ending {wk_lbl} ({h:g} hrs @ ${PAY_RATE.get(first, 0.0):g}/hr)",
+            "category": "salary",
+        })
     items.sort(key=lambda x: -float(x["amount"]))
     fin = round(sum(float(i["amount"]) for i in items if i["category"] in ("financing", "credit_card")), 2)
     sal = round(sum(float(i["amount"]) for i in items if i["category"] == "salary"), 2)
@@ -9659,6 +9698,7 @@ def accounts_payable(
     return {
         "as_of": today_iso,
         "salary_period": {"start": ytd_start, "end": today_iso},
+        "wages_week_end": last_sunday.isoformat(),
         "items": items,
         "owner_comp": owner_comp,
         "total": round(fin + sal, 2),          # true "you owe": financing + unpaid wages
