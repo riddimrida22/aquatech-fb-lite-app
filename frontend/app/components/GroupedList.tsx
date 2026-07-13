@@ -235,28 +235,30 @@ export function GroupedList<T>({
                 gap: 12,
                 padding: "8px 12px",
                 background: isOpen ? "var(--aq-primary-soft)" : "transparent",
-                color: "var(--aq-shell-dark)",
+                color: "var(--aq-text)",
                 border: "none",
                 borderRadius: 8,
                 boxShadow: "none",
                 textAlign: "left",
-                fontWeight: 600,
+                fontWeight: 700,
                 fontSize: 13,
                 cursor: "pointer",
               }}
             >
               <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <span style={{ width: 14, color: "var(--aq-muted)" }}>{isOpen ? "▼" : "▶"}</span>
+                <span style={{ width: 14, color: "var(--aq-text)" }}>{isOpen ? "▼" : "▶"}</span>
                 <span
                   style={{
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
+                    color: "var(--aq-text)",
+                    letterSpacing: 0.2,
                   }}
                 >
-                  {g.label}
+                  {g.label.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())}
                 </span>
-                <span style={{ fontWeight: 400, fontSize: 12, color: "var(--aq-muted)" }}>
+                <span style={{ fontWeight: 600, fontSize: 12, color: "var(--aq-muted)" }}>
                   ({g.items.length})
                 </span>
               </span>
