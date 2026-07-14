@@ -9762,6 +9762,98 @@ def accounts_payable(
     }
 
 
+@app.get("/reports/owner-comp-planner")
+def owner_comp_planner(
+    marginal_rate: float = 0.37,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Salary-vs-distribution plan for the owner. Walks the owner's worked hours at
+    the pay rate to find WHEN cumulative salary (a) maxes the 401(k) and (b) absorbs
+    the distributions already taken, then nets the FICA cost of that salary against
+    the income-tax saving from maxing the 401(k). Note: 401(k) deferrals cut income
+    tax, NOT FICA — FICA is on gross — so the two land in different columns."""
+    OWNER_RATE = 99.23              # verified 2026 pay rate (gross/hours, Paychex)
+    MAX_401K = 35750.0             # 2026 employee deferral + super catch-up (age 60-63)
+    DEFER_PCT = 0.80
+    SS_BASE = 183600.0            # 2026 Social Security wage base
+    REASONABLE = 206398.40        # reasonable-comp target (annual)
+    today = date.today()
+    y0 = date(today.year, 1, 1)
+
+    owner = next((u for u in db.scalars(select(User)).all()
+                  if "bertrand" in (u.full_name or "").lower()), None)
+    if owner is None:
+        return {"available": False}
+
+    by_month: dict[str, float] = defaultdict(float)
+    for te in db.scalars(select(TimeEntry).where(
+            TimeEntry.user_id == owner.id, TimeEntry.work_date >= y0,
+            TimeEntry.work_date <= today)).all():
+        by_month[te.work_date.strftime("%Y-%m")] += float(te.hours or 0)
+    months: list[dict[str, object]] = []
+    cum_h = 0.0
+    for mk in sorted(by_month):
+        cum_h += by_month[mk]
+        months.append({"month": mk, "hours": round(by_month[mk], 1),
+                       "cum_hours": round(cum_h, 1), "cum_salary": round(cum_h * OWNER_RATE, 2)})
+    ytd_salary = round(cum_h * OWNER_RATE, 2)
+    weeks = max(0.1, (today - y0).days / 7.0)
+    weekly_salary = (cum_h / weeks) * OWNER_RATE
+
+    op = _owner_actual_payroll(y0, today)
+    w2 = float(op.get("gross_paid") or 0.0)
+    cur_defer = float(op.get("deferral_est") or 0.0)
+    net_dist = float(_owner_0273_flows(db, y0, today)["net_distributions"])
+    gross_to_max = round(MAX_401K / DEFER_PCT, 2)
+
+    def milestone(target: float) -> dict[str, object]:
+        if ytd_salary >= target and ytd_salary > 0:
+            frac = target / ytd_salary
+            return {"salary": round(target, 2),
+                    "date": (y0 + timedelta(days=int(frac * (today - y0).days))).isoformat(),
+                    "reached": True}
+        if weekly_salary <= 0:
+            return {"salary": round(target, 2), "date": None, "reached": False}
+        wks = (target - ytd_salary) / weekly_salary
+        return {"salary": round(target, 2),
+                "date": (today + timedelta(weeks=wks)).isoformat(), "reached": False}
+
+    def tier(target: float) -> dict[str, object]:
+        add_sal = max(0.0, target - w2)
+        ss = 0.124 * max(0.0, min(target, SS_BASE) - min(w2, SS_BASE))
+        med = 0.029 * add_sal
+        fica = round(ss + med, 2)
+        add_defer = max(0.0, min(target * DEFER_PCT, MAX_401K) - cur_defer)
+        saving = round(add_defer * marginal_rate, 2)
+        return {"salary": round(target, 2), "added_fica": fica,
+                "added_401k_shelter": round(add_defer, 2),
+                "income_tax_saving": saving, "net": round(saving - fica, 2)}
+
+    return {
+        "available": True,
+        "as_of": today.isoformat(),
+        "rate": OWNER_RATE,
+        "ytd_hours": round(cum_h, 1),
+        "ytd_salary": ytd_salary,
+        "avg_hours_week": round(cum_h / weeks, 1),
+        "weekly_salary": round(weekly_salary, 2),
+        "months": months,
+        "net_distributions": round(net_dist, 2),
+        "w2_drawn": round(w2, 2),
+        "k401": {"current_deferral": round(cur_defer, 2), "max": MAX_401K,
+                 "remaining": round(max(0.0, MAX_401K - cur_defer), 2),
+                 "gross_salary_to_max": gross_to_max, "defer_pct": DEFER_PCT},
+        "ss_wage_base": SS_BASE,
+        "marginal_rate": marginal_rate,
+        "milestones": {"k401_max": milestone(gross_to_max),
+                       "reasonable_comp": milestone(REASONABLE),
+                       "distributions_absorbed": milestone(net_dist)},
+        "tiers": {"max_401k": tier(gross_to_max),
+                  "absorb_distributions": tier(net_dist)},
+    }
+
+
 @app.get("/reports/payroll-hours")
 def payroll_hours_report(
     start_from: date = Query(default=date(2024, 1, 1)),

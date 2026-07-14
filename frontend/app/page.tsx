@@ -10,6 +10,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { ARAgingPanel } from "./components/ARAgingPanel";
 import { InvoiceMetricsPanel } from "./components/InvoiceMetricsPanel";
 import { AccountsPayablePanel } from "./components/AccountsPayablePanel";
+import { OwnerCompPlanner } from "./components/OwnerCompPlanner";
 import { ProfitLossPanel, CashFlowPanel, CompReconPanel, BusinessHealth } from "./components/BusinessHealthPanel";
 import { TransfersPanel } from "./components/TransfersPanel";
 import { DedupPanel } from "./components/DedupPanel";
@@ -43,6 +44,7 @@ import {
   InvoicePreview,
   InvoiceRevenueStatus,
   AccountsPayable,
+  OwnerCompPlanner as OwnerCompPlannerType,
   CashFlow,
   CompRecon,
   UnbilledHoursReport,
@@ -268,8 +270,11 @@ export default function AquatechPmHome() {
       .then((d) => setCompRecon(d)).catch(() => setCompRecon(null));
     apiGet<AccountsPayable>(`/reports/accounts-payable`)
       .then((d) => setPayable(d)).catch(() => setPayable(null));
+    apiGet<OwnerCompPlannerType>(`/reports/owner-comp-planner`)
+      .then((d) => setCompPlan(d)).catch(() => setCompPlan(null));
   }, [finPeriod.start, finPeriod.end, accountingBasis, user]);
   const [payable, setPayable] = useState<AccountsPayable | null>(null);
+  const [compPlan, setCompPlan] = useState<OwnerCompPlannerType | null>(null);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
   const [projectExpenses, setProjectExpenses] = useState<ProjectExpense[]>([]);
@@ -1580,6 +1585,7 @@ export default function AquatechPmHome() {
               <InvoiceMetricsPanel invoices={invoices} />
               <AccountsPayablePanel payable={payable} owedToYou={invoiceStatus?.total_outstanding ?? 0} />
             </div>
+            <OwnerCompPlanner plan={compPlan} />
             <div className="aq-lite-grid aq-lite-grid-2">
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
