@@ -6,13 +6,13 @@ const CAT_LABEL: Record<string, string> = {
   financing: "Financing",
   credit_card: "Credit card",
   salary: "Unpaid wages",
-  owner_comp: "Deferred owner comp",
+  owner_tax: "Owner payroll tax",
 };
 const CAT_COLOR: Record<string, string> = {
   financing: "#b42318",
   credit_card: "#d1561b",
   salary: "#8a5b1f",
-  owner_comp: "#6b5bd1",
+  owner_tax: "#6b5bd1",
 };
 
 /** What the business owes — by entity, with a description — plus the net position. */
@@ -26,8 +26,7 @@ export function AccountsPayablePanel({ payable, owedToYou }: { payable: Accounts
     );
   }
   const net = owedToYou - payable.total;
-  const ownerComp = payable.owner_comp ?? [];
-  const ownerTotal = payable.total_owner_comp ?? 0;
+  const rec = payable.owner_reconciliation ?? null;
   const asOf = formatDate(payable.as_of);
   return (
     <section className="aq-lite-panel">
@@ -39,6 +38,7 @@ export function AccountsPayablePanel({ payable, owedToYou }: { payable: Accounts
           </h3>
           <p className="aq-lite-muted" style={{ fontSize: 12, margin: "3px 0 0" }}>
             {formatCurrency(payable.total_financing)} financing · {formatCurrency(payable.total_salary)} unpaid wages
+            {payable.total_owner_tax ? ` · ${formatCurrency(payable.total_owner_tax)} owner payroll tax` : ""}
           </p>
           <p className="aq-lite-muted" style={{ fontSize: 10.5, margin: "2px 0 0", opacity: 0.7 }}>
             Loan balances as of {asOf}
@@ -71,23 +71,34 @@ export function AccountsPayablePanel({ payable, owedToYou }: { payable: Accounts
         ))}
       </div>
 
-      {/* Deferred owner comp — memo only, NOT part of the A/P total */}
-      {ownerComp.length > 0 && (
+      {/* Owner comp reconciliation — distributions cover the cash; only the payroll
+          tax is a real bill (that tax line is already included in the A/P total above). */}
+      {rec && rec.payroll_tax > 0.01 && (
         <div style={{
           marginTop: 14, padding: "12px 14px", borderRadius: 12,
           background: "rgba(107,91,209,0.07)", border: "1px dashed rgba(107,91,209,0.4)",
         }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "#6b5bd1", fontWeight: 700 }}>
-              Deferred owner comp <span style={{ fontWeight: 500, textTransform: "none", opacity: 0.8 }}>· memo, not in A/P</span>
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#6b5bd1" }}>{formatCurrency(ownerTotal)}</div>
+          <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "#6b5bd1", fontWeight: 700, marginBottom: 8 }}>
+            Owner comp — reconciled
           </div>
-          {ownerComp.map((it, i) => (
-            <div key={`owner-${i}`} className="aq-lite-muted" style={{ fontSize: 11.5, marginTop: 6 }}>
-              <strong style={{ color: "inherit" }}>{it.entity}</strong> — {it.description}
+          {[
+            ["Reasonable-comp target (YTD)", formatCurrency(rec.target_ytd)],
+            ["Less W-2 already drawn", `−${formatCurrency(rec.w2_drawn)}`],
+            [`Covered by distributions (${formatCurrency(rec.net_distributions)} net taken)`, "✓ $0 cash owed"],
+            [`Reclassified to wages`, formatCurrency(rec.reclassified)],
+          ].map(([k, v], i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }}>
+              <span className="aq-lite-muted">{k}</span>
+              <span style={{ fontWeight: 600 }}>{v}</span>
             </div>
           ))}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(107,91,209,0.25)" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: "#6b5bd1" }}>Payroll tax due <span style={{ fontWeight: 500, opacity: 0.8 }}>(in A/P total)</span></span>
+            <span style={{ fontSize: 16, fontWeight: 800, color: "#6b5bd1" }}>{formatCurrency(rec.payroll_tax)}</span>
+          </div>
+          <div className="aq-lite-muted" style={{ fontSize: 10.5, marginTop: 4, opacity: 0.8 }}>
+            SS {formatCurrency(rec.ss_tax)} + Medicare {formatCurrency(rec.medicare_tax)} · ≈{formatCurrency(rec.employer_half)} employer / {formatCurrency(rec.employee_half)} withheld
+          </div>
         </div>
       )}
 

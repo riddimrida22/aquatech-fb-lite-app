@@ -4316,6 +4316,46 @@ def _owner_actual_payroll(start: date, end: date) -> dict[str, float]:
     }
 
 
+def _owner_0273_flows(db: Session, s: date, e: date) -> dict[str, float]:
+    """Owner cash moved through the personal Chase ...0273 account over [s, e].
+    Money OUT = distribution, money IN = capital contribution. Deduped by the bank
+    "transaction#: NNN" so the same transfer arriving from both Plaid and a Chase
+    CSV (or a Plaid re-import) is counted once — otherwise the totals are inflated."""
+    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    rows = db.scalars(
+        select(BankTransaction).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s,
+            BankTransaction.posted_date <= e,
+            ~BankTransaction.source.in_(superseded_sources),
+            # Account-transfer pattern only; exclude international wires (their refs
+            # contain "0273") and rows recorded ON the 0273 account itself.
+            BankTransaction.name.ilike("%transfer%0273%"),
+            ~BankTransaction.name.ilike("%wire%"),
+            BankTransaction.account_id != "Chase0273_Activity",
+        )
+    ).all()
+    seen: set[str] = set()
+    dist_out = 0.0
+    contrib_in = 0.0
+    for t in rows:
+        mnum = re.search(r"transaction#:\s*(\d+)", t.name or "", re.I)
+        if mnum is not None:
+            if mnum.group(1) in seen:
+                continue  # duplicate import of the same bank transfer
+            seen.add(mnum.group(1))
+        amt = float(t.amount or 0)
+        if amt < 0:
+            dist_out += -amt
+        elif amt > 0:
+            contrib_in += amt
+    return {
+        "distributions_out": round(dist_out, 2),
+        "contributions_in": round(contrib_in, 2),
+        "net_distributions": round(dist_out - contrib_in, 2),
+    }
+
+
 @app.get("/accounting/business-health")
 def accounting_business_health(
     start: str | None = None,
@@ -4343,25 +4383,11 @@ def accounting_business_health(
     # Shareholder distributions = net cash drawn to the owner's PERSONAL Chase
     # account (...0273). S-corp, sole shareholder: money out beyond W-2 salary is a
     # DISTRIBUTION (reduces equity) — NOT an expense and NOT a loan. Money in = a
-    # capital contribution. Read the ...0273 transfer legs (recorded on the other
-    # accounts) and net the two directions.
-    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
-    txns = db.scalars(
-        select(BankTransaction).where(
-            BankTransaction.posted_date.isnot(None),
-            BankTransaction.posted_date >= s,
-            BankTransaction.posted_date <= e,
-            ~BankTransaction.source.in_(superseded_sources),
-            # Match the account-transfer pattern ONLY. Exclude international wires
-            # (their reference numbers contain "0273") and rows recorded ON the 0273
-            # account itself — both are false positives that inflate the draw figure.
-            BankTransaction.name.ilike("%transfer%0273%"),
-            ~BankTransaction.name.ilike("%wire%"),
-            BankTransaction.account_id != "Chase0273_Activity",
-        )
-    ).all()
-    dist_out = sum(-float(t.amount or 0) for t in txns if float(t.amount or 0) < 0)
-    contrib_0273 = sum(float(t.amount or 0) for t in txns if float(t.amount or 0) > 0)
+    # capital contribution. Deduped by bank transaction# (see _owner_0273_flows) so a
+    # transfer imported from both Plaid and a Chase CSV isn't double-counted.
+    _flows = _owner_0273_flows(db, s, e)
+    dist_out = _flows["distributions_out"]
+    contrib_0273 = _flows["contributions_in"]
 
     # External debt outstanding (exclude shareholder-loan lines — those are equity-ish
     # for a sole-shareholder S-corp and shown under "shareholder" instead).
@@ -9643,10 +9669,13 @@ def accounts_payable(
     today_iso = today.isoformat()
     comp = accounting_comp_reconciliation(start=ytd_start, end=today_iso, db=db, _=_)
     gap_by_first: dict[str, tuple[str, float]] = {}
+    paid_by_first: dict[str, float] = {}
     for r in comp.get("rows", []):
         nm = str(r.get("name") or "")
         toks = nm.split()
-        gap_by_first[toks[0].lower() if toks else ""] = (nm, float(r.get("gap") or 0.0))
+        key = toks[0].lower() if toks else ""
+        gap_by_first[key] = (nm, float(r.get("gap") or 0.0))
+        paid_by_first[key] = float(r.get("paid") or 0.0)
 
     # current week = the 7 days ending last Sunday
     last_sunday = today - timedelta(days=(today.weekday() + 1) % 7)
@@ -9657,15 +9686,40 @@ def accounts_payable(
         week_hrs[int(te.user_id)] += float(te.hours or 0)
     wk_lbl = f"{last_sunday:%b %d, %Y}"
 
-    owner_comp: list[dict[str, object]] = []
-    # owner deferred comp (memo, not in total)
-    if gap_by_first.get(OWNER_FIRST, ("", 0.0))[1] > 0.01:
-        nm, g = gap_by_first[OWNER_FIRST]
-        owner_comp.append({
-            "entity": nm, "label": nm, "amount": round(g, 2),
-            "description": "Deferred owner comp — you draw minimal W-2 and take distributions; this is your YTD reasonable-comp shortfall, not a bill.",
-            "category": "owner_comp",
-        })
+    # ---- Owner comp reconciliation (S-corp reasonable comp) ----
+    # You draw minimal W-2 and take the rest as distributions, so no CASH salary is
+    # owed — you've already paid yourself. The real liability is the PAYROLL TAX that
+    # attaches if enough of those distributions are reclassified as W-2 wages to reach
+    # a reasonable salary. That tax IS a "you owe" item.
+    REASONABLE_COMP_ANNUAL = 206398.40
+    SS_WAGE_BASE_2026 = 183600.0
+    owner_reconciliation: dict[str, object] | None = None
+    if OWNER_FIRST in gap_by_first:
+        onm = gap_by_first[OWNER_FIRST][0]
+        w2 = round(paid_by_first.get(OWNER_FIRST, 0.0), 2)
+        frac = (today - date(today.year, 1, 1)).days / 365.0
+        target_ytd = round(REASONABLE_COMP_ANNUAL * frac, 2)
+        net_dist = float(_owner_0273_flows(db, date(today.year, 1, 1), today)["net_distributions"])
+        reclassified = round(min(max(0.0, target_ytd - w2), max(0.0, net_dist)), 2)
+        ss_tax = round(0.124 * min(reclassified, max(0.0, SS_WAGE_BASE_2026 - w2)), 2)
+        med_tax = round(0.029 * reclassified, 2)
+        payroll_tax = round(ss_tax + med_tax, 2)
+        owner_reconciliation = {
+            "entity": onm, "target_ytd": target_ytd, "w2_drawn": w2,
+            "net_distributions": round(net_dist, 2), "reclassified": reclassified,
+            "ss_wage_base": SS_WAGE_BASE_2026, "ss_tax": ss_tax, "medicare_tax": med_tax,
+            "payroll_tax": payroll_tax, "employer_half": round(payroll_tax / 2, 2),
+            "employee_half": round(payroll_tax / 2, 2),
+            "basis": "Reasonable-comp target ($206,398/yr, prorated YTD). Distributions taken cover the cash; the payroll tax on the reclassified amount is the residual bill.",
+            "cash_owed": 0.0,
+        }
+        if payroll_tax > 0.01:
+            items.append({
+                "entity": f"{onm} — payroll tax", "label": "Owner reasonable-comp payroll tax",
+                "amount": payroll_tax,
+                "description": f"SS+Medicare on ${reclassified:,.0f} of distributions reclassified to reach reasonable comp — cash already drawn, only the tax is owed.",
+                "category": "owner_tax",
+            })
     # employees genuinely behind -> full accumulated back-wages
     for first in BACKWAGE_FIRST:
         if gap_by_first.get(first, ("", 0.0))[1] > 0.01:
@@ -9694,17 +9748,17 @@ def accounts_payable(
     items.sort(key=lambda x: -float(x["amount"]))
     fin = round(sum(float(i["amount"]) for i in items if i["category"] in ("financing", "credit_card")), 2)
     sal = round(sum(float(i["amount"]) for i in items if i["category"] == "salary"), 2)
-    owner = round(sum(float(o["amount"]) for o in owner_comp), 2)
+    otax = round(sum(float(i["amount"]) for i in items if i["category"] == "owner_tax"), 2)
     return {
         "as_of": today_iso,
         "salary_period": {"start": ytd_start, "end": today_iso},
         "wages_week_end": last_sunday.isoformat(),
         "items": items,
-        "owner_comp": owner_comp,
-        "total": round(fin + sal, 2),          # true "you owe": financing + unpaid wages
+        "owner_reconciliation": owner_reconciliation,
+        "total": round(fin + sal + otax, 2),   # you owe: financing + unpaid wages + owner payroll tax
         "total_financing": fin,
         "total_salary": sal,                    # employee unpaid wages only
-        "total_owner_comp": owner,              # deferred owner comp (memo, not in total)
+        "total_owner_tax": otax,                # payroll tax on reclassified owner distributions
     }
 
 

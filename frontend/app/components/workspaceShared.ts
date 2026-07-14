@@ -182,7 +182,23 @@ export type PayableItem = {
   label: string;
   amount: number;
   description: string;
-  category: "financing" | "credit_card" | "salary" | "owner_comp";
+  category: "financing" | "credit_card" | "salary" | "owner_tax";
+};
+
+export type OwnerReconciliation = {
+  entity: string;
+  target_ytd: number;
+  w2_drawn: number;
+  net_distributions: number;
+  reclassified: number;
+  ss_wage_base: number;
+  ss_tax: number;
+  medicare_tax: number;
+  payroll_tax: number;
+  employer_half: number;
+  employee_half: number;
+  basis: string;
+  cash_owed: number;
 };
 
 export type AccountsPayable = {
@@ -190,11 +206,11 @@ export type AccountsPayable = {
   salary_period?: { start: string; end: string };
   wages_week_end?: string;
   items: PayableItem[];
-  owner_comp?: PayableItem[];
+  owner_reconciliation?: OwnerReconciliation | null;
   total: number;
   total_financing: number;
   total_salary: number;
-  total_owner_comp?: number;
+  total_owner_tax?: number;
 };
 
 export type UnbilledEmployeeRow = {
