@@ -201,6 +201,42 @@ export type OwnerReconciliation = {
   cash_owed: number;
 };
 
+export type CompMilestone = { salary: number; date: string | null; reached: boolean };
+export type CompTier = {
+  salary: number;
+  added_fica: number;
+  added_401k_shelter: number;
+  income_tax_saving: number;
+  net: number;
+};
+export type OwnerCompPlanner = {
+  available: boolean;
+  as_of?: string;
+  rate?: number;
+  ytd_hours?: number;
+  ytd_salary?: number;
+  avg_hours_week?: number;
+  weekly_salary?: number;
+  months?: Array<{ month: string; hours: number; cum_hours: number; cum_salary: number }>;
+  net_distributions?: number;
+  w2_drawn?: number;
+  k401?: {
+    current_deferral: number;
+    max: number;
+    remaining: number;
+    gross_salary_to_max: number;
+    defer_pct: number;
+  };
+  ss_wage_base?: number;
+  marginal_rate?: number;
+  milestones?: {
+    k401_max: CompMilestone;
+    reasonable_comp: CompMilestone;
+    distributions_absorbed: CompMilestone;
+  };
+  tiers?: { max_401k: CompTier; absorb_distributions: CompTier };
+};
+
 export type AccountsPayable = {
   as_of: string;
   salary_period?: { start: string; end: string };
