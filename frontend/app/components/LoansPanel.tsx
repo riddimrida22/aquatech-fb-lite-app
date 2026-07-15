@@ -171,16 +171,26 @@ export function LoansPanel({ canManage }: { canManage: boolean }) {
     }
   }
 
+  // A loan the COMPANY lent out (owner_loan whose lender is the company itself) is a
+  // shareholder RECEIVABLE — a company asset, not a liability. Keep it out of the
+  // "Outstanding principal" (debt) total. Mirrors backend _loan_is_receivable.
+  const isReceivable = (l: Loan) =>
+    l.loan_type === "owner_loan" && (l.lender || "").toLowerCase().includes("aquatech");
+
   const totals = useMemo(() => {
     let outstanding = 0;
+    let receivable = 0;
     let totalInterestPaid = 0;
     let totalPrincipalPaid = 0;
     for (const l of loans) {
-      if (l.is_active) outstanding += l.principal_current;
+      if (l.is_active) {
+        if (isReceivable(l)) receivable += l.principal_current;
+        else outstanding += l.principal_current;
+      }
       totalInterestPaid += l.interest_total;
       totalPrincipalPaid += l.principal_total;
     }
-    return { outstanding, totalInterestPaid, totalPrincipalPaid };
+    return { outstanding, receivable, totalInterestPaid, totalPrincipalPaid };
   }, [loans]);
 
   return (
@@ -197,9 +207,15 @@ export function LoansPanel({ canManage }: { canManage: boolean }) {
 
       <div className="aq-lite-grid aq-lite-grid-3" style={{ marginBottom: 12 }}>
         <article className="aq-lite-kpi">
-          <span>Outstanding principal</span>
+          <span>Outstanding principal (owed)</span>
           <strong>{formatCurrency(totals.outstanding)}</strong>
         </article>
+        {totals.receivable > 0 ? (
+          <article className="aq-lite-kpi">
+            <span>Loaned to shareholder (receivable · asset)</span>
+            <strong>{formatCurrency(totals.receivable)}</strong>
+          </article>
+        ) : null}
         <article className="aq-lite-kpi">
           <span>Lifetime interest paid</span>
           <strong>{formatCurrency(totals.totalInterestPaid)}</strong>

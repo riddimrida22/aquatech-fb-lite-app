@@ -3665,6 +3665,7 @@ def accounting_pl(
     # Use pay_day (when the expense actually hits) — that's the canonical date for
     # cash-basis accounting and matches what the IRS expects for payroll tax timing.
     cogs = 0.0
+    cogs_incomplete = False
     payroll_breakdown = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0}
     try:
         inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
@@ -3701,9 +3702,11 @@ def accounting_pl(
                 payroll_breakdown["gross"] += float(t.get("gross", 0))
                 payroll_breakdown["employer_taxes"] += float(t.get("employer_taxes", 0))
                 payroll_breakdown["employer_401k"] += float(t.get("employer_401k", 0))
-    except Exception:
-        # If parsing fails, leave COGS at 0 — UI will show note
-        pass
+    except Exception as exc:
+        # Do NOT silently report $0 COGS — that would overstate profit by the whole
+        # payroll. Flag it so callers/UI render "COGS unavailable" instead of $0.
+        cogs_incomplete = True
+        print(f"[accounting_pl] COGS payroll parse failed: {exc!r}", flush=True)
 
     # Benefits-to-COGS: per user, NYSIF (workers comp + disability) and Nu Era
     # (health insurance for one employee) are per-employee benefit costs that
@@ -3981,6 +3984,7 @@ def accounting_pl(
         "revenue_cash": revenue,
         "revenue_accrual": revenue_accrual,
         "cogs": cogs,
+        "cogs_incomplete": cogs_incomplete,
         "cogs_labor": cogs_labor_billable,
         "nonbillable_labor_cost": nonbillable_labor,
         "labor_split_by_employee": _labor["by_employee"],
@@ -4072,7 +4076,8 @@ def accounting_pl_monthly(
 
     months: list[dict[str, object]] = []
     tot = {
-        "revenue_cash": 0.0, "revenue_accrual": 0.0, "cogs": 0.0, "opex": 0.0,
+        "revenue_cash": 0.0, "revenue_accrual": 0.0, "cogs": 0.0,
+        "nonbillable_labor_cost": 0.0, "opex": 0.0,
         "interest_expense": 0.0, "fees_expense": 0.0,
         "net_income_cash": 0.0, "net_income_accrual": 0.0,
     }
@@ -4089,6 +4094,7 @@ def accounting_pl_monthly(
             "revenue_cash": pl["revenue_cash"],
             "revenue_accrual": pl["revenue_accrual"],
             "cogs": pl["cogs"],
+            "nonbillable_labor_cost": pl["nonbillable_labor_cost"],
             "opex": pl["opex"],
             "interest_expense": pl["interest_expense"],
             "fees_expense": pl["fees_expense"],
@@ -5932,15 +5938,24 @@ def integrations_freshness(
     return {"sources": sources, "overall": overall, "as_of": now.isoformat()}
 
 
+def _loan_is_receivable(loan: "Loan") -> bool:
+    """True when a loan is money the COMPANY lent OUT — a shareholder/owner
+    receivable, i.e. a company ASSET, not something the company owes. These must
+    be excluded from liabilities and reported under assets. The single source of
+    truth for loan direction (balance sheet, A/P, cash flow, loans view all agree)."""
+    return loan.loan_type == "owner_loan" and "aquatech" in (loan.lender or "").lower()
+
+
 @app.get("/accounting/balance-sheet")
 def accounting_balance_sheet(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
-    """Balance sheet snapshot. Liabilities are Σ Loan.principal_current.
+    """Balance sheet snapshot.
     Cash assets come from BankAccount.current_balance where available.
     AR = Σ Invoice.balance_due where balance_due > 0.
-    Equity is the plug (assets − liabilities).
+    Loans the company OWES are liabilities; loans it lent out (shareholder
+    receivables) are assets. Equity is the plug (assets − liabilities).
     """
     cash = float(db.scalar(
         select(func.coalesce(func.sum(BankAccount.current_balance), 0.0))
@@ -5951,22 +5966,31 @@ def accounting_balance_sheet(
         .where(Invoice.balance_due > 0)
         .where(Invoice.status.notin_(["void", "draft", "written_off"]))
     ) or 0.0)
-    loans_principal = float(db.scalar(
-        select(func.coalesce(func.sum(Loan.principal_current), 0.0))
-        .where(Loan.is_active.is_(True))
-    ) or 0.0)
-    total_assets = cash + ar
-    total_liabilities = loans_principal
+    # Split loans by direction: what the company owes (liability) vs. what it is
+    # owed back (shareholder receivable = asset). Previously ALL active loans were
+    # summed into liabilities, which double-hit equity (liability overstated AND
+    # the receivable omitted from assets).
+    loans_payable = 0.0
+    shareholder_receivable = 0.0
+    for loan in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
+        bal = float(loan.principal_current or 0.0)
+        if _loan_is_receivable(loan):
+            shareholder_receivable += bal
+        else:
+            loans_payable += bal
+    total_assets = cash + ar + shareholder_receivable
+    total_liabilities = loans_payable
     equity = total_assets - total_liabilities
     return {
         "as_of": date.today().isoformat(),
         "assets": {
             "cash": cash,
             "accounts_receivable": ar,
+            "shareholder_receivable": shareholder_receivable,
             "total": total_assets,
         },
         "liabilities": {
-            "loans_outstanding": loans_principal,
+            "loans_outstanding": loans_payable,
             "total": total_liabilities,
         },
         "equity": equity,
@@ -9639,10 +9663,9 @@ def accounts_payable(
         bal = float(loan.principal_current or 0.0)
         if bal <= 0.01:
             continue
-        # Direction check: an owner_loan whose LENDER is the company itself is money
-        # the business lent OUT (a shareholder receivable), not something it owes.
-        lender = (loan.lender or "").lower()
-        if loan.loan_type == "owner_loan" and "aquatech" in lender:
+        # Direction check (shared helper): an owner_loan whose LENDER is the company
+        # itself is money the business lent OUT (a shareholder receivable), not a payable.
+        if _loan_is_receivable(loan):
             continue
         items.append({
             "entity": loan.lender or loan.name,
