@@ -4005,16 +4005,17 @@ def accounting_pl(
     fees_expense = float(db.scalar(
         select(func.coalesce(func.sum(LoanPayment.fees_amount), 0.0)).where(*_lp_where)
     ) or 0.0)
-    # Drill-down source for interest + fees: the individual loan payments behind them.
+    # Drill-down source for the Interest-expense line: the loan payments behind it.
+    # interest_amount only (excl. Fundbox, matching interest_expense) so it reconciles.
     _loan_names = dict(db.execute(select(Loan.id, Loan.name)).all())
     interest_detail = [
         {"id": lp.id, "label": _loan_names.get(lp.loan_id, "Loan"),
          "date": lp.payment_date.isoformat() if lp.payment_date else "",
-         "amount": round(float(lp.interest_amount or 0.0) + float(lp.fees_amount or 0.0), 2)}
+         "amount": round(float(lp.interest_amount or 0.0), 2)}
         for lp in db.scalars(
             select(LoanPayment).where(*_lp_where).order_by(LoanPayment.payment_date)
         ).all()
-        if round(float(lp.interest_amount or 0.0) + float(lp.fees_amount or 0.0), 2) != 0
+        if round(float(lp.interest_amount or 0.0), 2) != 0
     ]
     # Authoritative Fundbox financing cost (fees + discount) from the ledger —
     # method-agnostic (checking OR credit card), replacing the excluded bank-derived

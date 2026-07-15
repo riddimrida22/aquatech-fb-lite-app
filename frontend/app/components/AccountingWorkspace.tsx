@@ -215,7 +215,7 @@ function PLView({ start, end }: { start: string; end: string }) {
               <td></td>
             </tr>
           ))}
-          <tr style={{ cursor: "pointer" }} onClick={() => setDrill({ kind: "interest", value: "Interest & fees — loan payments" })}
+          <tr style={{ cursor: "pointer" }} onClick={() => setDrill({ kind: "interest", value: "Interest expense — loan payments" })}
               title="Click to see the loan payments behind this">
             <td>− Interest expense (from Loans tab) <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.interest_expense)})</td>
@@ -254,8 +254,14 @@ function PLView({ start, end }: { start: string; end: string }) {
           noun = "invoice";
           rows = (pl.revenue_detail ?? []).map((r) => ({ key: `r${r.id}`, date: r.date, label: r.label, sublabel: r.client, amount: r.amount }));
         } else if (drill.kind === "cogs") {
-          noun = "employee";
-          rows = (pl.labor_split_by_employee ?? []).map((r) => ({ key: `c${r.name}`, date: "", label: r.name, sublabel: `${r.client_hours}h billable · ${r.overhead_hours}h overhead`, amount: r.employer_cost }));
+          noun = "line";
+          // Billable labor per employee (cogs_labor) + benefits/WC + direct project = COGS.
+          rows = (pl.labor_split_by_employee ?? [])
+            .filter((r) => r.cogs_labor !== 0)
+            .map((r) => ({ key: `c${r.name}`, date: "", label: r.name, sublabel: `${r.client_hours}h billable`, amount: r.cogs_labor }));
+          const cb = pl.cogs_breakdown;
+          if (cb && cb.benefits_workers_comp) rows.push({ key: "c-ben", date: "", label: "Benefits & workers' comp", amount: cb.benefits_workers_comp });
+          if (cb && cb.direct_project_costs) rows.push({ key: "c-dpc", date: "", label: "Direct project costs (subs/materials)", amount: cb.direct_project_costs });
         } else if (drill.kind === "interest") {
           noun = "payment";
           rows = (pl.interest_detail ?? []).map((r) => ({ key: `i${r.id}`, date: r.date, label: r.label, amount: r.amount }));
