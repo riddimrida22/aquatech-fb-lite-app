@@ -29,6 +29,9 @@ type PL = {
   opex_breakdown?: { category: string; amount: number }[];
   opex_by_group?: { group: string; amount: number }[];
   opex_tx_detail?: { id: number; date: string; name: string; amount: number; category: string; group: string }[];
+  revenue_detail?: { id: number; label: string; client: string; date: string; amount: number }[];
+  interest_detail?: { id: number; label: string; date: string; amount: number }[];
+  labor_split_by_employee?: { name: string; employer_cost: number; client_hours: number; overhead_hours: number; cogs_labor: number; nonbillable_labor: number }[];
   interest_expense: number;
   fees_expense: number;
   net_income_cash: number;
@@ -137,7 +140,7 @@ function PLView({ start, end }: { start: string; end: string }) {
   const [pl, setPl] = useState<PL | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [drill, setDrill] = useState<{ kind: "category" | "group"; value: string } | null>(null);
+  const [drill, setDrill] = useState<{ kind: "category" | "group" | "revenue" | "cogs" | "interest"; value: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,13 +171,15 @@ function PLView({ start, end }: { start: string; end: string }) {
 
       <table className="aq-lite-table">
         <tbody>
-          <tr>
-            <td><strong>Revenue (cash · paid invoices)</strong></td>
+          <tr style={{ cursor: "pointer" }} onClick={() => setDrill({ kind: "revenue", value: "Revenue — paid invoices" })}
+              title="Click to see the invoices behind this">
+            <td><strong>Revenue (cash · paid invoices)</strong> <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
             <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(pl.revenue_cash)}</td>
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Accrual basis: {formatCurrency(pl.revenue_accrual)} (issued)</td>
           </tr>
-          <tr>
-            <td>− COGS (loaded labor + benefits + direct project)</td>
+          <tr style={{ cursor: "pointer" }} onClick={() => setDrill({ kind: "cogs", value: "COGS — loaded labor by employee" })}
+              title="Click to see the labor behind this">
+            <td>− COGS (loaded labor + benefits + direct project) <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.cogs)})</td>
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>
               Labor: gross {formatCurrency(pl.payroll_breakdown.gross)} · ER taxes {formatCurrency(pl.payroll_breakdown.employer_taxes)} · 401k {formatCurrency(pl.payroll_breakdown.employer_401k)}
@@ -210,8 +215,9 @@ function PLView({ start, end }: { start: string; end: string }) {
               <td></td>
             </tr>
           ))}
-          <tr>
-            <td>− Interest expense (from Loans tab)</td>
+          <tr style={{ cursor: "pointer" }} onClick={() => setDrill({ kind: "interest", value: "Interest & fees — loan payments" })}
+              title="Click to see the loan payments behind this">
+            <td>− Interest expense (from Loans tab) <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.interest_expense)})</td>
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Loan principal portions are excluded from expenses.</td>
           </tr>
@@ -236,38 +242,53 @@ function PLView({ start, end }: { start: string; end: string }) {
       </div>
 
       {drill ? (() => {
-        const rows = (pl.opex_tx_detail ?? []).filter((t) =>
-          drill.kind === "category" ? t.category === drill.value : t.group === drill.value,
-        );
+        type Row = { key: string; date: string; label: string; sublabel?: string; amount: number };
+        let rows: Row[] = [];
+        let noun = "item";
+        if (drill.kind === "category" || drill.kind === "group") {
+          noun = "transaction";
+          rows = (pl.opex_tx_detail ?? [])
+            .filter((t) => (drill.kind === "category" ? t.category === drill.value : t.group === drill.value))
+            .map((t) => ({ key: `o${t.id}`, date: t.date, label: t.name, sublabel: drill.kind === "group" ? t.category : undefined, amount: t.amount }));
+        } else if (drill.kind === "revenue") {
+          noun = "invoice";
+          rows = (pl.revenue_detail ?? []).map((r) => ({ key: `r${r.id}`, date: r.date, label: r.label, sublabel: r.client, amount: r.amount }));
+        } else if (drill.kind === "cogs") {
+          noun = "employee";
+          rows = (pl.labor_split_by_employee ?? []).map((r) => ({ key: `c${r.name}`, date: "", label: r.name, sublabel: `${r.client_hours}h billable · ${r.overhead_hours}h overhead`, amount: r.employer_cost }));
+        } else if (drill.kind === "interest") {
+          noun = "payment";
+          rows = (pl.interest_detail ?? []).map((r) => ({ key: `i${r.id}`, date: r.date, label: r.label, amount: r.amount }));
+        }
         const total = rows.reduce((s, r) => s + r.amount, 0);
         return (
           <DetailDrawer
             open
             onClose={() => setDrill(null)}
             title={drill.value}
-            subtitle={`${rows.length} transaction${rows.length === 1 ? "" : "s"} · ${formatCurrency(total)} · ${pl.period.start} → ${pl.period.end}`}
+            subtitle={`${rows.length} ${noun}${rows.length === 1 ? "" : "s"} · ${formatCurrency(total)} · ${pl.period.start} → ${pl.period.end}`}
           >
             <table className="aq-lite-table">
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left" }}>Date</th>
-                  <th style={{ textAlign: "left" }}>Description</th>
+                  <th style={{ textAlign: "left" }}>{drill.kind === "cogs" ? "" : "Date"}</th>
+                  <th style={{ textAlign: "left" }}>{drill.kind === "revenue" ? "Invoice" : drill.kind === "cogs" ? "Employee" : "Description"}</th>
                   <th style={{ textAlign: "right" }}>Amount</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.id}>
+                  <tr key={r.key}>
                     <td style={{ whiteSpace: "nowrap", color: "var(--aq-muted)", fontSize: 12 }}>{r.date}</td>
                     <td style={{ fontSize: 12 }}>
-                      {r.name}
-                      {drill.kind === "group" ? <span style={{ color: "var(--aq-muted)" }}> · {r.category}</span> : null}
+                      {r.label}
+                      {r.sublabel ? <span style={{ color: "var(--aq-muted)" }}> · {r.sublabel}</span> : null}
                     </td>
                     <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatCurrency(r.amount)}</td>
                   </tr>
                 ))}
                 {rows.length === 0 ? (
-                  <tr><td colSpan={3} className="aq-lite-muted">No transaction detail for this line.</td></tr>
+                  <tr><td colSpan={3} className="aq-lite-muted">No detail for this line.</td></tr>
                 ) : null}
               </tbody>
             </table>
