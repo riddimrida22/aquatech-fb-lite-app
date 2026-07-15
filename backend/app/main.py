@@ -3061,6 +3061,28 @@ def _norm_period_key(period: dict) -> tuple:
     return ("raw", per, pay)
 
 
+# Signature-keyed memo for parsed payroll periods. Parsing the inbox PDFs with
+# PyMuPDF is expensive and was previously redone on every accounting request
+# (5-24x per dashboard / pl-monthly load). Cache the deduped periods keyed by the
+# inbox's file signature (name, mtime, size); any upload/change to the inbox
+# changes the signature and invalidates the cache automatically.
+_PAYROLL_PERIODS_CACHE: dict = {"sig": None, "periods": None}
+
+
+def _inbox_signature(inbox: Path) -> tuple:
+    if not inbox.exists():
+        return ()
+    sig: list = []
+    for p in sorted(inbox.iterdir()):
+        if p.suffix.lower() in (".pdf", ".csv"):
+            try:
+                st = p.stat()
+                sig.append((p.name, int(st.st_mtime), st.st_size))
+            except OSError:
+                continue
+    return tuple(sig)
+
+
 def _deduped_payroll_periods(inbox: Path) -> list[dict]:
     """Every pay period across all payroll files in the inbox, de-duplicated by
     pay-period identity (:func:`_norm_period_key`). Each period is the source dict
@@ -3070,7 +3092,14 @@ def _deduped_payroll_periods(inbox: Path) -> list[dict]:
     overlapping exports both contain a period, only the first is kept — so COGS and
     the payroll summary count each period exactly once regardless of how many
     (possibly overlapping) files sit in the inbox. With a single file it is a no-op.
+
+    Result is memoized on the inbox file signature (see _PAYROLL_PERIODS_CACHE) so
+    repeated calls within/across requests don't re-parse the PDFs.
     """
+    sig = _inbox_signature(inbox)
+    if _PAYROLL_PERIODS_CACHE["sig"] == sig and _PAYROLL_PERIODS_CACHE["periods"] is not None:
+        return _PAYROLL_PERIODS_CACHE["periods"]
+
     seen: set[tuple] = set()
     ordered: list[dict] = []
     for fname, _year_label, parsed in _iter_parsed_payroll(inbox):
@@ -3083,6 +3112,9 @@ def _deduped_payroll_periods(inbox: Path) -> list[dict]:
             ann["_year"] = _period_year(period)
             ann["_file"] = fname
             ordered.append(ann)
+
+    _PAYROLL_PERIODS_CACHE["sig"] = sig
+    _PAYROLL_PERIODS_CACHE["periods"] = ordered
     return ordered
 
 
