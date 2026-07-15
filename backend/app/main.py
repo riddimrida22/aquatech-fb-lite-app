@@ -4538,7 +4538,7 @@ SALARY_RATES = {
     "bertrand": 99.23, "courtney": 35.0, "gilliam": 53.0, "zachary": 53.0,
     "hodge": 52.50, "stacey": 52.50, "svadlenka": 61.50, "robert": 61.50,
     "welch": 78.50, "ailsa": 78.50, "guo": 130.0, "qizhong": 130.0,
-    "wang": 100.0, "roger": 100.0,
+    "wang": 90.0, "roger": 90.0,
 }
 
 
