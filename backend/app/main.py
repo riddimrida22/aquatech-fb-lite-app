@@ -3693,6 +3693,19 @@ def accounting_pl(
                func.lower(func.coalesce(Invoice.status, "")) != "draft")
     ) or 0.0)
 
+    # Drill-down source for the (cash) Revenue line: the paid invoices behind it.
+    revenue_detail = [
+        {"id": inv.id, "label": inv.invoice_number, "client": inv.client_name,
+         "date": inv.paid_date.isoformat() if inv.paid_date else "",
+         "amount": round(float(inv.amount_paid or 0.0), 2)}
+        for inv in db.scalars(
+            select(Invoice)
+            .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
+            .order_by(Invoice.amount_paid.desc())
+        ).all()
+        if round(float(inv.amount_paid or 0.0), 2) != 0
+    ]
+
     # COGS from Gusto journal (canonical). Re-parse the inbox.
     # Use pay_day (when the expense actually hits) — that's the canonical date for
     # cash-basis accounting and matches what the IRS expects for payroll tax timing.
@@ -3992,6 +4005,17 @@ def accounting_pl(
     fees_expense = float(db.scalar(
         select(func.coalesce(func.sum(LoanPayment.fees_amount), 0.0)).where(*_lp_where)
     ) or 0.0)
+    # Drill-down source for interest + fees: the individual loan payments behind them.
+    _loan_names = dict(db.execute(select(Loan.id, Loan.name)).all())
+    interest_detail = [
+        {"id": lp.id, "label": _loan_names.get(lp.loan_id, "Loan"),
+         "date": lp.payment_date.isoformat() if lp.payment_date else "",
+         "amount": round(float(lp.interest_amount or 0.0) + float(lp.fees_amount or 0.0), 2)}
+        for lp in db.scalars(
+            select(LoanPayment).where(*_lp_where).order_by(LoanPayment.payment_date)
+        ).all()
+        if round(float(lp.interest_amount or 0.0) + float(lp.fees_amount or 0.0), 2) != 0
+    ]
     # Authoritative Fundbox financing cost (fees + discount) from the ledger —
     # method-agnostic (checking OR credit card), replacing the excluded bank-derived
     # Fundbox interest above. Principal repayments are debt servicing, not expense.
@@ -4022,6 +4046,7 @@ def accounting_pl(
         "period": {"start": s.isoformat(), "end": e.isoformat()},
         "revenue_cash": revenue,
         "revenue_accrual": revenue_accrual,
+        "revenue_detail": revenue_detail,
         "cogs": cogs,
         "cogs_incomplete": cogs_incomplete,
         "cogs_labor": cogs_labor_billable,
@@ -4069,6 +4094,7 @@ def accounting_pl(
         "needs_review_items": sorted(needs_review_items, key=lambda r: -r["amount"]),
         "interest_expense": interest_expense,
         "fees_expense": fees_expense,
+        "interest_detail": interest_detail,
         "fundbox_financing_cost": fundbox_financing_cost,
         "net_income_cash": net_income_cash,
         "net_income_accrual": net_income_accrual,
