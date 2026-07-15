@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
 import { LoansPanel } from "./LoansPanel";
+import { DetailDrawer } from "./DetailDrawer";
 
 type PL = {
   period: { start: string; end: string };
@@ -27,6 +28,7 @@ type PL = {
   opex: number;
   opex_breakdown?: { category: string; amount: number }[];
   opex_by_group?: { group: string; amount: number }[];
+  opex_tx_detail?: { id: number; date: string; name: string; amount: number; category: string; group: string }[];
   interest_expense: number;
   fees_expense: number;
   net_income_cash: number;
@@ -135,6 +137,7 @@ function PLView({ start, end }: { start: string; end: string }) {
   const [pl, setPl] = useState<PL | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [drill, setDrill] = useState<{ kind: "category" | "group"; value: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,14 +193,18 @@ function PLView({ start, end }: { start: string; end: string }) {
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Grouped: Admin / Marketing / Business Development</td>
           </tr>
           {(pl.opex_by_group ?? []).map((row) => (
-            <tr key={row.group} style={{ fontWeight: 600 }}>
-              <td style={{ paddingLeft: 24 }}>{row.group}</td>
+            <tr key={row.group} style={{ fontWeight: 600, cursor: "pointer" }}
+                onClick={() => setDrill({ kind: "group", value: row.group })}
+                title="Click to see the transactions behind this group">
+              <td style={{ paddingLeft: 24 }}>{row.group} <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
               <td style={{ textAlign: "right" }}>({formatCurrency(row.amount)})</td>
               <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>{pl.opex > 0 ? `${((row.amount / pl.opex) * 100).toFixed(1)}%` : ""}</td>
             </tr>
           ))}
           {(pl.opex_breakdown ?? []).map((row) => (
-            <tr key={row.category}>
+            <tr key={row.category} style={{ cursor: "pointer" }}
+                onClick={() => setDrill({ kind: "category", value: row.category })}
+                title="Click to see the transactions behind this category">
               <td style={{ paddingLeft: 44, color: "var(--aq-muted)", fontSize: 12 }}>{row.category}</td>
               <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>({formatCurrency(row.amount)})</td>
               <td></td>
@@ -227,6 +234,46 @@ function PLView({ start, end }: { start: string; end: string }) {
           {pl.notes.map((n, i) => <li key={i}>{n}</li>)}
         </ul>
       </div>
+
+      {drill ? (() => {
+        const rows = (pl.opex_tx_detail ?? []).filter((t) =>
+          drill.kind === "category" ? t.category === drill.value : t.group === drill.value,
+        );
+        const total = rows.reduce((s, r) => s + r.amount, 0);
+        return (
+          <DetailDrawer
+            open
+            onClose={() => setDrill(null)}
+            title={drill.value}
+            subtitle={`${rows.length} transaction${rows.length === 1 ? "" : "s"} · ${formatCurrency(total)} · ${pl.period.start} → ${pl.period.end}`}
+          >
+            <table className="aq-lite-table">
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left" }}>Date</th>
+                  <th style={{ textAlign: "left" }}>Description</th>
+                  <th style={{ textAlign: "right" }}>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id}>
+                    <td style={{ whiteSpace: "nowrap", color: "var(--aq-muted)", fontSize: 12 }}>{r.date}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {r.name}
+                      {drill.kind === "group" ? <span style={{ color: "var(--aq-muted)" }}> · {r.category}</span> : null}
+                    </td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatCurrency(r.amount)}</td>
+                  </tr>
+                ))}
+                {rows.length === 0 ? (
+                  <tr><td colSpan={3} className="aq-lite-muted">No transaction detail for this line.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </DetailDrawer>
+        );
+      })() : null}
     </section>
   );
 }

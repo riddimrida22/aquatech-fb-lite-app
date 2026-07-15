@@ -3792,6 +3792,10 @@ def accounting_pl(
     _review_group = "⚠ Needs review (manual)"
     needs_review_count = 0
     needs_review_items: list[dict] = []
+    # Per-transaction OPEX detail so the UI can drill any expense category/group down
+    # to the exact transactions behind it. Populated in lockstep with the opex totals
+    # below, so it always reconciles to opex_breakdown by construction.
+    opex_tx_detail: list[dict] = []
     cogs_from_tx = 0.0
     cogs_tx_by_group: dict[str, float] = defaultdict(float)
     interest_in_loans = 0.0
@@ -3901,6 +3905,7 @@ def accounting_pl(
             opex += amt
             opex_by_cat[cat] += amt
             opex_by_group[group] += amt
+            opex_tx_detail.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": cat, "group": group})
             if group == _review_group:
                 needs_review_count += 1
                 needs_review_items.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": cat})
@@ -3925,6 +3930,7 @@ def accounting_pl(
                 opex += amt
                 opex_by_cat[cat] += amt
                 opex_by_group[group] += amt
+                opex_tx_detail.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": cat, "group": group})
                 if group == _review_group:
                     needs_review_count += 1
                     needs_review_items.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": cat})
@@ -3962,6 +3968,7 @@ def accounting_pl(
             opex += amt
             opex_by_cat[fb_label] += amt
             opex_by_group[group] += amt
+            opex_tx_detail.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": fb_label, "group": group})
             if group == _review_group:
                 needs_review_count += 1
                 needs_review_items.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": fb_label})
@@ -4051,6 +4058,11 @@ def accounting_pl(
             for g, v in sorted(opex_by_group.items(), key=lambda kv: kv[1], reverse=True)
             if round(v, 2) != 0
         ],
+        # Per-transaction OPEX detail (drill-down source); reconciles to opex_breakdown.
+        "opex_tx_detail": sorted(
+            [{**r, "date": (r["date"].isoformat() if hasattr(r["date"], "isoformat") else r["date"])} for r in opex_tx_detail],
+            key=lambda r: -r["amount"],
+        ),
         # Un-reviewed spend that still counts in OpEx/margin — surfaced so it can't hide.
         "needs_review_total": round(opex_by_group.get(_review_group, 0.0), 2),
         "needs_review_count": needs_review_count,
