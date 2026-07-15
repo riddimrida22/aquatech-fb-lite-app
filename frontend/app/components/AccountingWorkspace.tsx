@@ -177,9 +177,8 @@ function PLView({ start, end }: { start: string; end: string }) {
             <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(pl.revenue_cash)}</td>
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Accrual basis: {formatCurrency(pl.revenue_accrual)} (issued)</td>
           </tr>
-          <tr style={{ cursor: "pointer" }} onClick={() => setDrill({ kind: "cogs", value: "COGS — loaded labor by employee" })}
-              title="Click to see the labor behind this">
-            <td>− COGS (loaded labor + benefits + direct project) <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
+          <tr>
+            <td>− COGS (loaded labor + benefits + direct project)</td>
             <td style={{ textAlign: "right" }}>({formatCurrency(pl.cogs)})</td>
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>
               Labor: gross {formatCurrency(pl.payroll_breakdown.gross)} · ER taxes {formatCurrency(pl.payroll_breakdown.employer_taxes)} · 401k {formatCurrency(pl.payroll_breakdown.employer_401k)}
