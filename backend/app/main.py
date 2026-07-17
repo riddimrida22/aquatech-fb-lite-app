@@ -5171,7 +5171,7 @@ def accounting_owner_wealth(
     date: str | None = None,
     period: str = "day",
     owner_annual_salary: float = 206398.40,
-    owner_annual_401k: float = 46500.00,
+    owner_annual_401k: float = 1430.00,  # 4% of the $35,750 max deferral (2026 + age 60-63 super catch-up)
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> dict[str, object]:
