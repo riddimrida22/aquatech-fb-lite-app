@@ -5166,6 +5166,81 @@ def accounting_daily_profitability(
     }
 
 
+@app.get("/accounting/owner-wealth")
+def accounting_owner_wealth(
+    date: str | None = None,
+    period: str = "day",
+    owner_annual_salary: float = 206398.40,
+    owner_annual_401k: float = 46500.00,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Owner's personal wealth impact (you own 100%). For any period,
+        your take = company operating profit + your salary + your 401(k) match,
+    accrued per working day. Company profitability already COSTS your labor at
+    reasonable comp, so adding your comp back yields your true total economic benefit
+    (profit + pay), with no double-count. Mirrors /accounting/daily-profitability
+    (same day/week/month scroll + trend)."""
+    from datetime import date as _date
+
+    base = accounting_daily_profitability(date=date, period=period, db=db, _=_)
+    period = base["period_kind"]
+    WD_YR = 252.0
+    sal_pd = (owner_annual_salary or 0.0) / WD_YR
+    k_pd = (owner_annual_401k or 0.0) / WD_YR
+    comp_pd = sal_pd + k_pd
+    today = _date.today()
+
+    def _pt_wd(pt) -> int:
+        d0 = _date.fromisoformat(pt["date"])
+        if period == "day":
+            return 0 if pt.get("is_weekend") else 1
+        if period == "week":
+            return _business_days_between(d0, min(d0 + timedelta(days=6), today))
+        first = _date(d0.year, d0.month, 1)
+        nxt = _date(d0.year + (d0.month // 12), (d0.month % 12) + 1, 1)
+        return _business_days_between(first, min(nxt - timedelta(days=1), today))
+
+    pwd = base["period"]["working_days"] or 0
+    company_profit = base["period"]["earned_margin"]
+    owner_salary = round(sal_pd * pwd, 2)
+    owner_401k = round(k_pd * pwd, 2)
+    your_take = round(company_profit + owner_salary + owner_401k, 2)
+
+    series = [{
+        "date": pt["date"], "label": pt["label"], "is_weekend": pt.get("is_weekend", False),
+        "company_profit": pt["earned_margin"],
+        "your_take": round(pt["earned_margin"] + comp_pd * _pt_wd(pt), 2),
+    } for pt in base.get("series", [])]
+
+    return {
+        "as_of_date": base["as_of_date"],
+        "period_kind": period,
+        "nav": base["nav"],
+        "period": {
+            "kind": period, "label": base["period"]["label"],
+            "start": base["period"]["start"], "end": base["period"]["end"],
+            "working_days": pwd,
+            "company_profit": company_profit,
+            "owner_salary": owner_salary,
+            "owner_401k": owner_401k,
+            "your_take": your_take,
+        },
+        "series": series,
+        "assumptions": {
+            "annual_salary": owner_annual_salary,
+            "annual_401k_match": owner_annual_401k,
+            "working_days_per_year": WD_YR,
+        },
+        "notes": [
+            "You own 100%, so your take = company operating profit + your salary + your 401(k) match.",
+            "Company profit already deducts your labor at reasonable comp, so adding your comp back is your true total economic benefit — no double-count.",
+            f"Comp accrues ${comp_pd:,.0f}/working-day (salary ${owner_annual_salary:,.0f} + 401(k) ${owner_annual_401k:,.0f} per year ÷ {int(WD_YR)} working days). These two figures are adjustable.",
+            "Company profit uses the same earned-value engine as the Company Profitability panel above.",
+        ],
+    }
+
+
 class AssistantAskIn(BaseModel):
     question: str
     mode: str = "quick"
