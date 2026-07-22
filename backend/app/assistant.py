@@ -58,6 +58,7 @@ _SOURCES = [
     ("accounts_receivable", "ar_summary"),
     ("invoice_revenue_status", "invoice_revenue_status"),
     ("project_performance", "project_performance_range"),
+    ("project_budgets", "project_budget_status"),
     ("unbilled_work", "unbilled_hours_report"),
 ]
 
