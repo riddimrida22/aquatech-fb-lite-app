@@ -9305,6 +9305,47 @@ def project_performance_range(
     }
 
 
+@app.get("/reports/project-budgets")
+def project_budget_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Per-project contract budget vs. billed-to-date and remaining.
+
+    - budget_fee       = Project.overall_budget_fee (the contract/fee ceiling)
+    - billed_to_date   = sum of non-void/non-draft Invoice.subtotal_amount for the project
+    - budget_remaining = budget_fee - billed_to_date  (None when no budget is set)
+
+    Powers project budget-tracking questions in the assistant
+    (e.g. "how much budget is left on LTCP4?").
+    """
+    billed_rows = db.execute(
+        select(Invoice.project_id, func.coalesce(func.sum(Invoice.subtotal_amount), 0.0))
+        .where(Invoice.status.notin_(["void", "draft"]))
+        .group_by(Invoice.project_id)
+    ).all()
+    billed = {int(pid): float(tot or 0.0) for pid, tot in billed_rows if pid is not None}
+
+    out: list[dict[str, object]] = []
+    for p in db.scalars(select(Project).order_by(Project.name)).all():
+        if getattr(p, "is_overhead", False):
+            continue
+        budget = float(p.overall_budget_fee or 0.0)
+        b = billed.get(int(p.id), 0.0)
+        if budget <= 0 and b <= 0:
+            continue
+        out.append({
+            "project": p.name,
+            "client": p.client_name,
+            "budget_fee": round(budget, 2),
+            "billed_to_date": round(b, 2),
+            "budget_remaining": round(budget - b, 2) if budget > 0 else None,
+            "pct_billed": round(b / budget * 100.0, 1) if budget > 0 else None,
+            "active": bool(p.is_active),
+        })
+    return {"as_of": date.today().isoformat(), "projects": out}
+
+
 @app.get("/reports/unbilled-since-last-invoice")
 def unbilled_since_last_invoice(
     db: Session = Depends(get_db),
