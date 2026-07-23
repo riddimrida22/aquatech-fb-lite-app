@@ -257,6 +257,43 @@ export default function AquatechPmHome() {
   const _bookRev = businessHealth?.waterfall.revenue ?? 0;
   const shownNetIncome = netAfterSalary ? _bookNet - ownerSalaryThisPeriod : _bookNet;
   const shownNetMargin = netAfterSalary ? (_bookRev ? shownNetIncome / _bookRev : null) : (businessHealth?.waterfall.net_margin ?? null);
+  // Plaid OAuth return leg. OAuth banks (Dime Community Bank, Chase, …) redirect the
+  // browser away and back to PLAID_REDIRECT_URI, which lands here at the app root —
+  // NOT on the Cloud Connections panel — so the resume has to live at this level.
+  // Link must be re-opened with the ORIGINAL link_token plus receivedRedirectUri.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!window.location.search.includes("oauth_state_id=")) return;
+    const saved = window.localStorage.getItem("plaid_link_token");
+    if (!saved) return;
+    let tries = 0;
+    const resume = () => {
+      const P = (window as unknown as { Plaid?: { create: (c: Record<string, unknown>) => { open: () => void } } }).Plaid;
+      if (!P) {
+        if (tries++ > 40) return; // Link JS never loaded; give up quietly
+        window.setTimeout(resume, 300);
+        return;
+      }
+      P.create({
+        token: saved,
+        receivedRedirectUri: window.location.href,
+        onSuccess: async (public_token: string) => {
+          try {
+            await apiPost("/admin/plaid/exchange", { public_token });
+          } finally {
+            window.localStorage.removeItem("plaid_link_token");
+            window.history.replaceState({}, "", window.location.pathname);
+          }
+        },
+        onExit: () => {
+          window.localStorage.removeItem("plaid_link_token");
+          window.history.replaceState({}, "", window.location.pathname);
+        },
+      }).open();
+    };
+    resume();
+  }, []);
+
   useEffect(() => {
     if (!user || !deriveUserCapabilities(user).canViewFinancials) return;
     if (!finPeriod.start || !finPeriod.end) return;

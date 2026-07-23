@@ -59,6 +59,12 @@ def create_link_token(client_user_id: str = "aqtpm-admin") -> str:
         "country_codes": countries,
         "language": "en",
     }
+    # OAuth institutions (Dime Community Bank, Chase, etc.) require a redirect_uri
+    # that is registered in the Plaid dashboard; without it Link errors out as soon
+    # as the user picks an OAuth bank.
+    redirect_uri = (s.PLAID_REDIRECT_URI or "").strip()
+    if redirect_uri:
+        payload["redirect_uri"] = redirect_uri
     r = httpx.post(f"{api_base()}/link/token/create", json=payload, timeout=30)
     r.raise_for_status()
     return r.json()["link_token"]

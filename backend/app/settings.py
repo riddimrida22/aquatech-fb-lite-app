@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     PLAID_ENV: str = "sandbox"
     PLAID_PRODUCTS: str = "transactions"
     PLAID_COUNTRY_CODES: str = "US"
+    # Required for OAuth institutions (e.g. Dime Community Bank). Must be
+    # registered verbatim in the Plaid dashboard under Allowed redirect URIs.
+    PLAID_REDIRECT_URI: str = ""
     FRESHBOOKS_TRANSITION_DIR: str = "/mnt/c/Users/bertr/Downloads/AqtPM-Uploads"
     # FreshBooks API integration (Private OAuth App)
     FRESHBOOKS_CLIENT_ID: str = ""
