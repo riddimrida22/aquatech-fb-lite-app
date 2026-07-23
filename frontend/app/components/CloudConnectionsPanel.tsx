@@ -1,7 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { apiGet, apiPost, API_BASE } from "../../lib/api";
+
+type PlaidItem = {
+  id: number;
+  item_id?: string | null;
+  account_id?: string | null;
+  institution?: string | null;
+  last_synced_at?: string | null;
+  last_sync_status?: string | null;
+  notes?: string | null;
+};
 
 type CloudStatus = {
   connected: boolean;
@@ -12,6 +22,9 @@ type CloudStatus = {
   last_sync_status?: string | null;
   last_sync_summary?: Record<string, unknown>;
   notes?: string | null;
+  // Plaid supports one linked institution per item — Chase and Dime side by side.
+  item_count?: number;
+  items?: PlaidItem[];
 };
 
 type OAuthProvider = {
@@ -222,8 +235,25 @@ function PlaidProviderCard() {
     }
   }
 
+  // Disconnect ONE bank. Without an item_id the server would drop every linked
+  // institution, which would silently kill a working feed.
+  async function disconnectItem(item: PlaidItem) {
+    const who = item.institution || item.item_id || "this bank";
+    if (!confirm(`Disconnect ${who}? Other linked banks stay connected. You'll need to re-link it.`)) return;
+    setBusy(true);
+    try {
+      await apiPost(`/admin/plaid/disconnect?item_id=${encodeURIComponent(item.item_id || "")}`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Disconnect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function disconnect() {
-    if (!confirm("Disconnect Plaid bank link? You'll need to re-link.")) return;
+    const n = status?.items?.length ?? 0;
+    if (!confirm(`Disconnect ALL ${n || ""} linked bank(s)? You'll need to re-link each.`)) return;
     setBusy(true);
     try {
       await apiPost("/admin/plaid/disconnect");
@@ -235,6 +265,47 @@ function PlaidProviderCard() {
     }
   }
 
+  const items = status?.items ?? [];
+  const linkedBanks = status?.connected ? (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--aq-muted)", marginBottom: 6 }}>
+        Linked banks ({items.length})
+      </div>
+      {items.map((it) => (
+        <div
+          key={it.id}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 10, padding: "6px 8px", border: "1px solid var(--aq-border)",
+            borderRadius: 8, marginBottom: 6, flexWrap: "wrap",
+          }}
+        >
+          <div style={{ fontSize: 13 }}>
+            <strong>{it.institution || "Linked bank"}</strong>
+            <span className="aq-lite-muted" style={{ fontSize: 11, marginLeft: 8 }}>
+              {it.last_synced_at ? `synced ${new Date(it.last_synced_at).toLocaleString()}` : "never synced"}
+              {it.last_sync_status ? ` · ${it.last_sync_status}` : ""}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void disconnectItem(it)}
+            disabled={busy}
+            style={{
+              padding: "3px 9px", fontSize: 12, background: "transparent",
+              color: "var(--aq-red)", border: "1px solid var(--aq-border)", boxShadow: "none",
+            }}
+          >
+            Disconnect
+          </button>
+        </div>
+      ))}
+      <button type="button" onClick={connect} disabled={busy} style={{ padding: "5px 11px", fontSize: 12 }}>
+        {busy ? "Opening…" : "+ Add another bank"}
+      </button>
+    </div>
+  ) : null;
+
   return (
     <ProviderCardShell
       label="Plaid bank feed"
@@ -244,6 +315,7 @@ function PlaidProviderCard() {
       onConnect={connect}
       onSync={syncNow}
       onDisconnect={disconnect}
+      extra={linkedBanks}
       description="Live transactions from your real bank — replaces the manual Chase CSV import. Sandbox lets you test with simulated banks; promotes to Production at dashboard.plaid.com without certification gating."
       connectNote="Click Connect to launch Plaid Link. You'll pick your bank and authenticate. On success, Plaid sends a public_token that we exchange server-side for a long-lived access_token."
       connectLabel="Connect bank via Plaid Link"
@@ -263,6 +335,7 @@ function ProviderCardShell({
   description,
   connectNote,
   connectLabel,
+  extra,
 }: {
   label: string;
   status: CloudStatus | null;
@@ -274,6 +347,7 @@ function ProviderCardShell({
   description: string;
   connectNote: string;
   connectLabel: string;
+  extra?: ReactNode;
 }) {
   return (
     <div
@@ -324,6 +398,8 @@ function ProviderCardShell({
       </div>
 
       {err ? <p style={{ color: "var(--aq-red)", fontSize: 12, marginTop: 8 }}>{err}</p> : null}
+
+      {extra}
 
       <p className="aq-lite-muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
         {description}

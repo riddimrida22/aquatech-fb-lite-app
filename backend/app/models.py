@@ -398,17 +398,22 @@ class GustoPayroll(Base):
 
 
 class IntegrationToken(Base):
-    """OAuth tokens for cloud integrations (FreshBooks, Gusto, etc).
+    """OAuth tokens for cloud integrations (FreshBooks, Gusto, Plaid, etc).
 
-    One row per provider — token rotation overwrites in place. Refresh tokens are
-    one-time-use, so on every refresh the new pair is written before the old token
-    is used to make any API call.
+    Single-tenant providers (FreshBooks, Gusto) keep exactly one row and rotate
+    the token in place. Refresh tokens are one-time-use, so on every refresh the
+    new pair is written before the old token is used to make any API call.
+
+    Plaid is the exception: one row PER LINKED INSTITUTION (Plaid "Item"), keyed
+    by account_id/business_id = item_id. That is why `provider` is NOT unique on
+    its own — uniqueness is (provider, account_id) so Chase and Dime can both be
+    connected at once.
     """
 
     __tablename__ = "integration_tokens"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    provider: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
     bearer_token: Mapped[str] = mapped_column(Text)
     refresh_token: Mapped[str] = mapped_column(Text)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -420,6 +425,10 @@ class IntegrationToken(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "account_id", name="uq_integration_token_provider_account"),
+    )
 
 
 class Loan(Base):

@@ -96,10 +96,22 @@ def transactions_sync(access_token: str, cursor: str = "") -> dict[str, Any]:
 
 
 def store_access_token(db: Session, exchange_response: dict[str, Any], notes: str = "") -> IntegrationToken:
-    """Persist Plaid access_token + item_id."""
+    """Persist a Plaid access_token + item_id.
+
+    Keyed on item_id so linking a SECOND institution adds a row rather than
+    clobbering the first. Re-linking the same institution (same item_id) rotates
+    that item's token in place.
+    """
     access_token = exchange_response.get("access_token") or ""
     item_id = exchange_response.get("item_id") or ""
-    row = db.scalar(select(IntegrationToken).where(IntegrationToken.provider == PROVIDER))
+    row = None
+    if item_id:
+        row = db.scalar(
+            select(IntegrationToken).where(
+                IntegrationToken.provider == PROVIDER,
+                IntegrationToken.account_id == item_id,
+            )
+        )
     if row is None:
         row = IntegrationToken(
             provider=PROVIDER,
@@ -118,8 +130,22 @@ def store_access_token(db: Session, exchange_response: dict[str, Any], notes: st
     return row
 
 
+def load_tokens(db: Session) -> list[IntegrationToken]:
+    """Every linked Plaid Item (one per institution), oldest first."""
+    return list(
+        db.scalars(
+            select(IntegrationToken)
+            .where(IntegrationToken.provider == PROVIDER)
+            .order_by(IntegrationToken.id)
+        ).all()
+    )
+
+
 def load_token(db: Session) -> IntegrationToken | None:
-    return db.scalar(select(IntegrationToken).where(IntegrationToken.provider == PROVIDER))
+    """First linked Plaid Item. Kept for callers that only need "is anything
+    connected"; anything that must cover every bank should use load_tokens()."""
+    rows = load_tokens(db)
+    return rows[0] if rows else None
 
 
 def _parse_date(s: Any) -> date | None:
@@ -230,9 +256,32 @@ def _persist_transaction(db: Session, conn: BankConnection, t: dict[str, Any]) -
 
 
 def sync_summary(db: Session) -> dict[str, Any]:
-    row = load_token(db)
-    if not row:
+    """Sync EVERY linked Plaid Item (Chase, Dime, …) and aggregate the result.
+
+    One failing institution must not stop the others, so each item is synced in
+    isolation and its error recorded against that item.
+    """
+    rows = load_tokens(db)
+    if not rows:
         raise RuntimeError("No Plaid item connected — link a bank via Plaid Link first")
+    if len(rows) == 1:
+        return _sync_one(db, rows[0])
+
+    items: list[dict[str, Any]] = []
+    totals = {"inserted": 0, "updated": 0, "errors": 0}
+    for r in rows:
+        try:
+            s = _sync_one(db, r)
+        except Exception as exc:  # noqa: BLE001 — isolate per-institution failures
+            s = {"item_id": r.business_id, "error": str(exc)[:300]}
+        by = ((s.get("transactions") or {}).get("by_outcome") or {}) if isinstance(s, dict) else {}
+        for k in totals:
+            totals[k] += int(by.get(k) or 0)
+        items.append(s)
+    return {"items": items, "item_count": len(items), "transactions": {"by_outcome": totals}}
+
+
+def _sync_one(db: Session, row: IntegrationToken) -> dict[str, Any]:
     summary: dict[str, Any] = {"item_id": row.business_id}
     accounts: list[dict[str, Any]] = []
     try:

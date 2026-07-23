@@ -13519,18 +13519,42 @@ def plaid_status(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("MANAGE_PROJECTS")),
 ) -> dict[str, object]:
-    row = plaid_integration.load_token(db)
-    if not row:
-        return {"connected": False}
+    rows = plaid_integration.load_tokens(db)
+    if not rows:
+        return {"connected": False, "items": []}
+
+    def _institution_label(tok) -> str:
+        """Best-effort bank name, from the BankConnection we persist per Plaid item."""
+        conn = db.scalar(
+            select(BankConnection).where(BankConnection.item_id == (tok.business_id or ""))
+        )
+        return (getattr(conn, "institution_name", "") or "").strip() or "Linked bank"
+
+    items = [
+        {
+            "id": r.id,
+            "item_id": r.business_id,
+            "account_id": r.account_id,
+            "institution": _institution_label(r),
+            "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None,
+            "last_sync_status": r.last_sync_status,
+            "notes": r.notes,
+        }
+        for r in rows
+    ]
+    first = rows[0]
+    # Top-level keys kept for backwards compatibility with the existing UI card.
     return {
         "connected": True,
-        "account_id": row.account_id,
-        "business_id": row.business_id,
+        "item_count": len(rows),
+        "items": items,
+        "account_id": first.account_id,
+        "business_id": first.business_id,
         "expires_at": None,    # Plaid access_tokens don't expire
-        "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
-        "last_sync_status": row.last_sync_status,
-        "last_sync_summary": json.loads(row.last_sync_summary or "{}"),
-        "notes": row.notes,
+        "last_synced_at": first.last_synced_at.isoformat() if first.last_synced_at else None,
+        "last_sync_status": first.last_sync_status,
+        "last_sync_summary": json.loads(first.last_sync_summary or "{}"),
+        "notes": first.notes,
     }
 
 
@@ -13549,14 +13573,25 @@ def plaid_sync(
 
 @app.post("/admin/plaid/disconnect")
 def plaid_disconnect(
+    item_id: str | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("MANAGE_PROJECTS")),
-) -> dict[str, str]:
-    row = plaid_integration.load_token(db)
-    if row:
-        db.delete(row)
-        db.commit()
-    return {"status": "disconnected"}
+) -> dict[str, object]:
+    """Disconnect ONE linked bank (item_id), or all of them when item_id is omitted.
+
+    With several institutions linked, dropping them all by accident would silently
+    kill a working feed — so pass item_id to target a single bank.
+    """
+    rows = plaid_integration.load_tokens(db)
+    if item_id:
+        rows = [r for r in rows if (r.business_id or r.account_id) == item_id]
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"No linked Plaid item {item_id}")
+    removed = [(r.business_id or r.account_id) for r in rows]
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return {"status": "disconnected", "removed": removed, "remaining": len(plaid_integration.load_tokens(db))}
 
 
 # ----------------------------------------------------------------------------
