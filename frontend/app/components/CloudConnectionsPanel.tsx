@@ -45,6 +45,8 @@ declare global {
     Plaid?: {
       create: (config: {
         token: string;
+        // Set only on the OAuth return leg (bank redirected back to us).
+        receivedRedirectUri?: string;
         onSuccess: (publicToken: string, metadata: unknown) => void;
         onExit?: (err: unknown, metadata: unknown) => void;
       }) => { open: () => void; exit: () => void };
@@ -169,6 +171,10 @@ function PlaidProviderCard() {
     void load();
   }, []);
 
+  // NOTE: the Plaid OAuth return leg is handled at the app root (app/page.tsx),
+  // because the bank redirects back to the root URL where this panel is not
+  // mounted. Do not duplicate that handler here — it would open Link twice.
+
   async function connect() {
     setBusy(true);
     setErr(null);
@@ -177,17 +183,21 @@ function PlaidProviderCard() {
       if (typeof window === "undefined" || !window.Plaid) {
         throw new Error("Plaid Link JS not loaded yet — refresh the page and try again.");
       }
+      // Persist for the OAuth round-trip — the same token must be reused on return.
+      window.localStorage.setItem("plaid_link_token", link_token);
       const handler = window.Plaid.create({
         token: link_token,
         onSuccess: async (public_token: string) => {
           try {
             await apiPost("/admin/plaid/exchange", { public_token });
+            window.localStorage.removeItem("plaid_link_token");
             await load();
           } catch (e) {
             setErr(e instanceof Error ? e.message : "Exchange failed");
           }
         },
         onExit: (err) => {
+          window.localStorage.removeItem("plaid_link_token");
           if (err) console.warn("Plaid Link exit:", err);
         },
       });
