@@ -42,13 +42,6 @@ class Settings(BaseSettings):
     FRESHBOOKS_CLIENT_SECRET: str = ""
     FRESHBOOKS_REDIRECT_URI: str = "https://localhost:8000/auth/freshbooks/callback"
     FRESHBOOKS_API_VERSION: str = "2023-02-20"
-    # Gusto API integration
-    GUSTO_CLIENT_ID: str = ""
-    GUSTO_CLIENT_SECRET: str = ""
-    GUSTO_REDIRECT_URI: str = "https://localhost:8000/auth/gusto/callback"
-    GUSTO_API_BASE: str = "https://api.gusto-demo.com"
-    GUSTO_AUTH_BASE: str = "https://api.gusto-demo.com"
-    GUSTO_API_VERSION: str = "2026-02-01"
     SESSION_HTTPS_ONLY: bool = False
     SESSION_SAME_SITE: str = "lax"
     CORS_ALLOW_INTERNAL_REGEX: bool = True

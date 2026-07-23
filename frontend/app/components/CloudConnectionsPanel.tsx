@@ -28,12 +28,15 @@ type CloudStatus = {
 };
 
 type OAuthProvider = {
-  key: "freshbooks" | "gusto";
+  key: "freshbooks";
   label: string;
   description: string;
   redirectNote: string;
 };
 
+// Gusto API connector removed 2026-07 — payroll moved to Paychex and the Gusto
+// OAuth app was never connected. Historical Gusto payroll-journal data and its
+// CSV parser are UNTOUCHED; they still feed COGS. Paychex API is the follow-up.
 const OAUTH_PROVIDERS: OAuthProvider[] = [
   {
     key: "freshbooks",
@@ -42,14 +45,6 @@ const OAUTH_PROVIDERS: OAuthProvider[] = [
       "Read-only sync of clients, invoices, expenses, payments, projects, and time entries from your live FreshBooks account.",
     redirectNote:
       "When FreshBooks redirects back, the URL starts with https://localhost:8000/... which won't load. Manually flip https → http in the URL bar and press enter.",
-  },
-  {
-    key: "gusto",
-    label: "Gusto API",
-    description:
-      "Read-only sync of company, employees, and payrolls from Gusto. Demo stage uses gusto-demo.com — flip GUSTO_API_BASE to api.gusto.com once your app is approved by Gusto for Production.",
-    redirectNote:
-      "Same drill: when Gusto redirects back, manually flip https → http in the URL bar.",
   },
 ];
 
