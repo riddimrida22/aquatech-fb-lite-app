@@ -65,6 +65,7 @@ from .models import (
 from .settings import get_settings
 from .timeframes import pay_period_for
 from . import freshbooks as fb_integration
+from . import paychex as paychex_integration
 from . import plaid_integration
 
 
@@ -13383,6 +13384,58 @@ def freshbooks_disconnect(
 # =====================================================================
 # Gusto OAuth + sync endpoints
 # =====================================================================
+
+# =====================================================================
+# Paychex Flex API (company-owned app, client_credentials)
+# =====================================================================
+
+
+@app.get("/admin/paychex/status")
+def paychex_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    row = paychex_integration.load_token(db)
+    configured = paychex_integration.is_configured()
+    if not row:
+        return {"connected": False, "configured": configured}
+    return {
+        "connected": True,
+        "configured": configured,
+        "account_id": row.account_id,      # Paychex companyId
+        "business_id": row.business_id,    # Paychex displayId
+        "expires_at": None,                # token is re-acquired on demand
+        "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
+        "last_sync_status": row.last_sync_status,
+        "last_sync_summary": json.loads(row.last_sync_summary or "{}"),
+        "notes": row.notes,
+    }
+
+
+@app.post("/admin/paychex/sync")
+def paychex_sync(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, object]:
+    try:
+        return paychex_integration.sync_summary(db)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Paychex error: {e.response.text[:300]}")
+
+
+@app.post("/admin/paychex/disconnect")
+def paychex_disconnect(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_PROJECTS")),
+) -> dict[str, str]:
+    row = paychex_integration.load_token(db)
+    if row:
+        db.delete(row)
+        db.commit()
+    return {"status": "disconnected"}
+
 
 # =====================================================================
 # Plaid Link + transactions sync endpoints
