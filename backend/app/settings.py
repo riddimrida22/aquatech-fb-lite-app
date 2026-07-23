@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     FRESHBOOKS_CLIENT_SECRET: str = ""
     FRESHBOOKS_REDIRECT_URI: str = "https://localhost:8000/auth/freshbooks/callback"
     FRESHBOOKS_API_VERSION: str = "2023-02-20"
+    # Paychex Flex API — company-owned app (Company Settings > Integrated apps).
+    # OAuth2 client_credentials; no redirect URI and no refresh token.
+    PAYCHEX_CLIENT_ID: str = ""
+    PAYCHEX_CLIENT_SECRET: str = ""
+    PAYCHEX_API_BASE: str = "https://api.paychex.com"
     SESSION_HTTPS_ONLY: bool = False
     SESSION_SAME_SITE: str = "lax"
     CORS_ALLOW_INTERNAL_REGEX: bool = True

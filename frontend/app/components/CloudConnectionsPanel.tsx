@@ -86,6 +86,7 @@ export function CloudConnectionsPanel() {
       </div>
       <div className="aq-lite-stack" style={{ gap: 16 }}>
         {OAUTH_PROVIDERS.map((p) => <OAuthProviderCard key={p.key} provider={p} />)}
+        <PaychexProviderCard />
         <PlaidProviderCard />
       </div>
     </section>
@@ -159,6 +160,117 @@ function OAuthProviderCard({ provider }: { provider: OAuthProvider }) {
   );
 }
 
+
+// Paychex uses a company-owned app with OAuth2 client_credentials — there is no
+// user redirect to "connect". It is live as soon as the keys are in the server
+// env; what varies is which API resources the app is entitled to, so this card
+// surfaces per-resource capability instead of a Connect button.
+type PaychexCapability = { status: number; allowed: boolean; count: number | null; note: string };
+
+function PaychexProviderCard() {
+  const [status, setStatus] = useState<CloudStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    try {
+      setStatus(await apiGet<CloudStatus>("/admin/paychex/status"));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to load");
+    }
+  }
+  useEffect(() => { void load(); }, []);
+
+  async function syncNow() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiPost("/admin/paychex/sync");
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Clears the stored connection record only. The credentials live in the
+  // server env, so this does not revoke anything at Paychex.
+  async function disconnect() {
+    if (!confirm("Clear the stored Paychex connection record? Keys stay in the server env; re-probe any time.")) return;
+    setBusy(true);
+    try {
+      await apiPost("/admin/paychex/disconnect");
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Disconnect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const summary = (status?.last_sync_summary ?? {}) as {
+    company?: { displayId?: string; name?: string };
+    capabilities?: Record<string, PaychexCapability>;
+    payroll_ready?: boolean;
+    note?: string;
+  };
+  const caps = summary.capabilities ?? {};
+  const capKeys = Object.keys(caps);
+
+  const detail = status?.connected ? (
+    <div style={{ marginTop: 10 }}>
+      {summary.company?.name ? (
+        <div style={{ fontSize: 13, marginBottom: 6 }}>
+          <strong>{summary.company.name}</strong>
+          <span className="aq-lite-muted" style={{ fontSize: 11, marginLeft: 8 }}>
+            client #{summary.company.displayId}
+          </span>
+        </div>
+      ) : null}
+      {capKeys.length ? (
+        <>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--aq-muted)", marginBottom: 4 }}>
+            API resources
+          </div>
+          {capKeys.map((k) => (
+            <div key={k} style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "baseline", marginBottom: 2 }}>
+              <span style={{ color: caps[k].allowed ? "var(--aq-green)" : "var(--aq-red)", fontWeight: 600, minWidth: 84 }}>
+                {caps[k].allowed ? "● granted" : "○ blocked"}
+              </span>
+              <span style={{ minWidth: 92 }}>{k}</span>
+              <span className="aq-lite-muted" style={{ fontSize: 11 }}>
+                {caps[k].allowed ? (caps[k].count !== null ? `${caps[k].count} sampled` : "ok") : `HTTP ${caps[k].status}`}
+              </span>
+            </div>
+          ))}
+        </>
+      ) : null}
+      {summary.note ? (
+        <p style={{ fontSize: 11, marginTop: 8, marginBottom: 0, color: summary.payroll_ready ? "var(--aq-green)" : "var(--aq-amber, #d9a14f)" }}>
+          {summary.note}
+        </p>
+      ) : null}
+    </div>
+  ) : null;
+
+  return (
+    <ProviderCardShell
+      label="Paychex Flex API"
+      status={status}
+      err={err}
+      busy={busy}
+      onConnect={syncNow}
+      onSync={syncNow}
+      onDisconnect={disconnect}
+      extra={detail}
+      description="Read-only payroll source. Company-owned app using OAuth2 client_credentials — no redirect, keys live in the server env. Payroll and Checks must be enabled per-resource in Paychex (Company Settings → Integrated apps → Access settings)."
+      connectNote="Click to authenticate and probe which Paychex API resources this app is entitled to."
+      connectLabel="Connect / probe Paychex"
+    />
+  );
+}
 
 function PlaidProviderCard() {
   const [status, setStatus] = useState<CloudStatus | null>(null);
