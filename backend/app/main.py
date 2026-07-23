@@ -65,7 +65,6 @@ from .models import (
 from .settings import get_settings
 from .timeframes import pay_period_for
 from . import freshbooks as fb_integration
-from . import gusto as gusto_integration
 from . import plaid_integration
 
 
@@ -13384,97 +13383,6 @@ def freshbooks_disconnect(
 # =====================================================================
 # Gusto OAuth + sync endpoints
 # =====================================================================
-
-@app.get("/auth/gusto/start")
-def gusto_oauth_start(
-    _: User = Depends(require_permission("MANAGE_PROJECTS")),
-) -> RedirectResponse:
-    s = get_settings()
-    if not s.GUSTO_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="GUSTO_CLIENT_ID not configured in .env")
-    return RedirectResponse(gusto_integration.authorize_url(state="aqtpm"))
-
-
-@app.get("/auth/gusto/callback")
-def gusto_oauth_callback(
-    code: str | None = None,
-    error: str | None = None,
-    db: Session = Depends(get_db),
-) -> Response:
-    if error:
-        return Response(
-            content=f"<h1>Gusto authorization failed</h1><p>{error}</p>",
-            media_type="text/html",
-            status_code=400,
-        )
-    if not code:
-        raise HTTPException(status_code=400, detail="missing 'code' query parameter")
-    try:
-        token_resp = gusto_integration.exchange_code(code)
-    except httpx.HTTPStatusError as e:
-        return Response(
-            content=f"<h1>Token exchange failed</h1><pre>{e.response.text}</pre>",
-            media_type="text/html",
-            status_code=502,
-        )
-    except Exception as e:
-        return Response(
-            content=f"<h1>Token exchange error</h1><pre>{e}</pre>",
-            media_type="text/html",
-            status_code=502,
-        )
-    gusto_integration.store_tokens(db, token_resp, notes="Connected via /auth/gusto/callback")
-    db.commit()
-    s = get_settings()
-    front = s.FRONTEND_ORIGIN.rstrip("/")
-    return RedirectResponse(f"{front}/?gusto_connected=1#imports")
-
-
-@app.get("/admin/gusto/status")
-def gusto_status(
-    db: Session = Depends(get_db),
-    _: User = Depends(require_permission("MANAGE_PROJECTS")),
-) -> dict[str, object]:
-    row = gusto_integration.load_token(db)
-    if not row:
-        return {"connected": False}
-    return {
-        "connected": True,
-        "account_id": row.account_id,
-        "business_id": row.business_id,
-        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
-        "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
-        "last_sync_status": row.last_sync_status,
-        "last_sync_summary": json.loads(row.last_sync_summary or "{}"),
-        "notes": row.notes,
-    }
-
-
-@app.post("/admin/gusto/sync")
-def gusto_sync(
-    db: Session = Depends(get_db),
-    _: User = Depends(require_permission("MANAGE_PROJECTS")),
-) -> dict[str, object]:
-    try:
-        summary = gusto_integration.sync_summary(db)
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"Gusto API error: {e.response.text}")
-    return summary
-
-
-@app.post("/admin/gusto/disconnect")
-def gusto_disconnect(
-    db: Session = Depends(get_db),
-    _: User = Depends(require_permission("MANAGE_PROJECTS")),
-) -> dict[str, str]:
-    row = gusto_integration.load_token(db)
-    if row:
-        db.delete(row)
-        db.commit()
-    return {"status": "disconnected"}
-
 
 # =====================================================================
 # Plaid Link + transactions sync endpoints

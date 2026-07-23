@@ -57,8 +57,9 @@ export default function PrivacyPage() {
           <li>
             <strong>Payroll records</strong> — employer cost, employer payroll
             taxes, employer 401(k) match, gross wages, hours paid, net pay,
-            sourced from Gusto via API or Payroll Journal Report CSV. Used for
-            cost-of-goods-sold attribution against project budgets.
+            sourced from Payroll Journal Report exports (Paychex today, Gusto
+            historically). Used for cost-of-goods-sold attribution against
+            project budgets.
           </li>
           <li>
             <strong>FreshBooks records</strong> — clients, invoices, expenses,
@@ -85,11 +86,6 @@ export default function PrivacyPage() {
           firm administrators using OAuth or read-only API tokens:
         </p>
         <ul>
-          <li>
-            <strong>Gusto</strong> — read-only access to company, employees, and
-            payroll runs. We do not run or modify payroll through this
-            integration.
-          </li>
           <li>
             <strong>FreshBooks</strong> — read-only access to clients, invoices,
             expenses, payments, and time entries.

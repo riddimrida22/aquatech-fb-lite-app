@@ -2326,7 +2326,7 @@ export default function AquatechPmHome() {
               </p>
             </section>
 
-            {/* Cloud connections — direct API integration with FreshBooks (and later Gusto) */}
+            {/* Cloud connections — direct API integrations (FreshBooks, Plaid; Paychex planned) */}
             <CloudConnectionsPanel />
 
             {/* v2.0 reconciliation engine — show CSV vs API drift, dedupe overlap window */}
