@@ -58,6 +58,10 @@ def create_link_token(client_user_id: str = "aqtpm-admin") -> str:
         "products": products,
         "country_codes": countries,
         "language": "en",
+        # Pull the maximum history Plaid allows (24 months). Default is only 90
+        # days — that is why Dime came in from 2026-04-30 (its link date minus
+        # ~90d). This applies at LINK time, so extending history requires re-linking.
+        "transactions": {"days_requested": 730},
     }
     # OAuth institutions (Dime Community Bank, Chase, etc.) require a redirect_uri
     # that is registered in the Plaid dashboard; without it Link errors out as soon
