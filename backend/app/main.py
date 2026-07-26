@@ -75,6 +75,10 @@ from . import plaid_integration
 CC_TRANSFER_KEYWORDS = (
     "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
     "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK",
+    # Dime (DACA 8462 <-> operating 3661) internal sweeps — moving the firm's own
+    # money between its own accounts, not an expense. Both accounts are on Plaid now,
+    # and Plaid tags these TRANSFER_OUT; the memo is "xfer from 8462 to 3661".
+    "XFER FROM", "XFER TO",
     "PAYMENT TO CHASE CARD", "AUTOMATIC PAYMENT",
     # Wires (to own / foreign-currency-business / brokerage accounts) + Amex card
     # payments — these move money or pay a card, they are NOT operating expenses.
