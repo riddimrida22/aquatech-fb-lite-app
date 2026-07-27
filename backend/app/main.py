@@ -78,7 +78,9 @@ CC_TRANSFER_KEYWORDS = (
     # Dime (DACA 8462 <-> operating 3661) internal sweeps — moving the firm's own
     # money between its own accounts, not an expense. Both accounts are on Plaid now,
     # and Plaid tags these TRANSFER_OUT; the memo is "xfer from 8462 to 3661".
-    "XFER FROM", "XFER TO",
+    # Older Dime statements (2025) use the memo "Transfer to CK 3661" / "Transfer
+    # from CK 8462" for the same internal sweep — catch that variant too.
+    "XFER FROM", "XFER TO", "TRANSFER TO CK", "TRANSFER FROM CK",
     "PAYMENT TO CHASE CARD", "AUTOMATIC PAYMENT",
     # Wires (to own / foreign-currency-business / brokerage accounts) + Amex card
     # payments — these move money or pay a card, they are NOT operating expenses.
