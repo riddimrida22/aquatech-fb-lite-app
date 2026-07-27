@@ -4096,6 +4096,8 @@ def accounting_pl(
     _labor = _labor_cost_split(db, s, e)
     nonbillable_labor = _labor["nonbillable_labor"]
     cogs_labor_billable = _labor["cogs_labor"]
+    bd_labor = float(_labor.get("bd_labor", 0.0) or 0.0)  # BD-task share of indirect labor
+    other_indirect_labor = round(nonbillable_labor - bd_labor, 2)
     cogs = round(cogs - nonbillable_labor, 2)  # remove indirect labor from COGS
     gross_profit_cash = revenue - cogs
     gross_profit_accrual = revenue_accrual - cogs
@@ -4104,6 +4106,29 @@ def accounting_pl(
 
     def _margin(num: float, den: float) -> float:
         return round(num / den, 4) if den else 0.0
+
+    # Indirect (below-gross-profit) cost by business FUNCTION: the non-labor OPEX
+    # groups MERGED with the indirect-labor split, so the Business Development line
+    # shows its full cost = BD travel/meals/expenses + BD labor (Ailsa/owner time),
+    # per user directive. Sums to opex + nonbillable_labor = total indirect.
+    # DISPLAY-ONLY: the `opex` and `nonbillable_labor_cost` scalars (consumed by the
+    # overhead-rate and daily-profitability engines) are deliberately left unchanged,
+    # so billing floors and daily break-even do not move.
+    _ind_labor: dict[str, float] = {}
+    if round(bd_labor, 2) != 0:
+        _ind_labor["Business Development"] = round(bd_labor, 2)
+    if round(other_indirect_labor, 2) != 0:
+        _ind_labor["Admin / G&A"] = round(other_indirect_labor, 2)
+    _func_groups = set(opex_by_group) | set(_ind_labor)
+    indirect_by_function = []
+    for g in _func_groups:
+        nonlabor = round(opex_by_group.get(g, 0.0), 2)
+        labor = round(_ind_labor.get(g, 0.0), 2)
+        tot = round(nonlabor + labor, 2)
+        if tot == 0:
+            continue
+        indirect_by_function.append({"group": g, "amount": tot, "nonlabor": nonlabor, "labor": labor})
+    indirect_by_function.sort(key=lambda r: -r["amount"])
 
     return {
         "period": {"start": s.isoformat(), "end": e.isoformat()},
@@ -4146,6 +4171,15 @@ def accounting_pl(
             for g, v in sorted(opex_by_group.items(), key=lambda kv: kv[1], reverse=True)
             if round(v, 2) != 0
         ],
+        # Indirect labor split (BD-task labor broken out of total non-billable labor)
+        # and the merged non-labor+labor view by business function. Display-only —
+        # see the note where indirect_by_function is built.
+        "bd_labor_cost": round(bd_labor, 2),
+        "indirect_labor_by_group": [
+            {"group": g, "amount": round(v, 2)}
+            for g, v in sorted(_ind_labor.items(), key=lambda kv: -kv[1]) if round(v, 2) != 0
+        ],
+        "indirect_by_function": indirect_by_function,
         # Per-transaction OPEX detail (drill-down source); reconciles to opex_breakdown.
         "opex_tx_detail": sorted(
             [{**r, "date": (r["date"].isoformat() if hasattr(r["date"], "isoformat") else r["date"])} for r in opex_tx_detail],
@@ -4576,8 +4610,11 @@ def accounting_business_health(
             "gross_profit": round(gross_profit, 2),
             "gross_margin": gross_margin,
             "nonbillable_labor": round(nonbillable_labor, 2),
+            "bd_labor_cost": round(float(pl.get("bd_labor_cost", 0.0) or 0.0), 2),
             "indirect_total": round(opex + nonbillable_labor, 2),
-            "indirect_by_group": pl.get("opex_by_group", []),
+            # Merged non-labor OPEX + indirect labor by function (BD labor folded onto
+            # the Business Development line). Falls back to non-labor groups only.
+            "indirect_by_group": pl.get("indirect_by_function") or pl.get("opex_by_group", []),
             "operating_income": round(gross_profit - nonbillable_labor - opex, 2),
             "financing_cost": financing_cost,
             "net_income": round(net_income, 2),
@@ -4796,12 +4833,28 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
     ).all():
         hours[uid][1 if is_ovh else 0] += float(h or 0)
 
+    # Business-Development labor: hours logged to the "Business Development" overhead
+    # task (a SUBSET of overhead hours). Per user directive, surface the payroll cost
+    # of this time on the Business Development line. This is a reclassification WITHIN
+    # the indirect (non-billable) labor already excluded from COGS — it does NOT change
+    # COGS, gross margin, or net income; only the indirect breakdown gains a BD split.
+    bd_task_ids = list(db.scalars(select(Task.id).where(Task.name == "Business Development")).all())
+    bd_hours: dict[int, float] = defaultdict(float)
+    if bd_task_ids:
+        for uid, h in db.execute(
+            select(TimeEntry.user_id, func.sum(TimeEntry.hours))
+            .where(TimeEntry.work_date >= s, TimeEntry.work_date <= e,
+                   TimeEntry.task_id.in_(bd_task_ids))
+            .group_by(TimeEntry.user_id)
+        ).all():
+            bd_hours[uid] += float(h or 0)
+
     users = {u.id: u for u in db.scalars(select(User)).all()}
     # Candidates = users who actually logged hours (avoids stale duplicate user records).
     candidates = [(uid, _toks(users[uid].full_name)) for uid in hours
                   if (hours[uid][0] + hours[uid][1]) > 0 and _toks(users[uid].full_name)]
 
-    cogs_labor = nonbillable = unallocated = 0.0
+    cogs_labor = nonbillable = unallocated = bd_labor = 0.0
     by_emp: list[dict] = []
     for jn, ec in paycost.items():
         jt = _toks(jn)
@@ -4817,15 +4870,20 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
         th = ch + oh
         c = ec * ch / th
         n = ec * oh / th
+        bh = bd_hours.get(best_uid, 0.0)
+        bd = ec * bh / th if th else 0.0  # BD-task share of this person's payroll cost
         cogs_labor += c
         nonbillable += n
+        bd_labor += bd
         by_emp.append({"name": users[best_uid].full_name, "employer_cost": round(ec, 2),
                        "client_hours": round(ch, 1), "overhead_hours": round(oh, 1),
-                       "cogs_labor": round(c, 2), "nonbillable_labor": round(n, 2)})
+                       "cogs_labor": round(c, 2), "nonbillable_labor": round(n, 2),
+                       "bd_labor": round(bd, 2), "bd_hours": round(bh, 1)})
     cogs_labor += unallocated  # special/unmatched journal rows (off-cycle, prior-provider) → direct
     return {
         "cogs_labor": round(cogs_labor, 2),
         "nonbillable_labor": round(nonbillable, 2),
+        "bd_labor": round(bd_labor, 2),
         "unallocated": round(unallocated, 2),
         "total": round(cogs_labor + nonbillable, 2),
         "by_employee": sorted(by_emp, key=lambda r: -r["employer_cost"]),
