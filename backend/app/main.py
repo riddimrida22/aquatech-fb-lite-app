@@ -1595,6 +1595,7 @@ CHART_OF_ACCOUNTS: dict[str, tuple[str, str]] = {
     "Website": ("INDIRECT", "Marketing"),
     "Marketing Materials": ("INDIRECT", "Marketing"),
     # INDIRECT — Business Development
+    "Business Development": ("INDIRECT", "Business Development"),
     "Travel": ("INDIRECT", "Business Development"),
     "BD Travel": ("INDIRECT", "Business Development"),
     "Meals": ("INDIRECT", "Business Development"),
@@ -3495,10 +3496,13 @@ def delete_loan_payment(
 # Keyword → FreshBooks-style OPEX bucket. First match wins; order matters
 # (specific buckets before generic). Used to break the OPEX line into categories.
 _OPEX_BUCKET_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Owner / Ailsa business-development indirect labor cost (FreshBooks) -> BD line.
+    ("Business Development", ("AQUATECH BUSINESS DEVELOPMENT", "BUSINESS DEVELOPMENT")),
     ("Software & Subscriptions", ("MICROSOFT", "ADOBE", "GOOGLE", "GSUITE", "ZOOM", "SLACK", "DROPBOX",
         "GITHUB", "AUTODESK", "BLUEBEAM", "ESRI", "INTUIT", "QUICKBOOKS", "DOCUSIGN", "NOTION", "ATLASSIAN",
         "OPENAI", "ANTHROPIC", "CANVA", "GODADDY", "SQUARESPACE", "WIX", "MAILCHIMP", "ZAPIER", "AWS",
-        "AMAZON WEB", "DIGITALOCEAN", "HEROKU", "NETLIFY", "VERCEL", "SUBSCRIPTION", "APPLE.COM/BILL", "ICLOUD")),
+        "AMAZON WEB", "DIGITALOCEAN", "HEROKU", "NETLIFY", "VERCEL", "SUBSCRIPTION", "APPLE.COM/BILL", "ICLOUD",
+        "FRESHBOOKS", "NAV.COM", "NAV TECH", "NAV TECHNOLOGIES")),
     ("Computer Hardware & Equipment", ("BEST BUY", "BESTBUY", "APPLE STORE", "B&H PHOTO", "BHPHOTO", "DELL",
         "HP ", "HEWLETT", "LENOVO", "NEWEGG", "MICRO CENTER", "MICROCENTER", "CDW")),
     ("Insurance", ("INSURANCE", "HISCOX", "HARTFORD", "GEICO", "STATE FARM", "NYSIF", "LIBERTY MUTUAL",
@@ -3511,7 +3515,8 @@ _OPEX_BUCKET_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "SOUTHWEST", "AMTRAK", "UBER", "LYFT", "TAXI", "MTA", "METROCARD", "HOTEL", "MARRIOTT", "HILTON",
         "HYATT", "AIRBNB", "EXPEDIA", "AVIS", "HERTZ", "ENTERPRISE RENT", "PARKING", "TOLL", "E-ZPASS", "EZPASS")),
     ("Meals & Entertainment", ("RESTAURANT", "CAFE", "COFFEE", "STARBUCKS", "DUNKIN", "DOORDASH", "UBER EATS",
-        "GRUBHUB", "SEAMLESS", "DINER", "PIZZA", "BAR ", "GRILL", "DELI", "CATERING")),
+        "GRUBHUB", "SEAMLESS", "DINER", "PIZZA", "BAR ", "GRILL", "DELI", "CATERING",
+        "TST*", "SWEETGREEN", "SUMUP")),
     ("Office Supplies & Postage", ("STAPLES", "OFFICE DEPOT", "OFFICEMAX", "AMAZON", "AMZN", "USPS", "FEDEX",
         "UPS ", "UPS STORE", "POSTAGE", "SHIPPING", "W.B. MASON", "WB MASON", "ULINE")),
     ("Professional Services", ("LEGAL", "ATTORNEY", "LAW ", "ACCOUNT", "CPA", "BOOKKEEP", "PAYROLL SERVICE",
@@ -3548,6 +3553,25 @@ _OPEX_LABEL_SYNONYMS: dict[str, str] = {
     "general": "Other / Uncategorized",
     "double check manual": "⚠ Needs review (manual)",
     "general merchandise": "Office Supplies & Postage",
+    # Curated CSV card-import categories (older Chase / personal-card exports) that
+    # aren't canonical COA labels — collapse onto the right P&L line so they stop
+    # falling into the manual-review bucket.
+    "business travel & lodging": "Travel & Transport",
+    "business lodging": "Travel & Transport",
+    "business meals": "Meals & Entertainment",
+    "office equipment": "Computer Hardware & Equipment",
+    # Owner / Ailsa business-development indirect LABOR cost (booked in FreshBooks as
+    # "Aquatech Business Development") belongs on the Business Development line — per
+    # user directive, their BD time is a real BD cost, not generic admin.
+    "aquatech business development": "Business Development",
+    # Personal / non-business items misfiled on a business card, plus internal
+    # transfers and political donations — these are NOT operating expenses. Map to
+    # OTHER-section lines so coa_section() drops them below the operating line.
+    "personal travel & lodging": "Owner Draw",
+    "personal meals": "Owner Draw",
+    "personal medical": "Owner Draw",
+    "internal transfer": "Transfer",
+    "government and non profit": "Owner Draw",
 }
 
 
@@ -3568,6 +3592,32 @@ def _opex_category_bucket(name_upper: str, plaid_cat: str | None) -> str:
         if any(k in name_upper for k in kws):
             return label
     return _normalize_opex_label(plaid_cat)
+
+
+def _resolve_opex_category(tx: BankTransaction, name_upper: str, plaid_cats: list) -> str:
+    """Resolve the P&L category for an OPEX transaction.
+
+    An assigned category (category_json[0]) wins ONLY when it resolves to a real
+    chart-of-accounts line. Many rows carry a non-canonical label — curated CSV
+    names ("Business Travel & Lodging", "Office Equipment") or raw Plaid slugs
+    ("GENERAL_SERVICES", "BANK_FEES") — that coa_section() would otherwise dump
+    straight into the "⚠ Needs review" bucket. For those we run the synonym map +
+    keyword classifier (on both the assigned label and the merchant name) instead,
+    so recognizable spend lands on the right line rather than in manual review.
+    """
+    _grp, _cat = _tx_category_from_json(tx)
+    if _cat:
+        # First try to normalize the assigned label (synonyms collapse curated CSV /
+        # Plaid variants onto canonical lines, incl. OTHER-section exclusions like
+        # personal spend -> Owner Draw). Honour it if it maps to a real line.
+        norm = _normalize_opex_label(_cat)
+        _sec, _grp2 = coa_section(norm)
+        if _grp2 != "⚠ Needs review (manual)":
+            return norm
+    # Empty or unresolved assigned label: keyword-classify the merchant name, then
+    # fall back to the assigned label / first Plaid category as a hint.
+    hint = _cat or (plaid_cats[0] if plaid_cats else None)
+    return _opex_category_bucket(name_upper, hint)
 
 
 def _verify_chart_of_accounts_coverage() -> list[str]:
@@ -3912,8 +3962,9 @@ def accounting_pl(
         if "payroll" in cat_lower and "tax" not in cat_lower:
             continue
         amt = -float(tx.amount or 0)
-        _grp, _cat = _tx_category_from_json(tx)  # assigned category wins; keyword = fallback
-        cat = _cat or _opex_category_bucket(nm_upper, cats[0] if cats else None)
+        # Canonical assigned category wins; a non-canonical label (curated CSV name or
+        # raw Plaid slug) is reclassified via synonym/keyword instead of dumped to review.
+        cat = _resolve_opex_category(tx, nm_upper, cats)
         section, group = coa_section(cat)
         if section == "COGS":  # subconsultants / materials / direct project costs
             cogs_from_tx += amt
@@ -3939,8 +3990,7 @@ def accounting_pl(
                 pcats = json.loads(tx.category_json or "[]")
             except Exception:
                 pcats = []
-            _pgrp, _pcat = _tx_category_from_json(tx)
-            cat = _pcat or _opex_category_bucket(nm_upper, pcats[0] if pcats else None)
+            cat = _resolve_opex_category(tx, nm_upper, pcats)
             section, group = coa_section(cat)
             if section == "COGS":
                 cogs_from_tx += amt
@@ -3979,6 +4029,12 @@ def accounting_pl(
         # into the canonical bucket set (falls back to the keyword classifier on the name).
         raw_fb = (tx.account_id or "").strip()
         fb_label = _normalize_opex_label(raw_fb) if raw_fb else _opex_category_bucket(nm_upper, None)
+        # If the FB category didn't resolve to a real line (e.g. generic "General
+        # Business Admin" on rows named "Aquatech Business Development"), reclassify
+        # by the merchant/name keyword classifier so it lands on the right line
+        # (owner/Ailsa BD labor -> Business Development) instead of manual review.
+        if coa_section(fb_label)[1] == "⚠ Needs review (manual)":
+            fb_label = _opex_category_bucket(nm_upper, raw_fb)
         section, group = coa_section(fb_label)
         if section == "COGS":
             cogs_from_tx += amt
