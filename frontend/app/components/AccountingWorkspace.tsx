@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
 import { LoansPanel } from "./LoansPanel";
@@ -28,6 +28,8 @@ type PL = {
   opex: number;
   opex_breakdown?: { category: string; amount: number }[];
   opex_by_group?: { group: string; amount: number }[];
+  bd_labor_cost?: number;
+  indirect_by_function?: { group: string; amount: number; nonlabor: number; labor: number }[];
   opex_tx_detail?: { id: number; date: string; name: string; amount: number; category: string; group: string }[];
   revenue_detail?: { id: number; label: string; client: string; date: string; amount: number }[];
   interest_detail?: { id: number; label: string; date: string; amount: number }[];
@@ -197,13 +199,26 @@ function PLView({ start, end }: { start: string; end: string }) {
             <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>Grouped: Admin / Marketing / Business Development</td>
           </tr>
           {(pl.opex_by_group ?? []).map((row) => (
-            <tr key={row.group} style={{ fontWeight: 600, cursor: "pointer" }}
-                onClick={() => setDrill({ kind: "group", value: row.group })}
-                title="Click to see the transactions behind this group">
-              <td style={{ paddingLeft: 24 }}>{row.group} <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
-              <td style={{ textAlign: "right" }}>({formatCurrency(row.amount)})</td>
-              <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>{pl.opex > 0 ? `${((row.amount / pl.opex) * 100).toFixed(1)}%` : ""}</td>
-            </tr>
+            <Fragment key={row.group}>
+              <tr style={{ fontWeight: 600, cursor: "pointer" }}
+                  onClick={() => setDrill({ kind: "group", value: row.group })}
+                  title="Click to see the transactions behind this group">
+                <td style={{ paddingLeft: 24 }}>{row.group} <span style={{ color: "var(--aq-primary)", fontSize: 10, fontWeight: 500 }}>▸ drill</span></td>
+                <td style={{ textAlign: "right" }}>({formatCurrency(row.amount)})</td>
+                <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>{pl.opex > 0 ? `${((row.amount / pl.opex) * 100).toFixed(1)}%` : ""}</td>
+              </tr>
+              {row.group === "Business Development" && (pl.bd_labor_cost ?? 0) > 0 ? (
+                <tr title="Loaded cost of Business Development time (Ailsa + owner) from timesheets. This labor is already costed in the business via payroll, so it is shown here as a memo to reflect the full cost of BD — it is NOT subtracted again from net income.">
+                  <td style={{ paddingLeft: 44, color: "var(--aq-muted)", fontSize: 12, fontStyle: "italic" }}>
+                    + BD labor (Ailsa/owner time, timesheets)
+                  </td>
+                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12, fontStyle: "italic" }}>
+                    {formatCurrency(pl.bd_labor_cost ?? 0)}
+                  </td>
+                  <td style={{ color: "var(--aq-muted)", fontSize: 11 }}>memo — already in payroll, not re-subtracted · full BD cost {formatCurrency((row.amount) + (pl.bd_labor_cost ?? 0))}</td>
+                </tr>
+              ) : null}
+            </Fragment>
           ))}
           {(pl.opex_breakdown ?? []).map((row) => (
             <tr key={row.category} style={{ cursor: "pointer" }}
