@@ -25,6 +25,17 @@
     reverse_proxy backend:8000
   }
 
+  # Invoicing tool — admin-only. Every request is gated by the backend's
+  # /invoicing-authz forward-auth check (200 only for admins holding
+  # MANAGE_INVOICE_TEMPLATES); non-admins get the backend's 401/403 relayed back.
+  redir /invoicing /invoicing/ 308
+  handle_path /invoicing/* {
+    forward_auth backend:8000 {
+      uri /invoicing-authz
+    }
+    reverse_proxy invoicing:8765
+  }
+
   handle {
     reverse_proxy frontend:3000
   }

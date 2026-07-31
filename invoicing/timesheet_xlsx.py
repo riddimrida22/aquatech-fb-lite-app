@@ -257,31 +257,96 @@ def build_timesheet_xlsx(out_path: str, *, employee_first: str, employee_last: s
                 daily_totals={str(k): v for k, v in daily_totals.items()})
 
 
+def _xml_unescape(s: str) -> str:
+    return (s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+             .replace("&quot;", '"').replace("&apos;", "'"))
+
+
+def _prep_xlsx_for_pdf(src_xlsx: str, dst_xlsx: str, sheet_names: list[str] | None) -> None:
+    """Copy src_xlsx -> dst_xlsx, editing ONLY xl/workbook.xml to (a) hide every sheet
+    not in sheet_names and (b) force fullCalcOnLoad. Media/drawings/styles are copied
+    verbatim so embedded images survive (openpyxl would drop them)."""
+    import re, zipfile
+    with zipfile.ZipFile(src_xlsx) as zin:
+        wbxml = zin.read("xl/workbook.xml").decode("utf-8")
+
+    # ordered list of sheet names as they appear in the workbook
+    all_names = [_xml_unescape(m.group(1))
+                 for m in re.finditer(r'<sheet\b[^>]*\bname="([^"]*)"', wbxml)]
+    if sheet_names:
+        keep = {n for n in sheet_names if n in all_names} or ({all_names[0]} if all_names else set())
+    else:
+        keep = {all_names[0]} if all_names else set()
+
+    def _fix_sheet(m: "re.Match") -> str:
+        tag = m.group(0)
+        nm_m = re.search(r'\bname="([^"]*)"', tag)
+        nm = _xml_unescape(nm_m.group(1)) if nm_m else ""
+        if nm in keep:
+            # ensure kept sheets are visible (a template may ship one hidden)
+            if 'state=' in tag:
+                tag = re.sub(r'\bstate="[^"]*"', 'state="visible"', tag)
+            return tag
+        if 'state=' in tag:
+            return re.sub(r'\bstate="[^"]*"', 'state="hidden"', tag)
+        # inject state="hidden" just before the self-closing />
+        return re.sub(r'\s*/>\s*$', ' state="hidden"/>', tag)
+
+    wbxml = re.sub(r'<sheet\b[^>]*/>', _fix_sheet, wbxml)
+
+    # force a full recalc on open (openpyxl formulas have no cached values)
+    if 'fullCalcOnLoad' not in wbxml:
+        if '<calcPr' in wbxml:
+            wbxml = re.sub(r'<calcPr\b', '<calcPr fullCalcOnLoad="1" ', wbxml, count=1)
+        else:
+            wbxml = wbxml.replace('</workbook>', '<calcPr fullCalcOnLoad="1"/></workbook>')
+
+    with zipfile.ZipFile(src_xlsx) as zin, \
+         zipfile.ZipFile(dst_xlsx, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = wbxml.encode("utf-8") if item.filename == "xl/workbook.xml" else zin.read(item.filename)
+            zout.writestr(item, data)
+
+
 class ExcelSession:
-    """One reusable Excel COM session for many exports — far faster/more robust than
-    launching Excel per file. Use as a context manager."""
+    """Reusable session for exporting xlsx sheets to PDF, platform-aware:
+      - Windows: drives Excel via COM (pixel-perfect; the local tool).
+      - Linux / no Excel (the cloud server): uses LibreOffice headless.
+    Same .export(xlsx, pdf, sheet_names) API either way, so callers don't change.
+    """
     # Excel's ExportAsFixedFormat needs a WORKING default printer to compute page
-    # layout. If the machine's default is a physical printer that is offline or
-    # prompting (e.g. a Canon), the export HANGS silently with no error. So we force
-    # the default to "Microsoft Print to PDF" for the life of the session and restore
-    # the user's printer on close — the generator no longer depends on the OS default.
+    # layout; if the OS default is a physical/offline printer (e.g. a Canon) it HANGS.
+    # So on Windows we force "Microsoft Print to PDF" for the session and restore after.
     PDF_PRINTER = "Microsoft Print to PDF"
 
     def __init__(self):
-        import win32com.client.dynamic as dyn
+        self.mode = "libreoffice"
+        self.excel = None
         self._orig_printer = None
         try:
-            import win32print
-            self._orig_printer = win32print.GetDefaultPrinter()
-            if self._orig_printer != self.PDF_PRINTER:
-                win32print.SetDefaultPrinter(self.PDF_PRINTER)
+            import win32com.client.dynamic as dyn  # noqa: F401  (Windows only)
+            self.mode = "excel"
         except Exception:
-            self._orig_printer = None  # best-effort; export still tries
-        self.excel = dyn.Dispatch("Excel.Application")
-        self.excel.Visible = False
-        self.excel.DisplayAlerts = False
+            self.mode = "libreoffice"
+        if self.mode == "excel":
+            import win32com.client.dynamic as dyn
+            try:
+                import win32print
+                self._orig_printer = win32print.GetDefaultPrinter()
+                if self._orig_printer != self.PDF_PRINTER:
+                    win32print.SetDefaultPrinter(self.PDF_PRINTER)
+            except Exception:
+                self._orig_printer = None  # best-effort; export still tries
+            self.excel = dyn.Dispatch("Excel.Application")
+            self.excel.Visible = False
+            self.excel.DisplayAlerts = False
 
     def export(self, xlsx_path: str, pdf_path: str, sheet_names: list[str] | None = None) -> str:
+        if self.mode == "excel":
+            return self._export_excel(xlsx_path, pdf_path, sheet_names)
+        return self._export_libreoffice(xlsx_path, pdf_path, sheet_names)
+
+    def _export_excel(self, xlsx_path: str, pdf_path: str, sheet_names: list[str] | None = None) -> str:
         import os
         wb = self.excel.Workbooks.Open(os.path.abspath(xlsx_path))
         try:
@@ -296,18 +361,51 @@ class ExcelSession:
             wb.Close(False)
         return pdf_path
 
+    def _export_libreoffice(self, xlsx_path: str, pdf_path: str, sheet_names: list[str] | None = None) -> str:
+        """Render the requested sheet(s) to PDF with headless LibreOffice.
+
+        We select sheets by HIDING the others at the zip/XML level (edit xl/workbook.xml
+        only) instead of re-saving through openpyxl. openpyxl drops embedded images on a
+        load+save round-trip, which would strip the Aquatech/HDR logo and the signatures
+        off the invoice and timesheet PDFs. Zip surgery leaves xl/media and xl/drawings
+        untouched, so the output is byte-for-byte the same artwork Excel would print.
+        LibreOffice excludes hidden sheets from a PDF export, and fullCalcOnLoad forces it
+        to recompute the openpyxl-written formulas (which carry no cached values)."""
+        import os, subprocess, tempfile, shutil, glob
+        tmpdir = tempfile.mkdtemp(prefix="loexp_")
+        try:
+            src = os.path.join(tmpdir, "in.xlsx")
+            _prep_xlsx_for_pdf(xlsx_path, src, sheet_names)
+            prof = "file://" + os.path.join(tmpdir, "profile")
+            subprocess.run(
+                ["soffice", "--headless", "-env:UserInstallation=" + prof,
+                 "--calc", "--convert-to", "pdf", "--outdir", tmpdir, src],
+                check=True, capture_output=True, timeout=180)
+            out = os.path.join(tmpdir, "in.pdf")
+            if not os.path.exists(out):
+                found = glob.glob(os.path.join(tmpdir, "*.pdf"))
+                if not found:
+                    raise RuntimeError("LibreOffice produced no PDF for " + xlsx_path)
+                out = found[0]
+            dest_dir = os.path.dirname(os.path.abspath(pdf_path)) or "."
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.move(out, pdf_path)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return pdf_path
+
     def close(self):
-        try:
-            self.excel.Quit()
-        except Exception:
-            pass
-        # restore the user's original default printer
-        try:
-            import win32print
-            if self._orig_printer and self._orig_printer != self.PDF_PRINTER:
-                win32print.SetDefaultPrinter(self._orig_printer)
-        except Exception:
-            pass
+        if self.mode == "excel" and self.excel is not None:
+            try:
+                self.excel.Quit()
+            except Exception:
+                pass
+            try:
+                import win32print
+                if self._orig_printer and self._orig_printer != self.PDF_PRINTER:
+                    win32print.SetDefaultPrinter(self._orig_printer)
+            except Exception:
+                pass
 
     def __enter__(self):
         return self

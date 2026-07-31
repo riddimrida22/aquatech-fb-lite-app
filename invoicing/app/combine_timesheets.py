@@ -46,9 +46,18 @@ def combine_folder(folder: str, order: list[str] | None = None) -> dict:
         doc.save(out); doc.close()
         made["pdf"].append(out)
 
-    # --- combined Excel with a tab per week (Excel COM) ---
+    # --- combined Excel with a tab per week (Excel COM; Windows only) ---
+    # The per-employee combined PDFs above are the deliverable. Tabbed xlsx workbooks
+    # are a Windows-Excel nicety; skip them where Excel COM isn't available (the Linux
+    # cloud server) without failing the package.
+    _dyn = None
     if any(xlsx_groups.values()):
-        import win32com.client.dynamic as dyn
+        try:
+            import win32com.client.dynamic as _dyn  # noqa: F401 (Windows only)
+        except Exception:
+            _dyn = None
+    if _dyn is not None:
+        dyn = _dyn
         excel = dyn.Dispatch("Excel.Application")
         excel.Visible = False; excel.DisplayAlerts = False
         try:
