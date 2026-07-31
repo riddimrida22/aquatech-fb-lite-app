@@ -639,3 +639,18 @@ class Activity(Base):
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AppSetting(Base):
+    """Key/value store for admin-toggleable app settings (feature switches).
+
+    Read fresh on each request so a change takes effect immediately, with no
+    restart. Currently backs the "show FreshBooks time in the time portal" toggle.
+    """
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    value: Mapped[str] = mapped_column(String(255), default="")
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -33,6 +33,7 @@ import { AccountingWorkspace, PLReport } from "./components/AccountingWorkspace"
 import { BookkeepingWorkspace } from "./components/BookkeepingWorkspace";
 import { CategorizationWorkspace } from "./components/CategorizationWorkspace";
 import { CloudConnectionsPanel } from "./components/CloudConnectionsPanel";
+import { PortalSettingsPanel } from "./components/PortalSettingsPanel";
 import { ReconciliationPanel } from "./components/ReconciliationPanel";
 import {
   AdminTimesheet,
@@ -2303,6 +2304,8 @@ export default function AquatechPmHome() {
                 </div>
               </div>
             </section>
+
+            <PortalSettingsPanel canManage={(user.permissions ?? []).includes("MANAGE_USERS")} />
 
           </div>
         ) : null}
