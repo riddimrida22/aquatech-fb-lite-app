@@ -4,12 +4,21 @@ import { useEffect, useState } from "react";
 import { apiGet, apiPost } from "../../lib/api";
 
 /**
- * Admin-only toggle for whether FreshBooks-imported time appears in the time portal.
- * Default is OFF (FB time hidden) so the team enters time only in AqtPM. Checking the
- * box shows FB-imported time again, effective immediately. Rendered only for users
- * with the MANAGE_USERS permission; the backend enforces the same gate.
+ * Admin-only toggle for whether FreshBooks "transitional" time (the FB-TRANS
+ * quarantine bucket + any FreshBooks-imported rows) appears in the time portal.
+ * Default is OFF (hidden) so the team enters time only in AqtPM. Rendered only for
+ * users with MANAGE_USERS; the backend enforces the same gate.
+ *
+ * `compact` renders a slim inline row (for the Time header); default renders a full
+ * settings panel (for Settings -> Preferences).
  */
-export function PortalSettingsPanel({ canManage }: { canManage: boolean }) {
+export function PortalSettingsPanel({
+  canManage,
+  compact = false,
+}: {
+  canManage: boolean;
+  compact?: boolean;
+}) {
   const [showFb, setShowFb] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -43,6 +52,38 @@ export function PortalSettingsPanel({ canManage }: { canManage: boolean }) {
 
   const loading = showFb === null && !err;
 
+  if (compact) {
+    return (
+      <label
+        title="Admin only. FreshBooks (transitional) time is hidden from the portal by default; check to show it. Takes effect immediately for everyone."
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 12.5,
+          padding: "5px 12px",
+          borderRadius: 999,
+          border: "1px solid var(--aq-border, rgba(0,0,0,0.12))",
+          background: "var(--aq-input-bg, rgba(0,0,0,0.04))",
+          cursor: loading || saving ? "wait" : "pointer",
+          alignSelf: "flex-start",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={!!showFb}
+          disabled={loading || saving}
+          onChange={(e) => toggle(e.target.checked)}
+        />
+        <span>
+          Show FreshBooks (transitional) time{" "}
+          <span style={{ opacity: 0.6 }}>· admin{loading ? " · loading…" : showFb ? " · on" : " · off"}</span>
+        </span>
+        {err ? <span style={{ color: "var(--aq-danger, #c0392b)" }}>· {err}</span> : null}
+      </label>
+    );
+  }
+
   return (
     <section className="aq-lite-panel">
       <div className="aq-lite-panel-head">
@@ -52,9 +93,10 @@ export function PortalSettingsPanel({ canManage }: { canManage: boolean }) {
         </div>
       </div>
       <p className="aq-lite-muted" style={{ fontSize: 13, marginTop: 0 }}>
-        Time entered in FreshBooks is hidden from the time portal by default, so the team
-        records time only in AqtPM. Turn this on to show FreshBooks-imported time in the portal
-        again. Takes effect immediately for everyone.
+        FreshBooks "transitional" time (the FB‑TRANS quarantine bucket and any
+        FreshBooks‑imported hours) is hidden from the time portal by default, so the team
+        records time only in AqtPM. Turn this on to show it again. Takes effect immediately
+        for everyone.
       </p>
       <label
         style={{
@@ -71,7 +113,7 @@ export function PortalSettingsPanel({ canManage }: { canManage: boolean }) {
           disabled={loading || saving}
           onChange={(e) => toggle(e.target.checked)}
         />
-        <span>Show FreshBooks-imported time in the time portal</span>
+        <span>Show FreshBooks (transitional) time in the time portal</span>
       </label>
       <p className="aq-lite-muted" style={{ fontSize: 12, marginTop: 8 }}>
         {loading
