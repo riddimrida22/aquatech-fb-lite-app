@@ -654,3 +654,26 @@ class AppSetting(Base):
     value: Mapped[str] = mapped_column(String(255), default="")
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class InvoiceGeneration(Base):
+    """Log of invoice-package generations from the cloud invoicing tool — the shared
+    source of truth for (a) which (project, period) already has an OFFICIAL invoice
+    (so a second generation by anyone is a watermarked DRAFT that never advances the
+    ledger) and (b) the in-app activity banner that tells the other admin who generated
+    what and when. Written by the invoicing service (direct DB); read by the backend to
+    serve /invoice-generations. The invoicing ledger still owns the invoice NUMBER; this
+    table owns identity + official/draft state so both admins stay coordinated.
+    """
+    __tablename__ = "invoice_generations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_key: Mapped[str] = mapped_column(String(64), index=True)
+    period_id: Mapped[str] = mapped_column(String(32), index=True)
+    period_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    invoice_no: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # official | draft
+    generated_by: Mapped[str] = mapped_column(String(255), index=True)  # user email
+    generated_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    this_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

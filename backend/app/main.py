@@ -8681,14 +8681,58 @@ def set_portal_settings(
 
 @app.api_route("/invoicing-authz", methods=["GET", "POST", "HEAD"])
 def invoicing_authz(
+    response: Response,
     current_user: User = Depends(require_permission("MANAGE_INVOICE_TEMPLATES")),
 ) -> dict[str, object]:
     """Forward-auth gate for the invoicing service. Caddy proxies each request to the
     /invoicing/* service through this check first; only admins (who hold
     MANAGE_INVOICE_TEMPLATES) get a 200, so the invoicing tool is admin-only without the
     service itself needing to know about sessions. require_permission raises 401/403
-    otherwise, which Caddy relays back to the browser."""
+    otherwise, which Caddy relays back to the browser.
+
+    We also return the authenticated identity in headers; Caddy copies these onto the
+    upstream request (copy_headers) so the invoicing service knows WHO is generating —
+    used to attribute official/draft generations and gate corrections."""
+    response.headers["X-Invoicing-User"] = current_user.email or ""
+    # Latin-1 only in HTTP headers; strip anything else so Caddy/uvicorn never choke.
+    response.headers["X-Invoicing-Name"] = (current_user.full_name or "").encode(
+        "ascii", "ignore").decode() or (current_user.email or "")
     return {"ok": True, "user": current_user.email}
+
+
+@app.get("/invoice-generations")
+def list_invoice_generations(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_INVOICE_TEMPLATES")),
+) -> list[dict[str, object]]:
+    """Recent invoice-generation activity for the in-app banner/log on the Invoice
+    Generator screen — so each admin sees what the other has generated (official vs
+    draft), for which period, and when. Admin-only."""
+    from .models import InvoiceGeneration
+
+    limit = max(1, min(int(limit or 20), 100))
+    rows = (
+        db.query(InvoiceGeneration)
+        .order_by(InvoiceGeneration.generated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "project_key": r.project_key,
+            "period_id": r.period_id,
+            "period_label": r.period_label,
+            "invoice_no": r.invoice_no,
+            "kind": r.kind,
+            "generated_by": r.generated_by,
+            "generated_by_name": r.generated_by_name,
+            "this_total": r.this_total,
+            "generated_at": r.generated_at.isoformat() if r.generated_at else None,
+        }
+        for r in rows
+    ]
 
 
 @app.get("/time-entries", response_model=list[TimeEntryOut])

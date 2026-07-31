@@ -32,6 +32,9 @@
   handle_path /invoicing/* {
     forward_auth backend:8000 {
       uri /invoicing-authz
+      # pass the authenticated identity through to the invoicing service so it can
+      # attribute official/draft generations and gate corrections to the original author
+      copy_headers X-Invoicing-User X-Invoicing-Name
     }
     reverse_proxy invoicing:8765
   }

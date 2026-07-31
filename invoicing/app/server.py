@@ -14,9 +14,10 @@ auto-launch) and in how the finished package is delivered (folder vs ZIP downloa
 """
 from __future__ import annotations
 import datetime as dt, io, os, shutil, tempfile, threading, uuid, zipfile
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 import config, packager, packager_bc
+import data_source
 
 # Cloud when explicitly flagged or whenever we're not on Windows (no G:, no Excel COM).
 CLOUD = os.environ.get("INVOICING_CLOUD") == "1" or os.name != "nt"
@@ -31,6 +32,75 @@ os.makedirs(_DL_DIR, exist_ok=True)
 
 def _is_month(project: str) -> bool:
     return config.PROJECTS[project].get("bill_period") == "month"
+
+
+def _identity(request: "Request") -> tuple[str, str]:
+    """(email, display_name) of the authenticated admin, injected by Caddy forward_auth
+    (copy_headers X-Invoicing-User/Name from the backend /invoicing-authz check)."""
+    email = (request.headers.get("X-Invoicing-User") or "").strip()
+    name = (request.headers.get("X-Invoicing-Name") or "").strip() or email
+    return email, name
+
+
+def _official_lock(project: str, sel: str) -> dict | None:
+    """Latest official generation for (project, period), or None. Never raises (the
+    table may not exist yet on a fresh deploy) — degrade to 'no official'."""
+    try:
+        return data_source.official_for(project, sel)
+    except Exception:
+        return None
+
+
+def _period_label(res: dict) -> str | None:
+    try:
+        end = dt.date.fromisoformat(res["period"][1])
+        return end.strftime("%B %Y")
+    except Exception:
+        return None
+
+
+def _stamp_draft_pdf(path: str) -> None:
+    """Overlay a DRAFT watermark on every page: a big translucent diagonal 'DRAFT' plus
+    a red top banner, so a draft can never be mistaken for the official invoice."""
+    import fitz
+    doc = fitz.open(path)
+    try:
+        for page in doc:
+            r = page.rect
+            pivot = fitz.Point(r.width / 2, r.height / 2)
+            page.insert_textbox(r, "DRAFT", fontsize=90, fontname="helv",
+                                color=(0.93, 0.66, 0.66), align=1,
+                                morph=(pivot, fitz.Matrix(45)), overlay=True)
+            top = fitz.Rect(r.x0, r.y0 + 3, r.x1, r.y0 + 20)
+            page.insert_textbox(top, "DRAFT - NOT FOR SUBMISSION", fontsize=11,
+                                fontname="helv", color=(0.75, 0.0, 0.0), align=1,
+                                overlay=True)
+        doc.save(path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    finally:
+        doc.close()
+
+
+def _watermark_drafts(outdir: str) -> None:
+    """Stamp every PDF in the package as DRAFT and add ' DRAFT' to every deliverable's
+    filename (PDFs + the xlsx) so it's unmistakable in the ZIP."""
+    for name in list(os.listdir(outdir)):
+        full = os.path.join(outdir, name)
+        if not os.path.isfile(full) or name.startswith("_div_") or name.startswith("~$"):
+            continue
+        base, ext = os.path.splitext(name)
+        low = ext.lower()
+        if low == ".pdf":
+            try:
+                _stamp_draft_pdf(full)
+            except Exception as e:
+                print(f"[invoicing] draft stamp skipped for {name}: {e}", flush=True)
+        elif low != ".xlsx":
+            continue
+        if "DRAFT" not in base.upper():
+            try:
+                os.rename(full, os.path.join(outdir, f"{base} DRAFT{ext}"))
+            except OSError:
+                pass
 
 
 @app.get("/api/projects")
@@ -60,13 +130,27 @@ def _ym(sel: str) -> tuple[int, int]:
 
 
 @app.post("/api/preview")
-def api_preview(body: dict = Body(...)):
+def api_preview(request: Request, body: dict = Body(...)):
     try:
         project, sel = body["project"], str(body["sel"])
         if _is_month(project):
             y, m = _ym(sel)
-            return packager_bc.preview(project, y, m)
-        return packager.preview(project, int(sel))
+            pv = packager_bc.preview(project, y, m)
+        else:
+            pv = packager.preview(project, int(sel))
+        # Tell the UI whether this period already has an OFFICIAL invoice, so it can warn
+        # and choose the right action (draft vs authorized correction).
+        if CLOUD and isinstance(pv, dict):
+            email, _name = _identity(request)
+            off = _official_lock(project, sel)
+            pv["already_official"] = bool(off)
+            if off:
+                pv["official_invoice_no"] = off.get("invoice_no")
+                pv["official_by"] = off.get("generated_by")
+                pv["official_by_name"] = off.get("generated_by_name")
+                pv["official_at"] = off.get("generated_at")
+                pv["can_reissue_final"] = bool(email) and email == off.get("generated_by")
+        return pv
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -83,21 +167,35 @@ def _zip_dir(src_dir: str, zip_name: str) -> str:
 
 
 @app.post("/api/generate")
-def api_generate(body: dict = Body(...)):
+def api_generate(request: Request, body: dict = Body(...)):
     try:
         project, sel = body["project"], str(body["sel"])
         inv_date = body.get("invoice_date")
         inv_date = dt.date.fromisoformat(inv_date) if inv_date else dt.date.today()
         odc = float(body.get("this_odc") or 0.0)
         real = bool(body.get("save_to_real"))
-        # CLOUD: no G: drive — build into a fresh temp dir and hand back a ZIP. Cloud
-        # generation IS the real invoice, so keep save_to_real=True to advance the ledger
-        # (numbering + prior cumulative). out_override redirects the files to temp; the
-        # ledger append writes to the persistent ledger volume, not G:.
+        email, name = _identity(request)
+        confirm_reissue = bool(body.get("confirm_reissue"))
+
+        # Official vs draft. First generation of a (project, period) is OFFICIAL and
+        # advances the ledger. Once official, a second generation is a DRAFT (watermarked,
+        # never touches the ledger) UNLESS the ORIGINAL author explicitly re-issues a
+        # correction (confirm_reissue), which stays official and keeps the same number.
+        mode = "official"
+        official = _official_lock(project, sel) if CLOUD else None
+        if official:
+            if email and email == official.get("generated_by") and confirm_reissue:
+                mode = "official"
+            else:
+                mode = "draft"
+
+        # CLOUD: no G: drive — build into a fresh temp dir and hand back a ZIP. Drafts
+        # never advance the ledger (save_to_real=False); official does. out_override keeps
+        # every write off G:; the official ledger append lands on the persistent volume.
         override = None
         if CLOUD:
             override = tempfile.mkdtemp(prefix="aqtpm_pkg_", dir=_DL_DIR)
-            real = True
+            real = (mode == "official")
         if _is_month(project):
             y, m = _ym(sel)
             res = packager_bc.build_package(project, y, m, invoice_date=inv_date,
@@ -108,13 +206,31 @@ def api_generate(body: dict = Body(...)):
                                          this_odc=odc, save_to_real=real,
                                          out_override=override, make_pdfs=True)
         if CLOUD:
+            res["mode"] = mode
+            if official:
+                res["prior_official_by"] = official.get("generated_by")
+                res["prior_official_by_name"] = official.get("generated_by_name")
+                res["prior_official_at"] = official.get("generated_at")
+            if mode == "draft":
+                _watermark_drafts(res["outdir"])
             folder = os.path.basename(res["outdir"].rstrip("/\\"))
+            if mode == "draft":
+                folder = f"{folder} (DRAFT)"
             zpath = _zip_dir(res["outdir"], folder)
             token = uuid.uuid4().hex
             _DOWNLOADS[token] = {"path": zpath, "name": f"{folder}.zip"}
             shutil.rmtree(res["outdir"], ignore_errors=True)  # keep only the zip
             res["download_url"] = f"api/download/{token}"
             res["download_name"] = f"{folder}.zip"
+            # record the event (drives the other admin's activity banner + the lock)
+            try:
+                data_source.record_generation(
+                    project_key=project, period_id=sel, period_label=_period_label(res),
+                    invoice_no=res.get("invoice_no"), kind=mode,
+                    generated_by=email, generated_by_name=name,
+                    this_total=res.get("this_total"))
+            except Exception as e:
+                print(f"[invoicing] record_generation skipped: {e}", flush=True)
         return res
     except Exception as e:
         import traceback
@@ -140,6 +256,14 @@ def api_open_folder(body: dict = Body(...)):
         os.startfile(path)  # type: ignore[attr-defined]  # noqa: Windows Explorer
         return {"opened": path}
     return JSONResponse({"error": "folder not found"}, status_code=404)
+
+
+@app.get("/api/activity")
+def api_activity(request: Request):
+    """Recent generation events (who generated what, official vs draft, when) for the
+    in-app banner — so each admin sees the other's activity."""
+    me, _n = _identity(request)
+    return {"me": me, "events": data_source.recent_generations(15) if CLOUD else []}
 
 
 @app.get("/health")
@@ -197,6 +321,10 @@ HTML = r"""
 <header><h1>Aquatech Engineering · Invoicing</h1>
  <div class="sub">Generate NYCDEP cost-plus sub-consultant invoices + timesheet backup — from live AqtPM data</div></header>
 <div class="wrap">
+ <div class="card hide" id="activity">
+  <h2>Recent activity</h2>
+  <div id="activitybody" class="filelist" style="max-height:150px"></div>
+ </div>
  <div class="card">
   <h2>1 · Select</h2>
   <div class="row3">
@@ -225,9 +353,7 @@ HTML = r"""
   </div>
   <div class="big" id="pvtotal" style="margin-top:14px"></div>
   <div id="pvwarn" class="warnbox hide"></div>
-  <div class="actions">
-   <button class="btn-go" onclick="doGenerate(true)"><span id="gtspin" class="spin hide"></span>Generate invoice package</button>
-  </div>
+  <div id="genactions" class="actions"></div>
  </div>
 
  <div class="card hide" id="rescard">
@@ -261,6 +387,18 @@ function showPeriodInfo(){
   const p=PERIODS.find(x=>String(x.id)==String($('period').value));
   $('periodinfo').textContent=p?(p.invoiced?('Already invoiced'+(p.invoice_no?' as '+p.invoice_no:'')):'Not yet invoiced'):'';
 }
+function fmtDate(iso){try{return new Date(iso).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}catch(e){return iso;}}
+function renderGenActions(pv){
+  const el=$('genactions'); const spin='<span id="gtspin" class="spin hide"></span>';
+  if(!pv.already_official){
+    el.innerHTML='<button class="btn-go" onclick="doGenerate(\'official\')">'+spin+'Generate invoice package</button>';
+  } else if(pv.can_reissue_final){
+    el.innerHTML='<button class="btn" onclick="doGenerate(\'draft\')">'+spin+'Generate DRAFT</button>'+
+      '<button class="btn-go" onclick="doGenerate(\'reissue\')">Re-issue FINAL (correction)</button>';
+  } else {
+    el.innerHTML='<button class="btn-go" onclick="doGenerate(\'draft\')">'+spin+'Generate DRAFT</button>';
+  }
+}
 async function doPreview(){
   $('msg').textContent='';$('pvspin').classList.remove('hide');
   const pv=await jpost('api/preview',{project:$('project').value,sel:$('period').value});
@@ -268,7 +406,7 @@ async function doPreview(){
   if(pv.error){$('msg').textContent='⚠ '+pv.error;return;}
   CURPV=pv;
   $('pvcard').classList.remove('hide');
-  $('pvinv').textContent='next: '+pv.invoice_no;
+  $('pvinv').textContent=(pv.already_official?'official: ':'next: ')+(pv.official_invoice_no||pv.invoice_no);
   $('pvhours').innerHTML=Object.entries(pv.invoice_hours).map(([k,v])=>`<tr><td>${k}</td><td class="num">${v}</td></tr>`).join('')||`<tr><td colspan=2 class="muted">${pv.note||'no hours'}</td></tr>`;
   $('pvkv').innerHTML=`
     <div class="k">Period</div><div>${pv.period[0]} → ${pv.period[1]}</div>
@@ -278,34 +416,54 @@ async function doPreview(){
     <div class="k">Prior labor cumulative</div><div>${money(pv.prior_labor_cumulative)}</div>
     <div class="k">Timesheet backups</div><div>${pv.timesheet_count} weekly PDFs</div>`;
   $('pvtotal').textContent='This invoice: '+money(pv.this_labor);
-  if(pv.already_invoiced){$('pvwarn').classList.remove('hide');
-    $('pvwarn').textContent='⚠ This period is already in the ledger ('+pv.invoice_no+'). Generating will be blocked unless you remove it.';}
-  else $('pvwarn').classList.add('hide');
+  renderGenActions(pv);
+  if(pv.already_official){
+    const who=pv.official_by_name||pv.official_by||'someone';
+    $('pvwarn').classList.remove('hide');
+    $('pvwarn').innerHTML='⚠ <b>'+(pv.official_invoice_no||'')+'</b> was already generated as the OFFICIAL invoice by <b>'+who+'</b>'+(pv.official_at?' on '+fmtDate(pv.official_at):'')+'. '+(pv.can_reissue_final?'You generated it, so you can re-issue a correction (same number) — or generate a draft.':'A new generation will be a DRAFT; only '+who+' can re-issue the final.');
+  } else $('pvwarn').classList.add('hide');
 }
-async function doGenerate(real){
-  $('gtspin').classList.remove('hide');
+async function doGenerate(mode){
+  if(mode==='reissue' && !confirm('Re-issue the FINAL invoice '+((CURPV&&CURPV.official_invoice_no)||'')+' with corrections?\\n\\nKeeps the same number and replaces the official version. The other admin will see this in the activity log.'))return;
+  const sp=$('gtspin'); if(sp)sp.classList.remove('hide');
   const body={project:$('project').value,sel:$('period').value,invoice_date:$('invdate').value,
-              this_odc:$('odc').value,save_to_real:real};
+              this_odc:$('odc').value, confirm_reissue:(mode==='reissue')};
   const m=await jpost('api/generate',body);
-  $('gtspin').classList.add('hide');
+  if(sp)sp.classList.add('hide');
   $('rescard').classList.remove('hide');
   if(m.error){$('resbody').innerHTML='<div class="warnbox">⚠ '+m.error+'</div><pre class="muted" style="white-space:pre-wrap;font-size:11px">'+(m.trace||'')+'</pre>';return;}
+  const isDraft=m.mode==='draft';
   const fileLines=Object.entries(m.files).map(([k,v])=>`<div>📄 ${k}: ${String(v).split(/[\\\\/]/).pop()}</div>`).join('')
     +m.timesheets.map(t=>`<div>🗓 wk${t.week} ${t.employee} (ending ${t.week_ending})</div>`).join('');
-  const dl=m.download_url?`<div class="actions"><a href="${m.download_url}" download="${m.download_name}"><button class="btn-go">⬇ Download package (ZIP)</button></a></div>`
+  const dl=m.download_url?`<div class="actions"><a href="${m.download_url}" download="${m.download_name}"><button class="${isDraft?'btn':'btn-go'}">⬇ Download ${isDraft?'DRAFT':'package'} (ZIP)</button></a></div>`
                          :`<div class="actions"><button class="btn" onclick="openFolder('${(m.outdir||'').replace(/\\\\/g,'\\\\\\\\')}')">Open folder</button></div>`;
+  const badge=isDraft?'<span class="pill open">DRAFT — not for submission</span>':'<span class="pill done">OFFICIAL</span>';
+  const note=isDraft&&m.prior_official_by_name?`<div class="k">Official is</div><div>${m.invoice_no} by ${m.prior_official_by_name} — ledger not changed</div>`:'';
   $('resbody').innerHTML=`
-   <div class="big">${money(m.this_total)} · ${m.invoice_no}</div>
+   <div class="big">${money(m.this_total)} · ${m.invoice_no} ${badge}</div>
    <div class="kv" style="margin-top:10px">
-     <div class="k">Package</div><div>${m.download_url?'<span class="pill done">ready to download</span>':(m.saved_to_real?'<span class="pill done">REAL invoice folder</span>':'<span class="pill open">TEST folder</span>')}</div>
      <div class="k">Files</div><div>${Object.keys(m.files).length} invoice files + ${m.timesheets.length} timesheets</div>
+     ${note}
    </div>
    <div class="filelist">${fileLines}</div>
    ${dl}`;
-  loadPeriods();
+  loadPeriods(); loadActivity();
+}
+async function loadActivity(){
+  try{
+    const a=await jget('api/activity'); const evs=(a&&a.events)||[];
+    if(!evs.length){$('activity').classList.add('hide');return;}
+    $('activity').classList.remove('hide');
+    $('activitybody').innerHTML=evs.map(e=>{
+      const who=e.generated_by_name||e.generated_by||'someone';
+      const mine=a.me&&e.generated_by===a.me;
+      const k=e.kind==='official'?'<b style="color:#5fd699">OFFICIAL</b>':'<span style="color:#e2c463">draft</span>';
+      return '<div>'+k+' · '+(e.invoice_no||'')+' '+(e.period_label||'')+' — '+(mine?'you':who)+' · '+fmtDate(e.generated_at)+'</div>';
+    }).join('');
+  }catch(e){}
 }
 async function openFolder(p){await jpost('api/open-folder',{path:p});}
-init();
+init().then(loadActivity);
 </script></body></html>
 """
 
