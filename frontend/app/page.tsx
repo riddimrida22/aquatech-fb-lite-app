@@ -1589,6 +1589,7 @@ export default function AquatechPmHome() {
                 </button>
               ))}
             </div>
+            <PortalSettingsPanel canManage={(user?.permissions ?? []).includes("MANAGE_USERS")} compact />
             {timeTab === "enter" && user ? (
               <DailyTimeEntry
                 user={user}

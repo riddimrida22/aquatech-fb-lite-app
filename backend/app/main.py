@@ -8708,13 +8708,19 @@ def list_time_entries(
     q = select(TimeEntry).where(and_(TimeEntry.work_date >= start, TimeEntry.work_date <= end))
     if not company_wide:
         q = q.where(TimeEntry.user_id == target_user_id)
-    # FreshBooks-imported time is hidden from the time portal unless an admin has
-    # turned it on (Settings -> Preferences). The flag is read fresh here so the
-    # change is effective immediately. In-app time (source "manual") always shows;
-    # coalesce keeps rows whose source is NULL. The underlying FB rows are untouched
-    # (invoicing / COGS / timesheet generation still use them via their own queries).
+    # FreshBooks "transitional" time is hidden from the time portal unless an admin has
+    # turned it on (Settings -> Preferences / the Time header toggle). Read fresh here
+    # so the change is effective immediately. "FreshBooks time" = anything in an
+    # FB-TRANS quarantine subtask (how the FB sync buckets it — the "FreshBooks
+    # (transitional)" rows) OR any freshbooks_api-sourced row. Manual in-app time in
+    # real subtasks always shows. Underlying rows are untouched (invoicing / COGS /
+    # timesheet generation use their own queries).
     if not _get_bool_setting(db, SETTING_SHOW_FB_TIME, False):
-        q = q.where(func.coalesce(TimeEntry.source, "") != "freshbooks_api")
+        _fbtrans = select(Subtask.id).where(func.upper(func.coalesce(Subtask.code, "")) == "FB-TRANS")
+        q = q.where(
+            func.coalesce(TimeEntry.source, "") != "freshbooks_api",
+            TimeEntry.subtask_id.notin_(_fbtrans),
+        )
     q = q.order_by(TimeEntry.work_date.asc(), TimeEntry.id.asc())
     if project_id is not None:
         q = q.where(TimeEntry.project_id == project_id)
