@@ -87,6 +87,67 @@ def pull_fb_lines(project_id: int, begin: dt.date, end: dt.date) -> dict:
     return {"lines": out, "project_name": proj_name}
 
 
+def official_for(project_key: str, period_id: str) -> dict | None:
+    """The latest OFFICIAL generation for a (project, period), or None. Drives the
+    official/draft decision: if an official already exists, a second generation is a
+    watermarked DRAFT (unless the original author re-issues a correction)."""
+    with _get_engine().connect() as conn:
+        row = conn.execute(text("""
+            SELECT id, invoice_no, generated_by, generated_by_name, generated_at
+            FROM invoice_generations
+            WHERE project_key = :pk AND period_id = :pid AND kind = 'official'
+            ORDER BY generated_at DESC
+            LIMIT 1
+        """), {"pk": project_key, "pid": str(period_id)}).mappings().first()
+    if not row:
+        return None
+    d = dict(row)
+    ga = d.get("generated_at")
+    d["generated_at"] = ga.isoformat() if hasattr(ga, "isoformat") else ga
+    return d
+
+
+def recent_generations(limit: int = 15) -> list[dict]:
+    """Most-recent generation events for the in-app activity banner. Never raises."""
+    limit = max(1, min(int(limit or 15), 100))
+    try:
+        with _get_engine().connect() as conn:
+            rows = conn.execute(text("""
+                SELECT project_key, period_id, period_label, invoice_no, kind,
+                       generated_by, generated_by_name, this_total, generated_at
+                FROM invoice_generations
+                ORDER BY generated_at DESC
+                LIMIT :lim
+            """), {"lim": limit}).mappings().all()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        d = dict(r)
+        ga = d.get("generated_at")
+        d["generated_at"] = ga.isoformat() if hasattr(ga, "isoformat") else ga
+        out.append(d)
+    return out
+
+
+def record_generation(*, project_key: str, period_id: str, period_label: str | None,
+                      invoice_no: str | None, kind: str, generated_by: str,
+                      generated_by_name: str | None, this_total: float | None) -> None:
+    """Append a generation event (official|draft). Shared table read by the backend for
+    the in-app activity banner and by official_for() for the lock decision."""
+    with _get_engine().begin() as conn:
+        conn.execute(text("""
+            INSERT INTO invoice_generations
+              (project_key, period_id, period_label, invoice_no, kind,
+               generated_by, generated_by_name, this_total, generated_at)
+            VALUES
+              (:pk, :pid, :plabel, :ino, :kind, :by, :byname, :total, :ts)
+        """), {"pk": project_key, "pid": str(period_id), "plabel": period_label,
+               "ino": invoice_no, "kind": kind, "by": generated_by or "unknown",
+               "byname": generated_by_name, "total": this_total,
+               "ts": dt.datetime.utcnow()})
+
+
 def pull_subtasks(project_id: int, begin: dt.date, end: dt.date) -> dict:
     """Hours grouped by (sub-task/task name -> {full_name: hours}) + bill rates."""
     with _get_engine().connect() as conn:
