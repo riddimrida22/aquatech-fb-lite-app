@@ -9,6 +9,8 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LEDGER_DIR = os.path.join(ROOT, "ledger")
 PERIODS_CSV = os.path.join(ROOT, "ltcp4_billing_periods_2026.csv")
+# Cloud service: invoice templates are BUNDLED here (no G: drive on the server).
+TEMPLATES_DIR = os.path.join(ROOT, "templates")
 
 # Company block for the FreshBooks-style invoice (matches the sent HDR invoice).
 SIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "signatures")
@@ -105,7 +107,7 @@ PROJECTS = {
         "prime": "Henningson, Durham & Richardson Architecture and Engineering, P.C.",
         "invoice_prefix": "HDRAQ",
         "periods_csv": PERIODS_CSV,
-        "template_xlsx": r"G:\Shared drives\Aquatech_Admin\Invoicing\HDR\HDR Invoice May 2026\HDR Sub-Consultant Invoicing_Aquatech May 2026 06022026 .xlsx",
+        "template_xlsx": os.path.join(TEMPLATES_DIR, "HDR_template.xlsx"),
         "out_root": r"G:\Shared drives\Aquatech_Admin\Invoicing\HDR",
         "out_folder_fmt": "HDR Invoice {month_name} {year}",
         "labor_max": 1277886.72,
@@ -132,7 +134,7 @@ PROJECTS = {
         "prime": "Stantec/Brown and Caldwell",
         "invoice_prefix": "SBCAQ",
         "bill_period": "month",                  # bills by calendar month (no period CSV)
-        "template_xlsx": r"G:\Shared drives\Aquatech_Admin\Invoicing\Stantec B&C JV\Feb 2026 Stantec BC JV\Stantec B&C JV Sub-Consultant Invoicing_Aquatech February 2026 02232025 v1.xlsx",
+        "template_xlsx": os.path.join(TEMPLATES_DIR, "STANTEC_template.xlsx"),
         "out_root": r"G:\Shared drives\Aquatech_Admin\Invoicing\Stantec B&C JV",
         "out_folder_fmt": "{mon} {year} Stantec BC JV",       # e.g. "Mar 2026 Stantec BC JV"
         "inv_name_fmt": "Stantec B&C JV Sub-Consultant Invoicing_Aquatech {month_name} {year} {stamp}.xlsx",
@@ -148,7 +150,7 @@ PROJECTS = {
         "prime": "Brown and Caldwell",
         "invoice_prefix": "BACAQ",
         "bill_period": "month",
-        "template_xlsx": r"G:\Shared drives\Aquatech_Admin\Invoicing\Brown and Caldwell\June 2026\BWT-1608-JBCON_Aquatech Subinvoice June 2026.xlsx",
+        "template_xlsx": os.path.join(TEMPLATES_DIR, "JBCON_template.xlsx"),
         "out_root": r"G:\Shared drives\Aquatech_Admin\Invoicing\Brown and Caldwell",
         "out_folder_fmt": "{month_name} {year}",              # e.g. "July 2026"
         "inv_name_fmt": "BWT-1608-JBCON_Aquatech Subinvoice {month_name} {year}.xlsx",

@@ -8679,6 +8679,18 @@ def set_portal_settings(
     return {"show_freshbooks_time": payload.show_freshbooks_time}
 
 
+@app.api_route("/invoicing-authz", methods=["GET", "POST", "HEAD"])
+def invoicing_authz(
+    current_user: User = Depends(require_permission("MANAGE_INVOICE_TEMPLATES")),
+) -> dict[str, object]:
+    """Forward-auth gate for the invoicing service. Caddy proxies each request to the
+    /invoicing/* service through this check first; only admins (who hold
+    MANAGE_INVOICE_TEMPLATES) get a 200, so the invoicing tool is admin-only without the
+    service itself needing to know about sessions. require_permission raises 401/403
+    otherwise, which Caddy relays back to the browser."""
+    return {"ok": True, "user": current_user.email}
+
+
 @app.get("/time-entries", response_model=list[TimeEntryOut])
 def list_time_entries(
     start: date,

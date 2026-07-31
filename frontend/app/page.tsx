@@ -1534,26 +1534,30 @@ export default function AquatechPmHome() {
               Generates the NYCDEP cost-plus sub-consultant invoices (HDR / LTCP4, Stantec,
               JBCON) with the FreshBooks-style backup and the pixel-perfect weekly timesheets,
               from live time data — the FreshBooks backup is reconciled to the spreadsheet total.
-              The complete package is saved into the correct Drive invoice folder.
+              Pick a project and period, preview the numbers, then download the complete package
+              as a ZIP. Runs on the server, so any admin can use it from any computer.
             </p>
-            <p className="aq-lite-muted">
-              It runs on your PC (it needs Excel and the Aquatech Drive). Make sure the local
-              app is running, then open it:
-            </p>
-            <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 4, marginBottom: 8 }}>
               <a
-                href="http://127.0.0.1:8765"
+                href="/invoicing/"
                 target="_blank"
                 rel="noreferrer"
                 className="aq-lite-btn aq-lite-btn-primary"
               >
-                Open Invoice Generator ↗
+                Open in new tab ↗
               </a>
-              <span className="aq-lite-muted" style={{ fontSize: 12 }}>
-                Not running? Double-click <code>Run Invoicing.bat</code> in the AqtPM-Invoicing
-                folder, then click here.
-              </span>
             </div>
+            <iframe
+              src="/invoicing/"
+              title="Invoice Generator"
+              style={{
+                width: "100%",
+                height: "72vh",
+                border: "1px solid var(--aq-border, rgba(0,0,0,0.12))",
+                borderRadius: 10,
+                background: "#0f1720",
+              }}
+            />
           </section>
         ) : null}
 

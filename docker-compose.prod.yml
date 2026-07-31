@@ -91,6 +91,30 @@ services:
     networks:
       - private
 
+  invoicing:
+    build:
+      context: ./invoicing
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    env_file:
+      - .env.prod
+    environment:
+      # Reads AqtPM Postgres directly (same private net); renders with LibreOffice.
+      INVOICING_CLOUD: "1"
+      DATABASE_URL: ${DATABASE_URL}
+      PORT: "8765"
+    volumes:
+      # Invoice ledger (numbering + reissue state) must survive rebuilds/restarts.
+      # A named volume is seeded from the image's committed ledger on first create.
+      - invoicing_ledger:/srv/invoicing/ledger
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - private
+
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -106,6 +130,8 @@ services:
       - caddy_config:/config
     depends_on:
       frontend:
+        condition: service_started
+      invoicing:
         condition: service_started
     networks:
       - private
@@ -135,6 +161,7 @@ volumes:
   db_data:
   caddy_data:
   caddy_config:
+  invoicing_ledger:
 
 networks:
   private:

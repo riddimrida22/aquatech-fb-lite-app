@@ -1,20 +1,32 @@
 """
-Local Invoicing app — the screen.
+Aquatech Invoicing — the screen.
 
-Run on the Windows PC (has the G: drive + Excel). Pick a project + billing period,
-preview the numbers pulled live from AqtPM, then generate the complete package
-(invoice xlsx + Summary/Detail/delivery PDFs + pixel-perfect weekly timesheet PDFs)
-and save it into the correct invoice folder.
+Runs in two modes, same code:
 
-  python app/server.py   ->  open http://127.0.0.1:8765
+  • LOCAL (Windows PC): Excel + G: drive present. Generates the package straight into
+    the client folder, opens Explorer. `python app/server.py` -> http://127.0.0.1:8765
+  • CLOUD (GCE Linux container, INVOICING_CLOUD=1): no G:, no Excel. Reads AqtPM
+    Postgres directly, renders PDFs with LibreOffice, and returns the whole package as
+    a downloadable ZIP so either admin can generate invoices from the web app.
+
+The two modes differ only in a few Windows-only conveniences (Explorer open, browser
+auto-launch) and in how the finished package is delivered (folder vs ZIP download).
 """
 from __future__ import annotations
-import datetime as dt, os, subprocess, threading, webbrowser
+import datetime as dt, io, os, shutil, tempfile, threading, uuid, zipfile
 from fastapi import FastAPI, Body
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 import config, packager, packager_bc
 
+# Cloud when explicitly flagged or whenever we're not on Windows (no G:, no Excel COM).
+CLOUD = os.environ.get("INVOICING_CLOUD") == "1" or os.name != "nt"
+
 app = FastAPI(title="Aquatech Invoicing")
+
+# token -> {"path": <zip file>, "name": <download filename>} for CLOUD downloads
+_DOWNLOADS: dict[str, dict] = {}
+_DL_DIR = os.path.join(tempfile.gettempdir(), "aqtpm_invoicing_downloads")
+os.makedirs(_DL_DIR, exist_ok=True)
 
 
 def _is_month(project: str) -> bool:
@@ -59,6 +71,17 @@ def api_preview(body: dict = Body(...)):
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
+def _zip_dir(src_dir: str, zip_name: str) -> str:
+    """Zip a package folder (flat, one entry per file) into _DL_DIR and return the path."""
+    zpath = os.path.join(_DL_DIR, f"{uuid.uuid4().hex}.zip")
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in sorted(os.listdir(src_dir)):
+            full = os.path.join(src_dir, name)
+            if os.path.isfile(full) and not name.startswith("_div_") and not name.startswith("~$"):
+                zf.write(full, arcname=name)
+    return zpath
+
+
 @app.post("/api/generate")
 def api_generate(body: dict = Body(...)):
     try:
@@ -67,25 +90,61 @@ def api_generate(body: dict = Body(...)):
         inv_date = dt.date.fromisoformat(inv_date) if inv_date else dt.date.today()
         odc = float(body.get("this_odc") or 0.0)
         real = bool(body.get("save_to_real"))
+        # CLOUD: no G: drive — build into a fresh temp dir and hand back a ZIP. Cloud
+        # generation IS the real invoice, so keep save_to_real=True to advance the ledger
+        # (numbering + prior cumulative). out_override redirects the files to temp; the
+        # ledger append writes to the persistent ledger volume, not G:.
+        override = None
+        if CLOUD:
+            override = tempfile.mkdtemp(prefix="aqtpm_pkg_", dir=_DL_DIR)
+            real = True
         if _is_month(project):
             y, m = _ym(sel)
-            return packager_bc.build_package(project, y, m, invoice_date=inv_date,
-                                             this_odc=odc, save_to_real=real, make_pdfs=True)
-        return packager.build_package(project, int(sel), invoice_date=inv_date,
-                                      this_odc=odc, save_to_real=real, make_pdfs=True)
+            res = packager_bc.build_package(project, y, m, invoice_date=inv_date,
+                                            this_odc=odc, save_to_real=real,
+                                            out_override=override, make_pdfs=True)
+        else:
+            res = packager.build_package(project, int(sel), invoice_date=inv_date,
+                                         this_odc=odc, save_to_real=real,
+                                         out_override=override, make_pdfs=True)
+        if CLOUD:
+            folder = os.path.basename(res["outdir"].rstrip("/\\"))
+            zpath = _zip_dir(res["outdir"], folder)
+            token = uuid.uuid4().hex
+            _DOWNLOADS[token] = {"path": zpath, "name": f"{folder}.zip"}
+            shutil.rmtree(res["outdir"], ignore_errors=True)  # keep only the zip
+            res["download_url"] = f"api/download/{token}"
+            res["download_name"] = f"{folder}.zip"
+        return res
     except Exception as e:
         import traceback
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()[-1500:]},
                             status_code=400)
 
 
+@app.get("/api/download/{token}")
+def api_download(token: str):
+    d = _DOWNLOADS.get(token)
+    if not d or not os.path.exists(d["path"]):
+        return JSONResponse({"error": "download expired"}, status_code=404)
+    return FileResponse(d["path"], media_type="application/zip", filename=d["name"])
+
+
 @app.post("/api/open-folder")
 def api_open_folder(body: dict = Body(...)):
+    # Windows-only convenience; the cloud UI downloads a ZIP instead.
+    if CLOUD:
+        return JSONResponse({"error": "not available on the server"}, status_code=400)
     path = body.get("path")
     if path and os.path.isdir(path):
-        os.startfile(path)  # noqa: Windows Explorer
+        os.startfile(path)  # type: ignore[attr-defined]  # noqa: Windows Explorer
         return {"opened": path}
     return JSONResponse({"error": "folder not found"}, status_code=404)
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "cloud": CLOUD}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -167,8 +226,7 @@ HTML = r"""
   <div class="big" id="pvtotal" style="margin-top:14px"></div>
   <div id="pvwarn" class="warnbox hide"></div>
   <div class="actions">
-   <button class="btn-ghost" onclick="doGenerate(false)"><span id="gtspin" class="spin hide"></span>Generate to TEST folder</button>
-   <button class="btn-go" onclick="doGenerate(true)">Generate &amp; SAVE to invoice folder</button>
+   <button class="btn-go" onclick="doGenerate(true)"><span id="gtspin" class="spin hide"></span>Generate invoice package</button>
   </div>
  </div>
 
@@ -185,7 +243,7 @@ async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content
 function money(x){return '$'+Number(x).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});}
 
 async function init(){
-  PROJECTS=await jget('/api/projects');
+  PROJECTS=await jget('api/projects');
   $('project').innerHTML=PROJECTS.map(p=>`<option value="${p.key}">${p.label}</option>`).join('');
   $('invdate').value=new Date().toISOString().slice(0,10);
   await loadPeriods();
@@ -194,11 +252,8 @@ async function init(){
 }
 let PERIODS=[];
 async function loadPeriods(){
-  const proj=PROJECTS.find(p=>p.key==$('project').value);
-  document.querySelector('label[for=periodlabel]');
-  PERIODS=await jget('/api/periods?project='+$('project').value);
+  PERIODS=await jget('api/periods?project='+$('project').value);
   $('period').innerHTML=PERIODS.map(p=>`<option value="${p.id}">${p.label}${p.invoiced?'  ✓ '+(p.invoice_no||'billed'):''}</option>`).join('');
-  // default to first not-yet-invoiced
   const open=PERIODS.find(p=>!p.invoiced); if(open)$('period').value=open.id;
   showPeriodInfo();
 }
@@ -208,7 +263,7 @@ function showPeriodInfo(){
 }
 async function doPreview(){
   $('msg').textContent='';$('pvspin').classList.remove('hide');
-  const pv=await jpost('/api/preview',{project:$('project').value,sel:$('period').value});
+  const pv=await jpost('api/preview',{project:$('project').value,sel:$('period').value});
   $('pvspin').classList.add('hide');
   if(pv.error){$('msg').textContent='⚠ '+pv.error;return;}
   CURPV=pv;
@@ -228,28 +283,28 @@ async function doPreview(){
   else $('pvwarn').classList.add('hide');
 }
 async function doGenerate(real){
-  if(real && !confirm('Save the complete package into the real invoice folder on G:?\\n\\n'+$('project').value+' · '+$('period').value+'\\nThis writes files and advances the invoice number.'))return;
   $('gtspin').classList.remove('hide');
   const body={project:$('project').value,sel:$('period').value,invoice_date:$('invdate').value,
               this_odc:$('odc').value,save_to_real:real};
-  const m=await jpost('/api/generate',body);
+  const m=await jpost('api/generate',body);
   $('gtspin').classList.add('hide');
   $('rescard').classList.remove('hide');
   if(m.error){$('resbody').innerHTML='<div class="warnbox">⚠ '+m.error+'</div><pre class="muted" style="white-space:pre-wrap;font-size:11px">'+(m.trace||'')+'</pre>';return;}
-  const fileLines=Object.entries(m.files).map(([k,v])=>`<div>📄 ${k}: ${v.split('\\\\').pop()}</div>`).join('')
+  const fileLines=Object.entries(m.files).map(([k,v])=>`<div>📄 ${k}: ${String(v).split(/[\\\\/]/).pop()}</div>`).join('')
     +m.timesheets.map(t=>`<div>🗓 wk${t.week} ${t.employee} (ending ${t.week_ending})</div>`).join('');
+  const dl=m.download_url?`<div class="actions"><a href="${m.download_url}" download="${m.download_name}"><button class="btn-go">⬇ Download package (ZIP)</button></a></div>`
+                         :`<div class="actions"><button class="btn" onclick="openFolder('${(m.outdir||'').replace(/\\\\/g,'\\\\\\\\')}')">Open folder</button></div>`;
   $('resbody').innerHTML=`
    <div class="big">${money(m.this_total)} · ${m.invoice_no}</div>
    <div class="kv" style="margin-top:10px">
-     <div class="k">Saved to</div><div>${m.saved_to_real?'<span class="pill done">REAL invoice folder</span>':'<span class="pill open">TEST folder</span>'}</div>
-     <div class="k">Folder</div><div>${m.outdir}</div>
+     <div class="k">Package</div><div>${m.download_url?'<span class="pill done">ready to download</span>':(m.saved_to_real?'<span class="pill done">REAL invoice folder</span>':'<span class="pill open">TEST folder</span>')}</div>
      <div class="k">Files</div><div>${Object.keys(m.files).length} invoice files + ${m.timesheets.length} timesheets</div>
    </div>
    <div class="filelist">${fileLines}</div>
-   <div class="actions"><button class="btn" onclick="openFolder('${m.outdir.replace(/\\\\/g,'\\\\\\\\')}')">Open folder</button></div>`;
+   ${dl}`;
   loadPeriods();
 }
-async function openFolder(p){await jpost('/api/open-folder',{path:p});}
+async function openFolder(p){await jpost('api/open-folder',{path:p});}
 init();
 </script></body></html>
 """
@@ -257,9 +312,12 @@ init();
 
 def main():
     import uvicorn
-    port = 8765
-    threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    port = int(os.environ.get("PORT", "8765"))
+    host = "0.0.0.0" if CLOUD else "127.0.0.1"
+    if not CLOUD:
+        import webbrowser
+        threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":
