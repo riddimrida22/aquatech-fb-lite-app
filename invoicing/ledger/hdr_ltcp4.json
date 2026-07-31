@@ -1,0 +1,27 @@
+{
+  "invoice_prefix": "HDRAQ",
+  "seed": {
+    "through_period_end": "2026-05-02",
+    "last_invoice_no": "HDRAQ0016",
+    "prior_labor_cumulative": 413779.21,
+    "prior_odc_cumulative": 5960.63
+  },
+  "entries": [
+    {
+      "invoice_no": "HDRAQ0018",
+      "period_number": 6,
+      "period_begin": "2026-05-31",
+      "period_end": "2026-06-30",
+      "invoice_date": "2026-07-05",
+      "labor": 60100.53,
+      "odc": 0.0,
+      "hours_by_emp": {
+        "Bertrand Byrne": 139.0,
+        "Robert Svadlenka": 4.0,
+        "Roger Wang": 55.0,
+        "Stacey Hodge": 11.5,
+        "Zachary Gilliam": 142.0
+      }
+    }
+  ]
+}
