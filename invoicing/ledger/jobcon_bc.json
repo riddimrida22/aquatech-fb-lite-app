@@ -1,0 +1,12 @@
+{
+  "invoice_prefix": "BACAQ",
+  "format": "jobcon",
+  "seed": {
+    "through_month": "2026-06",
+    "last_invoice_no": "BACAQ0002",
+    "prior_by_subtask": {
+      "2.01.003": [["2026-05-01", 8206.69], ["2026-06-01", 11808.95]]
+    }
+  },
+  "entries": []
+}
