@@ -33,6 +33,7 @@ from .authz import PERMISSIONS_BY_ROLE, get_current_user, permissions_for_role, 
 from .db import SessionLocal, get_db, init_db
 from .models import (
     Activity,
+    AppSetting,
     AssistantQuery,
     AuditEvent,
     BankAccount,
@@ -8632,6 +8633,52 @@ def create_time_entry(
     return _to_time_entry_out(entry)
 
 
+# --- Admin-toggleable portal settings (key/value; read fresh => effective immediately) ---
+SETTING_SHOW_FB_TIME = "show_freshbooks_time_in_portal"
+
+
+def _get_bool_setting(db: Session, key: str, default: bool = False) -> bool:
+    row = db.scalar(select(AppSetting).where(AppSetting.key == key))
+    if row is None:
+        return default
+    return str(row.value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _set_bool_setting(db: Session, key: str, value: bool, user_id: int | None) -> None:
+    row = db.scalar(select(AppSetting).where(AppSetting.key == key))
+    if row is None:
+        row = AppSetting(key=key)
+        db.add(row)
+    row.value = "true" if value else "false"
+    row.updated_by_user_id = user_id
+    db.commit()
+
+
+class PortalSettingsIn(BaseModel):
+    show_freshbooks_time: bool
+
+
+@app.get("/admin/portal-settings")
+def get_portal_settings(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_USERS")),
+) -> dict[str, bool]:
+    """Admin-only read of time-portal display toggles."""
+    return {"show_freshbooks_time": _get_bool_setting(db, SETTING_SHOW_FB_TIME, False)}
+
+
+@app.post("/admin/portal-settings")
+def set_portal_settings(
+    payload: PortalSettingsIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("MANAGE_USERS")),
+) -> dict[str, bool]:
+    """Admin-only toggle: whether FreshBooks-imported time shows in the time portal.
+    Takes effect immediately (list_time_entries reads the flag on every request)."""
+    _set_bool_setting(db, SETTING_SHOW_FB_TIME, payload.show_freshbooks_time, current_user.id)
+    return {"show_freshbooks_time": payload.show_freshbooks_time}
+
+
 @app.get("/time-entries", response_model=list[TimeEntryOut])
 def list_time_entries(
     start: date,
@@ -8661,6 +8708,13 @@ def list_time_entries(
     q = select(TimeEntry).where(and_(TimeEntry.work_date >= start, TimeEntry.work_date <= end))
     if not company_wide:
         q = q.where(TimeEntry.user_id == target_user_id)
+    # FreshBooks-imported time is hidden from the time portal unless an admin has
+    # turned it on (Settings -> Preferences). The flag is read fresh here so the
+    # change is effective immediately. In-app time (source "manual") always shows;
+    # coalesce keeps rows whose source is NULL. The underlying FB rows are untouched
+    # (invoicing / COGS / timesheet generation still use them via their own queries).
+    if not _get_bool_setting(db, SETTING_SHOW_FB_TIME, False):
+        q = q.where(func.coalesce(TimeEntry.source, "") != "freshbooks_api")
     q = q.order_by(TimeEntry.work_date.asc(), TimeEntry.id.asc())
     if project_id is not None:
         q = q.where(TimeEntry.project_id == project_id)
