@@ -141,9 +141,10 @@ def _ym(sel: str) -> tuple[int, int]:
 def api_preview(request: Request, body: dict = Body(...)):
     try:
         project, sel = body["project"], str(body["sel"])
+        combine = bool(body.get("combine_subtasks"))
         if _is_month(project):
             y, m = _ym(sel)
-            pv = packager_bc.preview(project, y, m)
+            pv = packager_bc.preview(project, y, m, combine=combine)
         else:
             pv = packager.preview(project, int(sel))
         # Tell the UI whether this period already has an OFFICIAL invoice, so it can warn
@@ -209,7 +210,8 @@ def api_generate(request: Request, body: dict = Body(...)):
             y, m = _ym(sel)
             res = packager_bc.build_package(project, y, m, invoice_date=inv_date,
                                             this_odc=odc, save_to_real=real,
-                                            out_override=override, make_pdfs=True)
+                                            out_override=override, make_pdfs=True,
+                                            combine=bool(body.get("combine_subtasks")))
         else:
             res = packager.build_package(project, int(sel), invoice_date=inv_date,
                                          this_odc=odc, save_to_real=real,
@@ -362,6 +364,9 @@ HTML = r"""
    <div><label>Other Direct Costs this invoice ($)</label><input id="odc" type="number" step="0.01" value="0"></div>
    <div style="display:flex;align-items:flex-end"><div id="periodinfo" class="muted" style="font-size:12px"></div></div>
   </div>
+  <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;color:var(--ink)">
+    <input type="checkbox" id="combinesub" style="width:auto;margin:0" onchange="doPreview()"> Combine multiple sub-tasks into one invoice (B&C months with &gt;1 task)
+  </label>
   <div class="actions">
    <button class="btn" onclick="doPreview()"><span id="pvspin" class="spin hide"></span>Preview numbers</button>
    <span id="msg" class="muted"></span>
@@ -430,7 +435,8 @@ function renderGenActions(pv){
 }
 async function doPreview(){
   $('msg').textContent='';$('pvspin').classList.remove('hide');
-  const pv=await jpost('api/preview',{project:$('project').value,sel:$('period').value});
+  const pv=await jpost('api/preview',{project:$('project').value,sel:$('period').value,
+              combine_subtasks: !!($('combinesub') && $('combinesub').checked)});
   $('pvspin').classList.add('hide');
   if(pv.error){$('msg').textContent='⚠ '+pv.error;return;}
   CURPV=pv;
@@ -457,7 +463,8 @@ async function doGenerate(mode){
   const sp=$('gtspin'); if(sp)sp.classList.remove('hide');
   const body={project:$('project').value,sel:$('period').value,invoice_date:$('invdate').value,
               this_odc:$('odc').value, confirm_reissue:(mode==='reissue'),
-              invoice_sent: !!($('invsent') && $('invsent').checked)};
+              invoice_sent: !!($('invsent') && $('invsent').checked),
+              combine_subtasks: !!($('combinesub') && $('combinesub').checked)};
   const m=await jpost('api/generate',body);
   if(sp)sp.classList.add('hide');
   $('rescard').classList.remove('hide');
