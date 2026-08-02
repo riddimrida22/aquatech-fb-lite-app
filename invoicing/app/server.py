@@ -34,6 +34,14 @@ def _is_month(project: str) -> bool:
     return config.PROJECTS[project].get("bill_period") == "month"
 
 
+# Client name as it should read in public.invoices (books/AR), per project.
+BOOKS_CLIENT = {
+    "HDR_LTCP4": "HDR",
+    "JBCON": "Brown and Caldwell",
+    "STANTEC": "Stantec/Brown and Caldwell",
+}
+
+
 def _identity(request: "Request") -> tuple[str, str]:
     """(email, display_name) of the authenticated admin, injected by Caddy forward_auth
     (copy_headers X-Invoicing-User/Name from the backend /invoicing-authz check)."""
@@ -231,6 +239,22 @@ def api_generate(request: Request, body: dict = Body(...)):
                     this_total=res.get("this_total"))
             except Exception as e:
                 print(f"[invoicing] record_generation skipped: {e}", flush=True)
+            # OFFICIAL invoices get PUBLISHED into public.invoices (the books/AR) — this
+            # replaces the old FreshBooks sync that used to create these rows. Drafts don't.
+            if mode == "official":
+                try:
+                    cfg = config.PROJECTS[project]
+                    res["published"] = data_source.publish_invoice(
+                        invoice_number=res["invoice_no"],
+                        project_id=cfg["aqtpm_project_id"],
+                        client_name=BOOKS_CLIENT.get(project, cfg.get("prime", "")),
+                        begin=res["period"][0], end=res["period"][1],
+                        issue_date=inv_date.isoformat(),
+                        due_days=int(cfg.get("fb_due_days", 30)),
+                        subtotal=res.get("this_total"),
+                        notes="Issued by AqtPM invoice generator")
+                except Exception as e:
+                    print(f"[invoicing] publish_invoice skipped: {e}", flush=True)
         return res
     except Exception as e:
         import traceback
