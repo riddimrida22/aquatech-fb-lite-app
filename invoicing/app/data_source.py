@@ -148,6 +148,47 @@ def record_generation(*, project_key: str, period_id: str, period_label: str | N
                "ts": dt.datetime.utcnow()})
 
 
+def publish_invoice(*, invoice_number: str, project_id: int, client_name: str,
+                    begin, end, issue_date, due_days: int, subtotal: float,
+                    source: str = "aqtpm_generator", notes: str | None = None) -> str:
+    """Persist an OFFICIAL generated invoice into public.invoices so it shows in the
+    books/AR (finance.v_money_owed, v_project_economics) — the replacement for the old
+    FreshBooks sync that used to create these rows. Upsert by invoice_number: insert if
+    new, update in place on a re-issue (preserving any amount_paid). Returns 'inserted'
+    or 'updated'."""
+    def _d(x):
+        return x if isinstance(x, dt.date) else dt.date.fromisoformat(str(x))
+    b, e, iss = _d(begin), _d(end), _d(issue_date)
+    due = iss + dt.timedelta(days=int(due_days or 30))
+    subtotal = round(float(subtotal or 0), 2)
+    with _get_engine().begin() as conn:
+        existing = conn.execute(
+            text("SELECT id, coalesce(amount_paid,0) AS paid FROM invoices WHERE invoice_number = :n"),
+            {"n": invoice_number}).mappings().first()
+        if existing:
+            conn.execute(text("""
+                UPDATE invoices
+                   SET project_id=:pid, client_name=:cn, start_date=:b, end_date=:e,
+                       issue_date=:iss, due_date=:due, subtotal_amount=:sub,
+                       balance_due=:sub - coalesce(amount_paid,0),
+                       source=:src, notes=:notes
+                 WHERE invoice_number=:n
+            """), {"pid": project_id, "cn": client_name, "b": b, "e": e, "iss": iss,
+                   "due": due, "sub": subtotal, "src": source, "notes": notes,
+                   "n": invoice_number})
+            return "updated"
+        conn.execute(text("""
+            INSERT INTO invoices
+              (invoice_number, project_id, client_name, source, start_date, end_date,
+               issue_date, due_date, status, subtotal_amount, amount_paid, balance_due, notes, created_at)
+            VALUES
+              (:n, :pid, :cn, :src, :b, :e, :iss, :due, 'sent', :sub, 0, :sub, :notes, :now)
+        """), {"n": invoice_number, "pid": project_id, "cn": client_name, "src": source,
+               "b": b, "e": e, "iss": iss, "due": due, "sub": subtotal,
+               "notes": notes, "now": dt.datetime.utcnow()})
+        return "inserted"
+
+
 def pull_subtasks(project_id: int, begin: dt.date, end: dt.date) -> dict:
     """Hours grouped by (sub-task/task name -> {full_name: hours}) + bill rates."""
     with _get_engine().connect() as conn:
