@@ -55,6 +55,34 @@ def _active_subtask(by_subtask: dict, fmt: str) -> tuple[str, str, dict]:
     return m.group(1), name, hours
 
 
+def _combine_subtasks(by_subtask: dict, fmt: str, prefer_code: str | None = None) -> tuple[str, str, dict]:
+    """Merge ALL active sub-tasks into one labor block {emp: total_hours}, for months
+    where the client wants a single combined invoice. The invoice's task heading is the
+    `prefer_code` sub-task (continuity with prior invoices) if present, else the one with
+    the most hours."""
+    active = {k: v for k, v in by_subtask.items() if any(v.values())}
+    if not active:
+        raise ValueError("no billable hours for this project/month")
+    merged: dict = {}
+    for hrs in active.values():
+        for emp, h in hrs.items():
+            merged[emp] = round(merged.get(emp, 0.0) + h, 2)
+    rx = _STANTEC_SUB_RE if fmt == "stantec" else _JOBCON_SUB_RE
+    chosen = None
+    if prefer_code:
+        for name in active:
+            mm = rx.search(name)
+            if mm and mm.group(1) == prefer_code:
+                chosen = name
+                break
+    if not chosen:
+        chosen = max(active, key=lambda n: sum(active[n].values()))
+    m = rx.search(chosen)
+    if not m:
+        raise ValueError(f"could not parse a sub-task code from task name {chosen!r}")
+    return m.group(1), chosen, merged
+
+
 def _stantec_priors(led: dict, upto: dt.date):
     def mk(rows):
         return [PriorInvoice(dt.date.fromisoformat(d), float(a)) for d, a in rows
@@ -97,7 +125,7 @@ def list_months(project_key: str, n: int = 12) -> list[dict]:
     return out
 
 
-def preview(project_key: str, year: int, month: int) -> dict:
+def preview(project_key: str, year: int, month: int, combine: bool = False) -> dict:
     """Live pull + numbers for a month, no files written. Same shape as packager.preview
     so the UI can render either format."""
     cfg = config.PROJECTS[project_key]
@@ -112,7 +140,10 @@ def preview(project_key: str, year: int, month: int) -> dict:
             "invoice_no": existing["invoice_no"] if existing else led.next_invoice_no(),
             "prior_odc_cumulative": 0.0}
     try:
-        code, task_name, hours = _active_subtask(sub["by_subtask"], fmt)
+        if combine:
+            code, task_name, hours = _combine_subtasks(sub["by_subtask"], fmt, cfg.get("default_subtask_code"))
+        else:
+            code, task_name, hours = _active_subtask(sub["by_subtask"], fmt)
     except ValueError as e:
         return {**base, "invoice_hours": {}, "staff_direct_labor": 0.0,
                 "principal_direct_labor": 0.0, "this_labor": 0.0,
@@ -145,7 +176,7 @@ def preview(project_key: str, year: int, month: int) -> dict:
 def build_package(project_key: str, year: int, month: int, *,
                   invoice_date: dt.date | None = None, this_odc: float = 0.0,
                   save_to_real: bool = False, out_override: str | None = None,
-                  make_pdfs: bool = True) -> dict:
+                  make_pdfs: bool = True, combine: bool = False) -> dict:
     cfg = config.PROJECTS[project_key]
     fmt = cfg["format"]
     begin, end = _month_range(year, month)
@@ -154,7 +185,10 @@ def build_package(project_key: str, year: int, month: int, *,
 
     # 1-2) live hours by sub-task + full-week timesheet
     sub = data_source.pull_subtasks(cfg["aqtpm_project_id"], begin, end)
-    code, task_name, hours = _active_subtask(sub["by_subtask"], fmt)
+    if combine:
+        code, task_name, hours = _combine_subtasks(sub["by_subtask"], fmt, cfg.get("default_subtask_code"))
+    else:
+        code, task_name, hours = _active_subtask(sub["by_subtask"], fmt)
     invoice_hours = {k: v for k, v in hours.items() if v}
     data = data_source.pull(cfg["aqtpm_project_id"], begin, end, _monday(begin), _sunday(end))
     rates = {n: config.resolve_direct_rate(n, sub["bill_rates"].get(n)) for n in invoice_hours}
