@@ -180,12 +180,14 @@ def publish_invoice(*, invoice_number: str, project_id: int, client_name: str,
         conn.execute(text("""
             INSERT INTO invoices
               (invoice_number, project_id, client_name, source, start_date, end_date,
-               issue_date, due_date, status, subtotal_amount, amount_paid, balance_due, notes, created_at)
+               issue_date, due_date, status, subtotal_amount, amount_paid, balance_due,
+               total_cost, total_profit, payment_link_enabled, notes, created_at)
             VALUES
-              (:n, :pid, :cn, :src, :b, :e, :iss, :due, 'sent', :sub, 0, :sub, :notes, :now)
+              (:n, :pid, :cn, :src, :b, :e, :iss, :due, 'sent', :sub, 0, :sub,
+               0, 0, false, :notes, :now)
         """), {"n": invoice_number, "pid": project_id, "cn": client_name, "src": source,
                "b": b, "e": e, "iss": iss, "due": due, "sub": subtotal,
-               "notes": notes, "now": dt.datetime.utcnow()})
+               "notes": notes or "", "now": dt.datetime.utcnow()})
         return "inserted"
 
 
