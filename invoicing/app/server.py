@@ -184,6 +184,7 @@ def api_generate(request: Request, body: dict = Body(...)):
         real = bool(body.get("save_to_real"))
         email, name = _identity(request)
         confirm_reissue = bool(body.get("confirm_reissue"))
+        invoice_sent = bool(body.get("invoice_sent"))   # checkbox: record in the books
 
         # Official vs draft. First generation of a (project, period) is OFFICIAL and
         # advances the ledger. Once official, a second generation is a DRAFT (watermarked,
@@ -239,9 +240,10 @@ def api_generate(request: Request, body: dict = Body(...)):
                     this_total=res.get("this_total"))
             except Exception as e:
                 print(f"[invoicing] record_generation skipped: {e}", flush=True)
-            # OFFICIAL invoices get PUBLISHED into public.invoices (the books/AR) — this
-            # replaces the old FreshBooks sync that used to create these rows. Drafts don't.
-            if mode == "official":
+            # Record into public.invoices (books/AR) ONLY when the user checks "Invoice
+            # sent" — the deliberate confirmation that it's issued to the client. Replaces
+            # the old FreshBooks sync. Drafts never publish; a draft can't be "sent".
+            if mode == "official" and invoice_sent:
                 try:
                     cfg = config.PROJECTS[project]
                     res["published"] = data_source.publish_invoice(
@@ -377,6 +379,9 @@ HTML = r"""
   </div>
   <div class="big" id="pvtotal" style="margin-top:14px"></div>
   <div id="pvwarn" class="warnbox hide"></div>
+  <label style="display:flex;align-items:center;gap:8px;margin:10px 0 2px;font-size:13px;color:var(--ink)">
+    <input type="checkbox" id="invsent" style="width:auto;margin:0"> <b>Invoice sent</b> &mdash; record it in the books (AR). Leave unchecked to just generate the package.
+  </label>
   <div id="genactions" class="actions"></div>
  </div>
 
@@ -451,7 +456,8 @@ async function doGenerate(mode){
   if(mode==='reissue' && !confirm('Re-issue the FINAL invoice '+((CURPV&&CURPV.official_invoice_no)||'')+' with corrections?\\n\\nKeeps the same number and replaces the official version. The other admin will see this in the activity log.'))return;
   const sp=$('gtspin'); if(sp)sp.classList.remove('hide');
   const body={project:$('project').value,sel:$('period').value,invoice_date:$('invdate').value,
-              this_odc:$('odc').value, confirm_reissue:(mode==='reissue')};
+              this_odc:$('odc').value, confirm_reissue:(mode==='reissue'),
+              invoice_sent: !!($('invsent') && $('invsent').checked)};
   const m=await jpost('api/generate',body);
   if(sp)sp.classList.add('hide');
   $('rescard').classList.remove('hide');
@@ -463,11 +469,14 @@ async function doGenerate(mode){
                          :`<div class="actions"><button class="btn" onclick="openFolder('${(m.outdir||'').replace(/\\\\/g,'\\\\\\\\')}')">Open folder</button></div>`;
   const badge=isDraft?'<span class="pill open">DRAFT — not for submission</span>':'<span class="pill done">OFFICIAL</span>';
   const note=isDraft&&m.prior_official_by_name?`<div class="k">Official is</div><div>${m.invoice_no} by ${m.prior_official_by_name} — ledger not changed</div>`:'';
+  const booksLine = m.published ? `<div class="k">Books</div><div><span class="pill done">recorded in AR as SENT (${m.published})</span></div>`
+                   : (!isDraft ? `<div class="k">Books</div><div><span class="pill open">not recorded</span> — tick "Invoice sent" to add it to AR</div>` : '');
   $('resbody').innerHTML=`
    <div class="big">${money(m.this_total)} · ${m.invoice_no} ${badge}</div>
    <div class="kv" style="margin-top:10px">
      <div class="k">Files</div><div>${Object.keys(m.files).length} invoice files + ${m.timesheets.length} timesheets</div>
      ${note}
+     ${booksLine}
    </div>
    <div class="filelist">${fileLines}</div>
    ${dl}`;
