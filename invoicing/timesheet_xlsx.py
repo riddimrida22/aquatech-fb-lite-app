@@ -303,6 +303,23 @@ def _prep_xlsx_for_pdf(src_xlsx: str, dst_xlsx: str, sheet_names: list[str] | No
 
     wbxml = re.sub(r'<sheet\b[^>]*/>', _fix_sheet, wbxml)
 
+    # CRITICAL: LibreOffice's PDF export renders EVERY sheet that has a defined print
+    # area, regardless of the hidden flag. So hiding alone doesn't isolate sheets — we
+    # must also strip the Print_Area defined name for every non-kept sheet (referenced by
+    # its 0-based localSheetId). Kept sheets keep their print areas.
+    keep_idx = {i for i, nm in enumerate(all_names) if nm in keep}
+
+    def _drop_print_area(m: "re.Match") -> str:
+        dn = m.group(0)
+        if 'Print_Area' not in dn:
+            return dn
+        lsid = re.search(r'localSheetId="(\d+)"', dn)
+        if lsid and int(lsid.group(1)) not in keep_idx:
+            return ""      # this sheet isn't being exported — remove its print range
+        return dn
+
+    wbxml = re.sub(r'<definedName\b[^>]*>.*?</definedName>', _drop_print_area, wbxml, flags=re.S)
+
     # force a full recalc on open (openpyxl formulas have no cached values)
     if 'fullCalcOnLoad' not in wbxml:
         if '<calcPr' in wbxml:
