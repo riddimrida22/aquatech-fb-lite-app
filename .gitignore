@@ -32,3 +32,4 @@ data/
 *.sqlite3
 backups/
 *.dump
+invoicing/app/assets/signatures/_orig_backup/
