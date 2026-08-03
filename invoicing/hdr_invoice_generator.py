@@ -295,7 +295,12 @@ def generate(template_xlsx: str, out_xlsx: str, inp: InvoiceInputs,
         from openpyxl.drawing.xdr import XDRPositiveSize2D
         from openpyxl.utils.units import pixels_to_EMU
         from PIL import Image as PILImage
-        _im = PILImage.open(inp.authorized_sig); _h = 34; _w = _h * (_im.width / _im.height)
+        _im = PILImage.open(inp.authorized_sig)
+        # Scale so the INK (not the padded canvas) is ~34px tall, matching the prior
+        # submitted invoice regardless of any transparent margin around the signature.
+        _bb = _im.convert("RGBA").getchannel("A").getbbox() or (0, 0, _im.width, _im.height)
+        _ink_h = max(1, _bb[3] - _bb[1])
+        _h = 34 * (_im.height / _ink_h); _w = _h * (_im.width / _im.height)
         _img = XLImage(inp.authorized_sig)
         _img.anchor = OneCellAnchor(
             _from=AnchorMarker(col=5, colOff=pixels_to_EMU(15), row=35, rowOff=pixels_to_EMU(2)),

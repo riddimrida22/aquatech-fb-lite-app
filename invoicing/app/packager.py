@@ -193,13 +193,14 @@ def build_package(project_key: str, period_number: int, *,
     # collect PDF export jobs: (xlsx, pdf, sheet_names_or_None) — run in ONE Excel session
     pdf_jobs: list[tuple[str, str, list[str] | None]] = []
     if make_pdfs:
-        summary_pdf = os.path.join(outdir, f"Summary Page {month_name} {year} {stamp}.pdf")
-        detail_pdf = os.path.join(outdir, f"Detail Page {month_name} {year} {stamp}.pdf")
-        pdf_jobs += [
-            (inv_xlsx, summary_pdf, ["Invoice Summary"]),
-            (inv_xlsx, detail_pdf, ["Invoice Template_Task# 5"]),
-        ]
-        files.update(summary_pdf=summary_pdf, detail_pdf=detail_pdf)
+        # ONE export of both invoice sheets in order -> [Summary, Detail] as a single
+        # 2-page PDF. Exporting them as two separate jobs makes LibreOffice re-render both
+        # sheets each time (it ignores the per-sheet hide when both have print ranges),
+        # which duplicated the first two pages. Excel and LibreOffice both render the two
+        # sheets correctly in one job.
+        invoice_pdf = os.path.join(outdir, f"Invoice {month_name} {year} {stamp}.pdf")
+        pdf_jobs += [(inv_xlsx, invoice_pdf, ["Invoice Summary", "Invoice Template_Task# 5"])]
+        files.update(invoice_pdf=invoice_pdf)
 
     # 5) weekly timesheet backups. Include a week ONLY if the employee has BILLED-project
     #    (LTCP4) hours on an in-period day that week — this is the backup for the hours
@@ -294,7 +295,7 @@ def build_package(project_key: str, period_number: int, *,
         div_other = _make_divider(os.path.join(outdir, "_div_other.pdf"), "Other")
         ts_pdfs = [t["pdf"] for t in ts_files if t.get("pdf")]
         combined = os.path.join(outdir, f"HDR Invoice {month_name} {year} {stamp}.pdf")
-        _merge_pdfs(combined, [summary_pdf, detail_pdf, div_ts, *ts_pdfs, div_other, fb_pdf])
+        _merge_pdfs(combined, [invoice_pdf, div_ts, *ts_pdfs, div_other, fb_pdf])
         for d in (div_ts, div_other):
             try: os.remove(d)
             except OSError: pass
