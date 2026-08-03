@@ -31,7 +31,7 @@ PROJECT_ROWS = [
     ("3", "Brentwood Brook", "1", False),
     ("0040042025", "BWT Design Assistance (Stantec JV)", "2", False),
     ("0020032025", "Mount Vernon", "7", False),
-    ("6", "", "", False), ("7", "", "", False), ("8", "", "", False),
+    ("10052026", "BWT 1608-Jobcon", "2", False), ("7", "", "", False), ("8", "", "", False),
     ("9", "", "", False), ("10", "", "", False), ("11", "", "", False),
     ("12", "", "", False), ("13", "", "", False),
     ("100001", "PUBLIC HOLIDAY", "", True),
@@ -51,7 +51,7 @@ AQTPM_TO_CODE = {
     "Mount Vernon Flood Study": "0020032025",
     "Hydraulic Modeling 4063001X": "0010012024",
     "Business Development": "100005",
-    "BWT 1608-Jobcon": "0040042025",
+    "BWT 1608-Jobcon": "10052026",
 }
 SUPERVISOR = "BERTRAND BYRNE, PhD, P.E"
 

@@ -71,6 +71,7 @@ def build_weekly_timesheets(outdir: str, invoice_hours: dict, data: dict,
             if wb_res is None:
                 build_timesheet_xlsx(ts_xlsx, employee_first=first, employee_last=last,
                                      week_ending=sunday, entries=wk_entries,
+                                     billed_project=billed_project,
                                      emp_signature=config.employee_signature(full),
                                      sup_signature=sup_sig)
             entry = {"employee": full, "week": wk_i, "week_ending": sunday.isoformat(),
