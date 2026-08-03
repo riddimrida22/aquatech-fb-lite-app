@@ -241,11 +241,15 @@ def build_package(project_key: str, year: int, month: int, *,
     pdf_jobs: list = []
     client_sheets = cfg.get("client_sheets")
     invoice_pdf = None
+    client_parts: list = []
     if make_pdfs:
-        if client_sheets:            # jobcon: client-facing tabs -> one invoice PDF
+        if client_sheets:            # jobcon: each client tab isolated, merged IN ORDER
             invoice_pdf = os.path.join(outdir, f"Invoice {end.strftime('%B')} {year} {stamp}.pdf")
-            pdf_jobs.append((inv_xlsx, invoice_pdf, client_sheets))
             files["invoice_pdf"] = invoice_pdf
+            for _si, _sh in enumerate(client_sheets):
+                _pp = os.path.join(outdir, f"_client_{_si}.pdf")
+                pdf_jobs.append((inv_xlsx, _pp, [_sh]))
+                client_parts.append(_pp)
         else:                        # stantec: keep the separate summary/detail pages
             summary_pdf = os.path.join(outdir, f"Summary {end.strftime('%B')} {year} {stamp}.pdf")
             detail_pdf = os.path.join(outdir, f"Detail {end.strftime('%B')} {year} {stamp}.pdf")
@@ -261,6 +265,14 @@ def build_package(project_key: str, year: int, month: int, *,
         with ExcelSession() as sess:
             for xlsx_p, pdf_p, sheets in pdf_jobs:
                 sess.export(xlsx_p, pdf_p, sheets)
+
+    # assemble the client invoice pages in the required order (each was exported isolated)
+    if make_pdfs and client_parts and invoice_pdf:
+        from packager import _merge_pdfs as _mp
+        _mp(invoice_pdf, [p for p in client_parts if os.path.exists(p)])
+        for _pp in client_parts:
+            try: os.remove(_pp)
+            except OSError: pass
 
     emp_order = list(dict.fromkeys(t["employee"] for t in ts_files))
     if make_pdfs and ts_files:

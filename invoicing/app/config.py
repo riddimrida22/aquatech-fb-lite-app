@@ -161,8 +161,10 @@ PROJECTS = {
         "timesheet_employees": [("Ailsa", "Welch"), ("Robert", "Svadlenka"), ("Bertrand", "Byrne")],
         # client-facing invoice sheets (in order) for the combined deliverable, + the
         # FreshBooks-style detail that closes the package (matches the June submission).
-        "client_sheets": ["1-Invoice Cover Sheet", "2-Work Summary",
-                          "3-Summary Billing Report", "4a-Labor Summary"],
+        # client-facing pages IN THE ORDER B&C wants them: Summary Billing Report,
+        # Invoice, Labor Summary, Work Summary.
+        "client_sheets": ["3-Summary Billing Report", "1-Invoice Cover Sheet",
+                          "4a-Labor Summary", "2-Work Summary"],
         "fb_billed_to": ["Brown and Caldwell"],
         "fb_due_days": 60,
         "fb_line_task": "Task 2-Workshop",
