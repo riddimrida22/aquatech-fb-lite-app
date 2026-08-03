@@ -27,6 +27,42 @@ _STANTEC_SUB_RE = re.compile(r"Sub\s*Task\s*(\d+\.\d+)", re.I)
 _JOBCON_SUB_RE = re.compile(r"^(\d+(?:\.\d+)+)")
 
 
+def _task_num(code: str) -> str:
+    parts = (code or "").split(".")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        return f"{parts[0]}.{int(parts[1])}"
+    return ""
+
+
+def _para(notes: list[str]) -> str:
+    """Combine a task's time-entry notes into one paragraph, verbatim (nothing added):
+    collapse whitespace, em-dash -> hyphen, ensure each note ends with a period, drop
+    exact duplicates."""
+    out, seen = [], set()
+    for n in notes:
+        s = " ".join((n or "").replace("—", "-").split()).strip()
+        if not s:
+            continue
+        if not s.endswith((".", "!", "?")):
+            s += "."
+        if s.lower() in seen:
+            continue
+        seen.add(s.lower())
+        out.append(s)
+    return " ".join(out)
+
+
+def _narrative_from_notes(project_id: int, begin: dt.date, end: dt.date):
+    narr = []
+    for g in data_source.pull_notes_by_subtask(project_id, begin, end):
+        if not g["notes"]:
+            continue
+        num = _task_num(g["code"])
+        hdr = f"Task {num} - {g['name']}" if num else g["name"]
+        narr.append((hdr, _para(g["notes"])))
+    return narr or None
+
+
 def _month_range(year: int, month: int) -> tuple[dt.date, dt.date]:
     last = calendar.monthrange(year, month)[1]
     return dt.date(year, month, 1), dt.date(year, month, last)
@@ -226,7 +262,8 @@ def build_package(project_key: str, year: int, month: int, *,
         inp = ji.JobConInputs(
             invoice_number=invoice_no, invoice_date=invoice_date,
             period_begin=begin, period_end=end, hours_by_emp=invoice_hours,
-            active_subtask_code=code, prior_by_month=priors, this_odc=this_odc, rates=rates)
+            active_subtask_code=code, prior_by_month=priors, this_odc=this_odc, rates=rates,
+            narrative=_narrative_from_notes(cfg["aqtpm_project_id"], begin, end))
         gen = ji.generate(cfg["template_xlsx"], inv_xlsx, inp)
         # B&C workbook is the whole deliverable; export the client-facing tabs
         summary_sheets = ["1-Invoice Cover Sheet", "2-Work Summary", "3-Summary Billing Report"]
