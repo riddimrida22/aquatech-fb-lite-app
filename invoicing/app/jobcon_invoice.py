@@ -51,6 +51,25 @@ class JobConInputs:
     rates: dict[str, float] = field(default_factory=dict)
 
 
+def _place_sig(ws, path: str, *, col: int, row: int, target_h: int = 24) -> None:
+    """Anchor a signature image, scaled so the INK is ~target_h px tall (aspect kept)."""
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.drawing.spreadsheet_drawing import OneCellAnchor, AnchorMarker
+    from openpyxl.drawing.xdr import XDRPositiveSize2D
+    from openpyxl.utils.units import pixels_to_EMU
+    from PIL import Image as PILImage
+    im = PILImage.open(path)
+    bb = im.convert("RGBA").getchannel("A").getbbox() or (0, 0, im.width, im.height)
+    ink_h = max(1, bb[3] - bb[1])
+    h = target_h * (im.height / ink_h)
+    w = h * (im.width / im.height)
+    img = XLImage(path)
+    img.anchor = OneCellAnchor(
+        _from=AnchorMarker(col=col, colOff=pixels_to_EMU(6), row=row, rowOff=pixels_to_EMU(2)),
+        ext=XDRPositiveSize2D(pixels_to_EMU(w), pixels_to_EMU(h)))
+    ws.add_image(img)
+
+
 def _find_row(ws, col: str, prefix: str, r0: int, r1: int) -> int:
     for r in range(r0, r1 + 1):
         v = ws[f"{col}{r}"].value
@@ -113,8 +132,19 @@ def generate(template_xlsx: str, out_xlsx: str, inp: JobConInputs) -> dict:
     # --- Work Summary: invoice # (drives Labor/Summary via formulas) + narrative ---
     work["C8"] = inp.invoice_number
     if inp.narrative is not None:
-        for i, line in enumerate(inp.narrative):
-            work[f"B{14 + i}"] = line
+        # narrative = ordered list of (task header, body paragraph) built from this
+        # month's time-entry notes. Write into the template's task slots and clear the
+        # rest (incl. the old overview at B14) so no stale text carries over.
+        work["B14"] = ""
+        _slots = [(15, 16), (19, 20), (23, 24)]
+        for _i, (_hr, _br) in enumerate(_slots):
+            if _i < len(inp.narrative):
+                _h, _b = inp.narrative[_i]
+                work[f"B{_hr}"] = _h
+                work[f"B{_br}"] = _b
+            else:
+                work[f"B{_hr}"] = ""
+                work[f"B{_br}"] = ""
 
     # --- Labor Summary: hours (rates/positions are template constants) ---
     _fill_labor(labor, inp)
@@ -131,9 +161,25 @@ def generate(template_xlsx: str, out_xlsx: str, inp: JobConInputs) -> dict:
     _fill_previous(prev, inp, prev_row)
 
     # --- Summary Billing: date + invoice period (were stale in the manual file) ---
-    summ["I3"] = dt.datetime(inp.invoice_date.year, inp.invoice_date.month, inp.invoice_date.day)
+    _idate = dt.datetime(inp.invoice_date.year, inp.invoice_date.month, inp.invoice_date.day)
+    summ["I3"] = _idate
     summ["D27"] = dt.datetime(inp.period_begin.year, inp.period_begin.month, inp.period_begin.day)
     summ["F27"] = dt.datetime(inp.period_end.year, inp.period_end.month, inp.period_end.day)
+
+    # fit the Summary Billing onto ONE page, and sign+date the Subcontractor Task
+    # Manager certification line (D56 label / I56 "Date"): Ailsa signs it.
+    from openpyxl.worksheet.properties import PageSetupProperties
+    summ.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    summ.page_setup.fitToWidth = 1
+    summ.page_setup.fitToHeight = 1
+    summ["I55"] = _idate
+    try:
+        import config as _cfg2
+        _sig = _cfg2.employee_signature("Ailsa Welch")
+    except Exception:
+        _sig = None
+    if _sig and os.path.exists(_sig):
+        _place_sig(summ, _sig, col=3, row=53)   # above "Subcontractor Task Manager"
 
     wb.save(out_xlsx)
 

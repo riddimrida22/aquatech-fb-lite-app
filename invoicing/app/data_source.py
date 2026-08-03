@@ -87,6 +87,35 @@ def pull_fb_lines(project_id: int, begin: dt.date, end: dt.date) -> dict:
     return {"lines": out, "project_name": proj_name}
 
 
+def pull_notes_by_subtask(project_id: int, begin: dt.date, end: dt.date) -> list[dict]:
+    """Time-entry notes grouped by sub-task for the month, in task order — the raw
+    material for the Work Summary. Each: {code, name, notes:[...]} (notes de-duped,
+    in date order). Sub-task code parsed from the task name leading number."""
+    import re
+    with _get_engine().connect() as conn:
+        rows = conn.execute(text("""
+            SELECT t.name AS task, st.name AS subtask, te.work_date, te.note
+            FROM time_entries te
+            LEFT JOIN tasks t ON t.id = te.task_id
+            LEFT JOIN subtasks st ON st.id = te.subtask_id
+            WHERE te.project_id = :proj AND te.work_date >= :begin AND te.work_date <= :end
+              AND coalesce(te.note, '') <> ''
+            ORDER BY t.name, te.work_date
+        """), {"proj": project_id, "begin": begin, "end": end}).all()
+    groups: dict[str, dict] = {}
+    for task, subtask, _d, note in rows:
+        label = task or subtask or "(no task)"
+        m = re.match(r"\s*(\d+(?:\.\d+)+)", label)
+        code = m.group(1) if m else ""
+        # display name = the label with any leading code stripped
+        name = re.sub(r"^\s*\d+(?:\.\d+)+\s*", "", label).strip() or (subtask or label)
+        g = groups.setdefault(code or label, {"code": code, "name": name, "notes": []})
+        n = (note or "").strip()
+        if n and n not in g["notes"]:
+            g["notes"].append(n)
+    return list(groups.values())
+
+
 def official_for(project_key: str, period_id: str) -> dict | None:
     """The latest OFFICIAL generation for a (project, period), or None. Drives the
     official/draft decision: if an official already exists, a second generation is a
