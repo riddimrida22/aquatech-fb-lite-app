@@ -234,13 +234,23 @@ def build_package(project_key: str, year: int, month: int, *,
     else:
         raise ValueError(f"unknown format {fmt!r}")
 
+    calc = compute_labor(invoice_hours, rates, config.PRINCIPALS)
+    this_total = r2(calc["total_labor"] + this_odc)
+
     files = {"invoice_xlsx": inv_xlsx}
     pdf_jobs: list = []
+    client_sheets = cfg.get("client_sheets")
+    invoice_pdf = None
     if make_pdfs:
-        summary_pdf = os.path.join(outdir, f"Summary {end.strftime('%B')} {year} {stamp}.pdf")
-        detail_pdf = os.path.join(outdir, f"Detail {end.strftime('%B')} {year} {stamp}.pdf")
-        pdf_jobs += [(inv_xlsx, summary_pdf, summary_sheets), (inv_xlsx, detail_pdf, detail_sheets)]
-        files.update(summary_pdf=summary_pdf, detail_pdf=detail_pdf)
+        if client_sheets:            # jobcon: client-facing tabs -> one invoice PDF
+            invoice_pdf = os.path.join(outdir, f"Invoice {end.strftime('%B')} {year} {stamp}.pdf")
+            pdf_jobs.append((inv_xlsx, invoice_pdf, client_sheets))
+            files["invoice_pdf"] = invoice_pdf
+        else:                        # stantec: keep the separate summary/detail pages
+            summary_pdf = os.path.join(outdir, f"Summary {end.strftime('%B')} {year} {stamp}.pdf")
+            detail_pdf = os.path.join(outdir, f"Detail {end.strftime('%B')} {year} {stamp}.pdf")
+            pdf_jobs += [(inv_xlsx, summary_pdf, summary_sheets), (inv_xlsx, detail_pdf, detail_sheets)]
+            files.update(summary_pdf=summary_pdf, detail_pdf=detail_pdf)
 
     # 6) weekly timesheet backups (shared helper — identical to HDR)
     ts_files, ts_pdf_jobs = tsp.build_weekly_timesheets(
@@ -252,13 +262,41 @@ def build_package(project_key: str, year: int, month: int, *,
             for xlsx_p, pdf_p, sheets in pdf_jobs:
                 sess.export(xlsx_p, pdf_p, sheets)
 
+    emp_order = list(dict.fromkeys(t["employee"] for t in ts_files))
     if make_pdfs and ts_files:
         import combine_timesheets as _ct
-        emp_order = list(dict.fromkeys(t["employee"] for t in ts_files))
         _ct.combine_folder(outdir, order=emp_order)
 
-    calc = compute_labor(invoice_hours, rates, config.PRINCIPALS)
-    this_total = r2(calc["total_labor"] + this_odc)
+    # 7) combined client deliverable — invoice pages -> Timesheets -> Other Material ->
+    #    FreshBooks-style detail — matching the prior June submission. Reuses HDR's
+    #    divider/merge helpers + FB detail. Only for formats that define client_sheets.
+    if make_pdfs and client_sheets and invoice_pdf:
+        import fb_invoice
+        from packager import _make_divider, _merge_pdfs
+        fb_lines = data_source.pull_fb_lines(cfg["aqtpm_project_id"], begin, end)["lines"]
+        for _l in fb_lines:
+            _lr = config.loaded_bill_rate(_l["person"])
+            _l["rate"] = _lr
+            _l["amount"] = round(float(_l["hours"]) * _lr, 2)
+        fb_pdf = os.path.join(outdir, f"FreshBooks Invoice {end.strftime('%B')} {year} {stamp}.pdf")
+        fb_invoice.build_fb_invoice(
+            fb_pdf, invoice_number=invoice_no, issue_date=invoice_date,
+            due_date=invoice_date + dt.timedelta(days=cfg.get("fb_due_days", 60)),
+            billed_to=cfg.get("fb_billed_to", []), company=config.COMPANY,
+            lines=fb_lines, project_label=data["project_name"],
+            line_task=cfg.get("fb_line_task", ""), amount_due=this_total)
+        files["freshbooks_invoice_pdf"] = fb_pdf
+        ts_pdfs = [os.path.join(outdir, f"{e} Timesheets.pdf") for e in emp_order
+                   if os.path.exists(os.path.join(outdir, f"{e} Timesheets.pdf"))]
+        div_ts = _make_divider(os.path.join(outdir, "_div_ts.pdf"), "Timesheets")
+        div_other = _make_divider(os.path.join(outdir, "_div_other.pdf"), "Other Material")
+        combined = os.path.join(outdir, cfg["inv_name_fmt"].format(
+            month_name=end.strftime("%B"), year=year, stamp=stamp).replace(".xlsx", ".pdf"))
+        _merge_pdfs(combined, [invoice_pdf, div_ts, *ts_pdfs, div_other, fb_pdf])
+        for _d in (div_ts, div_other):
+            try: os.remove(_d)
+            except OSError: pass
+        files["combined_pdf"] = combined
     manifest = {
         "project": project_key, "format": fmt, "month": month_key,
         "period": [begin.isoformat(), end.isoformat()], "invoice_no": invoice_no,
