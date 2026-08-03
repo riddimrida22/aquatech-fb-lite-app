@@ -173,6 +173,7 @@ def generate(template_xlsx: str, out_xlsx: str, inp: JobConInputs) -> dict:
     summ.page_setup.fitToWidth = 1
     summ.page_setup.fitToHeight = 1
     summ["I55"] = _idate
+    summ["I55"].number_format = "m/d/yyyy"
     try:
         import config as _cfg2
         _sig = _cfg2.employee_signature("Ailsa Welch")
