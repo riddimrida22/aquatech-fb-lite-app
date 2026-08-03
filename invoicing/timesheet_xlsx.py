@@ -238,11 +238,20 @@ def build_timesheet_xlsx(out_path: str, *, employee_first: str, employee_last: s
     from openpyxl.utils.units import pixels_to_EMU
 
     def _place(path, col, row, coloff, rowoff, w, h):
+        # Scale so the INK is ~h tall and preserve aspect ratio (no stretch), so a
+        # signature with transparent margin renders at the same visible size/shape as
+        # the prior submitted timesheets instead of being squashed to a fixed box.
+        import PIL.Image as _PILImage
+        _im = _PILImage.open(path).convert("RGBA")
+        _bb = _im.getchannel("A").getbbox() or (0, 0, _im.width, _im.height)
+        _ink_h = max(1, _bb[3] - _bb[1])
+        _H = h * (_im.height / _ink_h)
+        _W = _H * (_im.width / _im.height)
         img = XLImage(path)
         marker = AnchorMarker(col=col, colOff=pixels_to_EMU(coloff),
                               row=row, rowOff=pixels_to_EMU(rowoff))
         img.anchor = OneCellAnchor(_from=marker,
-                                   ext=XDRPositiveSize2D(pixels_to_EMU(w), pixels_to_EMU(h)))
+                                   ext=XDRPositiveSize2D(pixels_to_EMU(_W), pixels_to_EMU(_H)))
         ws.add_image(img)
 
     # cols are 0-indexed: D=3, E=4; rows 0-indexed: r-1. Tuck signatures inside their boxes.
