@@ -72,6 +72,7 @@ type WorkspaceKey =
   | "bd"
   | "time"
   | "invoices"
+  | "payables"
   | "invoicegen"
   | "costs"
   | "categorize"
@@ -123,6 +124,7 @@ const NAV: NavEntry[] = [
       { key: "categorize", label: "Categorize", hint: "Sort transactions" },
       { key: "costs", label: "Costs & Expenses", hint: "Spend + tax" },
       { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables" },
+      { key: "payables", label: "Payables & Owner", hint: "A/P + owner comp" },
       { key: "invoicegen", label: "Invoice Generator", hint: "Cost-plus + timesheets", requires: "canManageInvoicing" },
       { key: "reports", label: "Reports", hint: "Benchmarks" },
     ],
@@ -843,6 +845,32 @@ export default function AquatechPmHome() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to record payment");
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  async function reverseInvoicePayment(invoice: Invoice) {
+    if (
+      !window.confirm(
+        `Reverse the recorded payment on ${invoice.invoice_number}?\nIt will go back to unpaid (status "sent") and any amount paid will be cleared.`,
+      )
+    ) {
+      return;
+    }
+    setSubmitting(`pay-${invoice.id}`);
+    setFlash(null);
+    setError(null);
+    try {
+      await apiPut<Invoice>(`/invoices/${invoice.id}/payment`, {
+        amount_paid: 0,
+        paid_date: null,
+        status: "sent",
+      });
+      setFlash(`Payment reversed on ${invoice.invoice_number} — back to unpaid.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to reverse payment");
     } finally {
       setSubmitting(null);
     }
@@ -1665,12 +1693,10 @@ export default function AquatechPmHome() {
 
         {workspace === "invoices" ? (
           <div className="aq-lite-stack">
-            <div className="aq-lite-grid aq-lite-grid-2">
+            <div style={{ order: 1 }}>
               <InvoiceMetricsPanel invoices={invoices} />
-              <AccountsPayablePanel payable={payable} owedToYou={invoiceStatus?.total_outstanding ?? 0} />
             </div>
-            <OwnerCompPlanner plan={compPlan} />
-            <div className="aq-lite-grid aq-lite-grid-2">
+            <div className="aq-lite-grid aq-lite-grid-2" style={{ order: 3 }}>
               <section className="aq-lite-panel">
                 <div className="aq-lite-panel-head">
                   <div>
@@ -1777,7 +1803,7 @@ export default function AquatechPmHome() {
               </section>
             </div>
 
-            <section className="aq-lite-panel">
+            <section className="aq-lite-panel" style={{ order: 2 }}>
               <div className="aq-lite-panel-head">
                 <div>
                   <p className="aq-lite-eyebrow">A/R</p>
@@ -1838,7 +1864,36 @@ export default function AquatechPmHome() {
                       const pct = Math.min(Math.max(invoice.financed_pct || 0, 0), 1);
                       const advanced = (invoice.subtotal_amount || 0) * pct;
                       if (bal <= 0.01) {
-                        return <span style={{ textAlign: "right", fontWeight: 600, color: "var(--aq-green)" }}>Paid</span>;
+                        return (
+                          <span style={{ textAlign: "right", fontWeight: 600, color: "var(--aq-green)" }}>
+                            Paid
+                            {capabilities.canManageProjects &&
+                            invoice.status !== "void" &&
+                            invoice.status !== "written_off" ? (
+                              <button
+                                type="button"
+                                onClick={() => reverseInvoicePayment(invoice)}
+                                disabled={submitting === `pay-${invoice.id}`}
+                                title="Reverse this payment (e.g. mis-click) — sets the invoice back to unpaid"
+                                style={{
+                                  display: "block",
+                                  marginLeft: "auto",
+                                  marginTop: 3,
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  padding: "2px 7px",
+                                  cursor: "pointer",
+                                  borderRadius: 5,
+                                  border: "1px solid var(--aq-muted, #98a2b3)",
+                                  background: "transparent",
+                                  color: "var(--aq-muted, #667085)",
+                                }}
+                              >
+                                {submitting === `pay-${invoice.id}` ? "…" : "↩ Undo"}
+                              </button>
+                            ) : null}
+                          </span>
+                        );
                       }
                       return (
                         <span style={{ textAlign: "right", fontWeight: 600, color: "var(--aq-red)" }}>
@@ -1876,6 +1931,32 @@ export default function AquatechPmHome() {
                               {submitting === `pay-${invoice.id}` ? "…" : "✓ Mark paid"}
                             </button>
                           ) : null}
+                          {capabilities.canManageProjects &&
+                          (invoice.amount_paid || 0) > 0.01 &&
+                          invoice.status !== "void" &&
+                          invoice.status !== "written_off" ? (
+                            <button
+                              type="button"
+                              onClick={() => reverseInvoicePayment(invoice)}
+                              disabled={submitting === `pay-${invoice.id}`}
+                              title="Reverse the partial payment recorded on this invoice"
+                              style={{
+                                display: "block",
+                                marginLeft: "auto",
+                                marginTop: 3,
+                                fontSize: 10,
+                                fontWeight: 600,
+                                padding: "2px 7px",
+                                cursor: "pointer",
+                                borderRadius: 5,
+                                border: "1px solid var(--aq-muted, #98a2b3)",
+                                background: "transparent",
+                                color: "var(--aq-muted, #667085)",
+                              }}
+                            >
+                              {submitting === `pay-${invoice.id}` ? "…" : "↩ Undo"}
+                            </button>
+                          ) : null}
                         </span>
                       );
                     })()}
@@ -1884,6 +1965,13 @@ export default function AquatechPmHome() {
                 initiallyOpen="first"
               />
             </section>
+          </div>
+        ) : null}
+
+        {workspace === "payables" ? (
+          <div className="aq-lite-stack">
+            <AccountsPayablePanel payable={payable} owedToYou={invoiceStatus?.total_outstanding ?? 0} />
+            <OwnerCompPlanner plan={compPlan} />
           </div>
         ) : null}
 
