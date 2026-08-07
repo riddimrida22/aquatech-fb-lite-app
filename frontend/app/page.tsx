@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost } from "../lib/api";
+import { apiGet, apiPost, apiPut } from "../lib/api";
 import { deriveUserCapabilities } from "../lib/permissions";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
 import { DailyTimeEntry } from "./components/DailyTimeEntry";
@@ -804,6 +804,45 @@ export default function AquatechPmHome() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create invoice");
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  async function markInvoicePaid(invoice: Invoice) {
+    const full = invoice.subtotal_amount || 0;
+    const today = new Date().toISOString().slice(0, 10);
+    const dateStr = window.prompt(
+      `Record payment for ${invoice.invoice_number} (${invoice.client_name})\nPayment date (YYYY-MM-DD):`,
+      today,
+    );
+    if (!dateStr) return;
+    const amtStr = window.prompt(
+      `Amount received (full invoice = ${formatCurrency(full)}; enter less for a partial payment):`,
+      full.toFixed(2),
+    );
+    if (amtStr === null) return;
+    const amount = parseFloat(amtStr.replace(/[^0-9.]/g, ""));
+    if (!isFinite(amount) || amount <= 0) {
+      setError("Enter a valid payment amount.");
+      return;
+    }
+    setSubmitting(`pay-${invoice.id}`);
+    setFlash(null);
+    setError(null);
+    try {
+      await apiPut<Invoice>(`/invoices/${invoice.id}/payment`, {
+        amount_paid: amount,
+        paid_date: dateStr,
+      });
+      setFlash(
+        amount >= full - 0.01
+          ? `${invoice.invoice_number} marked paid (${formatCurrency(amount)} on ${dateStr}).`
+          : `Partial payment recorded for ${invoice.invoice_number} (${formatCurrency(amount)}).`,
+      );
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to record payment");
     } finally {
       setSubmitting(null);
     }
@@ -1811,6 +1850,31 @@ export default function AquatechPmHome() {
                             >
                               {Math.round(pct * 100)}% advanced
                             </span>
+                          ) : null}
+                          {capabilities.canManageProjects &&
+                          invoice.status !== "void" &&
+                          invoice.status !== "written_off" ? (
+                            <button
+                              type="button"
+                              onClick={() => markInvoicePaid(invoice)}
+                              disabled={submitting === `pay-${invoice.id}`}
+                              title="Record payment / mark this invoice paid"
+                              style={{
+                                display: "block",
+                                marginLeft: "auto",
+                                marginTop: 3,
+                                fontSize: 10,
+                                fontWeight: 600,
+                                padding: "2px 7px",
+                                cursor: "pointer",
+                                borderRadius: 5,
+                                border: "1px solid var(--aq-green, #1f8a5b)",
+                                background: "transparent",
+                                color: "var(--aq-green, #1f8a5b)",
+                              }}
+                            >
+                              {submitting === `pay-${invoice.id}` ? "…" : "✓ Mark paid"}
+                            </button>
                           ) : null}
                         </span>
                       );
