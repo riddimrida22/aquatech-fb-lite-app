@@ -1079,8 +1079,12 @@ def sync_time_entries(
                     row.note = note
                     row.bill_rate_applied = bill_rate
                     row.cost_rate_applied = cost_rate
-                    row.is_billable = is_billable
-                    row.billed = billed
+                    # is_billable / billed are APP-AUTHORITATIVE once a row exists (set only
+                    # on insert above). The AqtPM generator — not FreshBooks — is the biller
+                    # now, so it owns `billed`; and manual re-tags (e.g. moving overhead to
+                    # non-billable) must survive re-syncs. Re-clobbering from FB here would
+                    # keep resetting generator-invoiced hours back to "unbilled" and undo
+                    # re-categorizations. FreshBooks retires 2026-08-31.
 
                 counts[outcome] = counts.get(outcome, 0) + 1
                 if len(sample) < 5:
