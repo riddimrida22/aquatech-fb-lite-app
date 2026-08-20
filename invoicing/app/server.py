@@ -259,6 +259,15 @@ def api_generate(request: Request, body: dict = Body(...)):
                         notes="Issued by AqtPM invoice generator")
                 except Exception as e:
                     print(f"[invoicing] publish_invoice skipped: {e}", flush=True)
+                # Flag the hours this invoice covers as billed, so the app's unbilled
+                # views stop counting them (the FreshBooks sync used to do this).
+                try:
+                    cfg = config.PROJECTS[project]
+                    res["billed_entries"] = data_source.mark_time_entries_billed(
+                        project_id=cfg["aqtpm_project_id"],
+                        begin=res["period"][0], end=res["period"][1])
+                except Exception as e:
+                    print(f"[invoicing] mark_time_entries_billed skipped: {e}", flush=True)
         return res
     except Exception as e:
         import traceback
