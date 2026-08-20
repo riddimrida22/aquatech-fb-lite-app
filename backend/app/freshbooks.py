@@ -320,9 +320,11 @@ def _persist_invoice(db: Session, inv: dict[str, Any]) -> str:
     row = db.scalar(select(Invoice).where(Invoice.external_id == fb_id, Invoice.source == "freshbooks_api"))
     outcome = "updated"
     if row is None and invoice_number:
-        # 2) Match by invoice_number (CSV-imported predecessor) — claim it
+        # 2) Match by invoice_number (CSV-imported predecessor) — claim it. But NEVER claim
+        # an AqtPM-generated or manually-entered invoice: those are app-authoritative and must
+        # not be retagged to freshbooks_api and overwritten with FB's (stale) numbers.
         candidate = db.scalar(select(Invoice).where(Invoice.invoice_number == invoice_number))
-        if candidate is not None:
+        if candidate is not None and (getattr(candidate, "source", "") or "") not in ("aqtpm_generator", "manual"):
             row = candidate
             outcome = "claimed"
     if row is None:
@@ -337,7 +339,7 @@ def _persist_invoice(db: Session, inv: dict[str, Any]) -> str:
         db.add(row)
         outcome = "inserted"
 
-    # Refresh fields (in all three branches)
+    # Descriptive fields refresh on every sync (safe — not app-authoritative).
     row.source = "freshbooks_api"
     row.external_id = fb_id
     if invoice_number:
@@ -348,23 +350,28 @@ def _persist_invoice(db: Session, inv: dict[str, Any]) -> str:
         proj_id = _project_id_for(db, invoice_number, organization)
         if proj_id:
             row.project_id = proj_id
-    row.subtotal_amount = total
-    row.amount_paid = paid
-    row.balance_due = outstanding
-    # Preserve a local write-off: 'written_off' is an AqtPM accounting decision that
-    # FreshBooks doesn't track, so never let an FB resync overwrite it back to partial/sent.
-    if str(getattr(row, "status", "") or "").lower() != "written_off":
-        row.status = status
-    row.issue_date = create_d
-    row.due_date = due_d
-    if outcome == "inserted":
+
+    # Money + status are APP-AUTHORITATIVE. The app records payments (update_invoice_payment /
+    # payment-link) and the AqtPM generator issues invoices; a FreshBooks resync must NOT
+    # revert an in-app payment or status. So set subtotal/amount_paid/balance_due/status/
+    # paid_date/dates ONLY the first time this row is created here (inserted) or first claimed
+    # from a CSV predecessor — never on a subsequent 'updated' resync. FreshBooks retires
+    # 2026-08-31. (This generalizes the old written_off-only guard to all money/status fields.)
+    if outcome in ("inserted", "claimed"):
+        row.subtotal_amount = total
+        row.amount_paid = paid
+        row.balance_due = outstanding
+        if str(getattr(row, "status", "") or "").lower() != "written_off":
+            row.status = status
+        row.issue_date = create_d
+        row.due_date = due_d
         row.start_date = create_d
         row.end_date = create_d
-    if status == "paid":
-        # FreshBooks doesn't expose a single "paid_date" — best proxy is updated_at if present
-        upd = _parse_date(inv.get("updated"))
-        if upd:
-            row.paid_date = upd
+        if status == "paid":
+            # FreshBooks doesn't expose a single "paid_date" — best proxy is updated_at.
+            upd = _parse_date(inv.get("updated"))
+            if upd:
+                row.paid_date = upd
 
     db.flush()
     return outcome
