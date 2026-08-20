@@ -140,16 +140,17 @@ def _is_safe_select(sql: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _run_readonly_sql(db, query: str) -> dict:
+def _run_readonly_sql(engine, query: str) -> dict:
     """Execute a single SELECT in a READ ONLY transaction with a statement timeout
-    and a hard row cap. Never mutates. Returns {columns, rows, row_count, truncated}
-    or {error}."""
+    and a hard row cap, on a short-lived connection of its own (so nothing sits
+    idle-in-transaction during the surrounding Claude calls). Never mutates. Returns
+    {columns, rows, row_count, truncated} or {error}."""
     ok, why = _is_safe_select(query)
     if not ok:
         return {"error": why}
     from sqlalchemy import text as _text
     try:
-        conn = db.get_bind().connect()
+        conn = engine.connect()
     except Exception as e:
         return {"error": f"could not open a DB connection: {str(e)[:200]}"}
     try:
@@ -334,6 +335,15 @@ def ask(question: str, mode: str, db, settings) -> dict:
     as_of = datetime.date.today().isoformat()
     context = build_company_context(db)
     schema = _schema_catalog(db)
+    # Release the ORM read transaction BEFORE the (potentially minute-long) Claude tool
+    # loop, so the request's connection doesn't sit idle-in-transaction and get killed by
+    # Postgres' idle_in_transaction_session_timeout. run_sql uses its own short-lived
+    # connections from this engine.
+    engine = db.get_bind()
+    try:
+        db.rollback()
+    except Exception:
+        pass
     system = (
         _SYSTEM
         .replace("{mode_instructions}", _DETAILED if mode == "detailed" else _QUICK)
@@ -384,7 +394,7 @@ def ask(question: str, mode: str, db, settings) -> dict:
                         out = {"error": "query budget exhausted for this question"}
                     else:
                         sql_calls += 1
-                        out = _run_readonly_sql(db, (block.input or {}).get("query", ""))
+                        out = _run_readonly_sql(engine, (block.input or {}).get("query", ""))
                     results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
