@@ -220,6 +220,27 @@ def publish_invoice(*, invoice_number: str, project_id: int, client_name: str,
         return "inserted"
 
 
+def mark_time_entries_billed(*, project_id: int, begin, end) -> int:
+    """Flag the billable time entries covered by a just-published invoice as billed=true,
+    so the app's unbilled-hours views stop counting them. This is the replacement for the
+    old FreshBooks sync (which set the same `billed` flag). Idempotent and scoped: only
+    flips is_billable, not-yet-billed entries in [begin,end] for this project. Returns the
+    number of entries flipped."""
+    def _d(x):
+        return x if isinstance(x, dt.date) else dt.date.fromisoformat(str(x))
+    b, e = _d(begin), _d(end)
+    with _get_engine().begin() as conn:
+        res = conn.execute(text("""
+            UPDATE time_entries
+               SET billed = true
+             WHERE project_id = :pid
+               AND coalesce(is_billable, false) = true
+               AND coalesce(billed, false) = false
+               AND work_date >= :b AND work_date <= :e
+        """), {"pid": project_id, "b": b, "e": e})
+        return res.rowcount or 0
+
+
 def pull_subtasks(project_id: int, begin: dt.date, end: dt.date) -> dict:
     """Hours grouped by (sub-task/task name -> {full_name: hours}) + bill rates."""
     with _get_engine().connect() as conn:

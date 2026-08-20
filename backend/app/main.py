@@ -9665,9 +9665,10 @@ def unbilled_hours_report(
         value = hours * rate
 
         is_billable_entry = bool(te.is_billable) and not proj.is_overhead and bool(proj.is_billable)
-        # FB-synced billable entries already on an FB invoice (billed=True) aren't unbilled.
-        # Manual entries have no FB flag (billed=False) and pass through here.
-        if is_billable_entry and te.source == "freshbooks_api" and bool(getattr(te, "billed", False)):
+        # billed=True is authoritative for ALL sources: FreshBooks set it on FB invoices,
+        # and the AqtPM invoice generator now sets it at "invoice sent" time. Either way,
+        # a billed entry is no longer unbilled.
+        if is_billable_entry and bool(getattr(te, "billed", False)):
             continue
 
         # Billable bucket: per-entry is_billable=True AND project is billable & not overhead
@@ -11789,14 +11790,13 @@ def _unbilled_since_last_invoice_by_client_project(db: Session) -> list[dict[str
             continue
         if te.id in invoiced_time_entry_ids:
             continue
-        # FB-synced entries use FreshBooks' authoritative `billed` flag (True once on an FB
-        # invoice). Manual entries have no FB flag, so fall back to the per-project
-        # last-invoice-date cutoff. This keeps the FB-of-record result while still
-        # supporting time entered directly in the app.
-        if te.source == "freshbooks_api":
-            if bool(getattr(te, "billed", False)):
-                continue
-        else:
+        # billed=True is authoritative for ALL sources (FreshBooks sync + the AqtPM
+        # generator both set it once an invoice is issued). For manual entries not yet
+        # flagged, fall back to the per-project last-invoice-date cutoff so time entered
+        # directly in the app is still handled before the flag lands.
+        if bool(getattr(te, "billed", False)):
+            continue
+        if te.source != "freshbooks_api":
             cutoff = last_invoice_end_by_project.get(int(te.project_id))
             if cutoff is not None and te.work_date <= cutoff:
                 continue
