@@ -9495,8 +9495,11 @@ def project_margin(
         row = actual_by_project.setdefault(te.project_id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0, "unbilled_wip": 0.0})
         row["actual_hours"] += float(te.hours)
         row["actual_cost"] += float(te.hours * te.cost_rate_applied)
-        # Unbilled WIP: billable, FB-synced, not yet on an invoice → value at current rate.
-        if is_billable and te.source == "freshbooks_api" and not bool(getattr(te, "billed", False)):
+        # Unbilled WIP: billable, not yet billed → value at current rate. Source-agnostic:
+        # the app is the system of record now (FreshBooks retired 2026-08-31), so manual
+        # hours are real WIP too. `billed` (set by the generator at "invoice sent") keeps
+        # already-invoiced hours out.
+        if is_billable and not bool(getattr(te, "billed", False)):
             row["unbilled_wip"] += float(te.hours * te.bill_rate_applied)
     # revenue = billed invoices + unbilled WIP
     for pid, row in actual_by_project.items():
@@ -11612,8 +11615,10 @@ def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[
         project["actual_revenue"] = float(project["actual_revenue"]) + revenue
         project["actual_cost"] = float(project["actual_cost"]) + cost
         project["actual_profit"] = float(project["actual_profit"]) + profit
-        # Unbilled WIP (billable, FB-synced, not yet invoiced) valued at current rate.
-        if is_billable and te.source == "freshbooks_api" and not bool(getattr(te, "billed", False)):
+        # Unbilled WIP (billable, not yet billed) valued at current rate. Source-agnostic:
+        # app is the system of record now (FreshBooks retired 2026-08-31); manual hours are
+        # real WIP. `billed` (set at "invoice sent") keeps already-invoiced hours out.
+        if is_billable and not bool(getattr(te, "billed", False)):
             project["unbilled_wip"] = float(project.get("unbilled_wip", 0.0)) + revenue
 
         emp_key = te.user_id
