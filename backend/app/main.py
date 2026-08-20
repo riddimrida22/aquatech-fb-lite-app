@@ -1802,8 +1802,13 @@ def _start_fb_time_sync_worker() -> None:
                 pass
 
     sched = BackgroundScheduler(daemon=True)
-    sched.add_job(_tick, "interval", minutes=10, id="fb_time_sync", coalesce=True, max_instances=1,
-                  next_run_time=datetime.utcnow() + timedelta(seconds=30))
+    # Master FreshBooks kill-switch (flip to False at the 2026-08-31 cut-over). When off,
+    # NO FB job is scheduled — the 10-min time-sync, the daily full sync, and the boot
+    # catch-up all skip. billed/is_billable stay app-authoritative regardless.
+    _fb_sync_on = getattr(settings, "FRESHBOOKS_SYNC_ENABLED", True)
+    if _fb_sync_on:
+        sched.add_job(_tick, "interval", minutes=10, id="fb_time_sync", coalesce=True, max_instances=1,
+                      next_run_time=datetime.utcnow() + timedelta(seconds=30))
     # Daily full integration syncs — Plaid bank download + FreshBooks full sync.
     try:
         from zoneinfo import ZoneInfo
@@ -1814,7 +1819,7 @@ def _start_fb_time_sync_worker() -> None:
     if getattr(settings, "PLAID_DAILY_SYNC_ENABLED", True):
         sched.add_job(_daily_plaid_sync, "cron", hour=_hour, minute=0, timezone=_tz,
                       id="plaid_daily_sync", coalesce=True, max_instances=1)
-    if getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
+    if _fb_sync_on and getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
         sched.add_job(_daily_fb_full_sync, "cron", hour=_hour, minute=15, timezone=_tz,
                       id="fb_daily_full_sync", coalesce=True, max_instances=1)
     # One-shot catch-up ~60-90s after boot, so a restart/deploy doesn't leave bank +
@@ -1823,14 +1828,15 @@ def _start_fb_time_sync_worker() -> None:
     if getattr(settings, "PLAID_DAILY_SYNC_ENABLED", True):
         sched.add_job(_daily_plaid_sync, "date", run_date=_boot + timedelta(seconds=60),
                       id="plaid_boot_catchup", coalesce=True, max_instances=1)
-    if getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
+    if _fb_sync_on and getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
         sched.add_job(_daily_fb_full_sync, "date", run_date=_boot + timedelta(seconds=90),
                       id="fb_boot_catchup", coalesce=True, max_instances=1)
     sched.start()
     _fb_time_sync_scheduler = sched
+    _fb_state = "ON (10-min + daily)" if _fb_sync_on else "OFF (kill-switch: FRESHBOOKS_SYNC_ENABLED=false)"
     print(
-        f"[integrations] schedulers started — FB time-sync every 10 min; "
-        f"Plaid daily {_hour:02d}:00 + FreshBooks full daily {_hour:02d}:15 "
+        f"[integrations] schedulers started — FreshBooks sync {_fb_state}; "
+        f"Plaid daily {_hour:02d}:00 "
         f"({getattr(settings, 'INTEGRATIONS_SYNC_TIMEZONE', 'America/New_York')})",
         flush=True,
     )

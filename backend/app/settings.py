@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # Daily auto-sync of external integrations (bank + accounting)
     PLAID_DAILY_SYNC_ENABLED: bool = True
     FRESHBOOKS_DAILY_SYNC_ENABLED: bool = True
+    # Master kill-switch for ALL FreshBooks syncing (10-min time-sync + daily full sync +
+    # boot catch-up). Default True keeps current behavior. Set False at the 2026-08-31
+    # FreshBooks cut-over so nothing tries to phone the cancelled API. The app is the
+    # system of record now; disabling this does NOT affect billed/is_billable (those are
+    # app-authoritative). See memory: aquatechpm_billed_flag_wiring.
+    FRESHBOOKS_SYNC_ENABLED: bool = True
     INTEGRATIONS_SYNC_HOUR_LOCAL: int = 6
     INTEGRATIONS_SYNC_TIMEZONE: str = "America/New_York"
 
