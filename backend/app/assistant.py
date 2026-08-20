@@ -1,21 +1,31 @@
 """Ask AqtPM — natural-language company Q&A backed by Claude + the live company data.
 
 The dashboard exposes a single "ask anything about the company" box. This module
-gathers a comprehensive, current snapshot of the company (P&L, cash flow, balance
-sheet, employee comp, payroll, AR, project performance, unbilled work, roster) by
-calling the app's own reporting functions, then asks Claude to answer the question
-against ONLY that data. Two modes: "quick" (concise) and "detailed" (thorough,
-with charts). Requires ANTHROPIC_API_KEY in settings/env; degrades gracefully.
+gives Claude two ways to reach the data:
+
+  1. A SNAPSHOT — a current roll-up of the company (P&L, cash flow, balance sheet,
+     comp, payroll, AR, project performance, unbilled work, roster), assembled by
+     calling the app's own reporting functions. Answers headline questions instantly.
+  2. A read-only SQL tool (`run_sql`) — for anything the snapshot doesn't contain:
+     specific invoices, breakdowns by person/project/period, individual time entries,
+     the `finance` schema (loans, financing, unbilled, notes), bank transactions,
+     expenses, clients, tasks. This is what lets the assistant retrieve the same
+     detail an operator could by querying the DB directly.
+
+Claude runs an agentic loop: read the question, query as needed, then return a
+structured answer (markdown + key numbers + optional charts + answerability).
+Requires ANTHROPIC_API_KEY; degrades gracefully.
 """
 from __future__ import annotations
 
 import datetime
 import inspect
 import json
+import re
 from decimal import Decimal
 from typing import Any
 
-# ---- context gathering ------------------------------------------------------
+# ---- serialization ----------------------------------------------------------
 
 def _json_default(o: Any):
     if isinstance(o, (datetime.date, datetime.datetime)):
@@ -24,6 +34,8 @@ def _json_default(o: Any):
         return float(o)
     return str(o)
 
+
+# ---- snapshot context gathering --------------------------------------------
 
 def _call_endpoint(fn, db):
     """Call a FastAPI endpoint function directly, filling only params it declares.
@@ -99,94 +111,158 @@ def build_company_context(db) -> dict:
     return ctx
 
 
-# ---- Claude call ------------------------------------------------------------
+# ---- read-only SQL tool -----------------------------------------------------
 
-_CHART_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "type": {"type": "string", "enum": ["bar", "line", "pie"]},
-        "title": {"type": "string"},
-        "unit": {"type": "string", "description": "e.g. '$', 'hrs', '%'"},
-        "labels": {"type": "array", "items": {"type": "string"}},
-        "series": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "data": {"type": "array", "items": {"type": "number"}},
-                },
-                "required": ["name", "data"],
-                "additionalProperties": False,
-            },
-        },
+# Defense-in-depth on top of the READ ONLY transaction below. Blocks writes, DDL,
+# multi-statement, and superuser filesystem/shell escapes (COPY ... TO PROGRAM,
+# lo_export, pg_read_file, dblink, etc.).
+_BANNED = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|merge|call|do|"
+    r"vacuum|reindex|cluster|comment|copy|program|lo_import|lo_export|pg_read_file|"
+    r"pg_read_binary_file|pg_ls_dir|pg_stat_file|dblink|pg_sleep|set_config|"
+    r"pg_terminate_backend|pg_cancel_backend)\b",
+    re.IGNORECASE,
+)
+_MAX_ROWS = 500
+
+
+def _is_safe_select(sql: str) -> tuple[bool, str]:
+    s = (sql or "").strip().rstrip(";").strip()
+    if not s:
+        return False, "empty query"
+    low = s.lower()
+    if not (low.startswith("select") or low.startswith("with")):
+        return False, "only a single read-only SELECT/WITH query is allowed"
+    if ";" in s:
+        return False, "only one statement is allowed (no semicolons)"
+    if _BANNED.search(s):
+        return False, "query contains a disallowed keyword — this tool is read-only"
+    return True, ""
+
+
+def _run_readonly_sql(db, query: str) -> dict:
+    """Execute a single SELECT in a READ ONLY transaction with a statement timeout
+    and a hard row cap. Never mutates. Returns {columns, rows, row_count, truncated}
+    or {error}."""
+    ok, why = _is_safe_select(query)
+    if not ok:
+        return {"error": why}
+    from sqlalchemy import text as _text
+    try:
+        conn = db.get_bind().connect()
+    except Exception as e:
+        return {"error": f"could not open a DB connection: {str(e)[:200]}"}
+    try:
+        trans = conn.begin()
+        try:
+            conn.execute(_text("SET TRANSACTION READ ONLY"))
+            conn.execute(_text("SET LOCAL statement_timeout = '8000'"))
+            res = conn.execute(_text(query))
+            cols = list(res.keys())
+            fetched = res.fetchmany(_MAX_ROWS + 1)
+            truncated = len(fetched) > _MAX_ROWS
+            fetched = fetched[:_MAX_ROWS]
+            rows = [
+                {c: _json_default(v) if isinstance(v, (datetime.date, datetime.datetime, Decimal)) else v
+                 for c, v in zip(cols, r)}
+                for r in fetched
+            ]
+            return {"columns": cols, "row_count": len(rows), "truncated": truncated, "rows": rows}
+        finally:
+            trans.rollback()  # read-only; nothing to commit
+    except Exception as e:
+        return {"error": str(e)[:400]}
+    finally:
+        conn.close()
+
+
+_SCHEMA_CACHE: dict[str, Any] = {"text": None}
+
+
+def _schema_catalog(db) -> str:
+    """Compact `schema.table(col, col, ...)` catalog for public + finance schemas so
+    Claude can write correct SQL. Cached for the process."""
+    if _SCHEMA_CACHE["text"]:
+        return _SCHEMA_CACHE["text"]
+    from sqlalchemy import text as _text
+    try:
+        rows = db.execute(_text(
+            """
+            SELECT table_schema, table_name,
+                   string_agg(column_name, ', ' ORDER BY ordinal_position) AS cols
+            FROM information_schema.columns
+            WHERE table_schema IN ('public', 'finance')
+            GROUP BY table_schema, table_name
+            ORDER BY table_schema, table_name
+            """
+        )).all()
+    except Exception as e:
+        return f"(schema catalog unavailable: {str(e)[:120]})"
+    lines = [f"{s}.{t}({c})" for s, t, c in rows]
+    txt = "\n".join(lines)
+    _SCHEMA_CACHE["text"] = txt
+    return txt
+
+
+_RUN_SQL_TOOL = {
+    "name": "run_sql",
+    "description": (
+        "Run a READ-ONLY PostgreSQL query against the live company database to fetch any "
+        "detail not already in the SNAPSHOT — specific invoices, breakdowns by person/"
+        "project/period, individual time entries, the finance schema (loans, financing, "
+        "unbilled, notes), bank transactions, expenses, clients, tasks. Rules: exactly one "
+        "SELECT (or WITH ... SELECT) statement, no semicolons, no writes/DDL. Always scope "
+        "with WHERE/GROUP BY — never select an entire table. Returns up to 500 rows as JSON. "
+        "Prefer running a query over telling the user data is missing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "A single read-only SELECT/WITH query."}},
+        "required": ["query"],
+        "additionalProperties": False,
     },
-    "required": ["type", "title", "unit", "labels", "series"],
-    "additionalProperties": False,
 }
 
-_ANSWER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "answer": {"type": "string", "description": "Answer in GitHub-flavored markdown."},
-        "key_numbers": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {"label": {"type": "string"}, "value": {"type": "string"}},
-                "required": ["label", "value"],
-                "additionalProperties": False,
-            },
-        },
-        "charts": {"type": "array", "items": _CHART_SCHEMA},
-        "answerability": {
-            "type": "object",
-            "description": "Whether the COMPANY DATA actually contained what was needed to answer.",
-            "properties": {
-                "status": {"type": "string", "enum": ["answered", "partial", "unanswered"]},
-                "missing_data": {
-                    "type": "string",
-                    "description": "If partial/unanswered: the specific data that was needed but ABSENT from COMPANY DATA (e.g. 'per-vendor bills', 'time entries older than 2024'). Empty string if fully answered.",
-                },
-                "suggested_source": {
-                    "type": "string",
-                    "description": "If partial/unanswered: a concrete, actionable suggestion for what the app should add so this question can be answered next time (e.g. 'import accounts-payable / vendor bills', 'track a billable flag per project'). Empty string if fully answered.",
-                },
-            },
-            "required": ["status", "missing_data", "suggested_source"],
-            "additionalProperties": False,
-        },
-    },
-    "required": ["answer", "key_numbers", "charts", "answerability"],
-    "additionalProperties": False,
-}
 
-_SYSTEM = """You are the internal financial & operations analyst for Aquatech Engineering P.C., a small consulting engineering firm. You answer the owner's questions about the company — its finances, accounts, employees, clients, projects, payroll, receivables, and cash — using ONLY the COMPANY DATA provided below.
+# ---- prompt -----------------------------------------------------------------
 
-Rules:
-- Ground every claim in the data. Cite exact numbers (dollars in USD, hours, percentages). Never invent figures.
-- If the data does not contain the answer, say so plainly and name what's missing — do not guess.
-- All money is USD. Format as $12,345 (no decimals unless cents matter). Percentages to one decimal.
-- ALWAYS set `answerability`. Use "answered" only if the COMPANY DATA fully answers the question. Use "partial" if you could answer part but some needed data is absent. Use "unanswered" if the data doesn't contain what's needed at all. When "partial" or "unanswered", set `missing_data` to the SPECIFIC data that was missing, and `suggested_source` to a concrete, actionable suggestion for what the app should add/track so this exact question could be answered next time. When "answered", set both strings to "". Do not mark a question "unanswered" just because it's off-topic (not about the company) — only for genuine data gaps.
+_SYSTEM = """You are the internal financial & operations analyst for Aquatech Engineering P.C., a small consulting engineering firm. You answer the owner's questions about the company — finances, accounts, employees, clients, projects, payroll, receivables, cash, hours — using the COMPANY DATA SNAPSHOT below and the `run_sql` tool for anything the snapshot doesn't already contain.
+
+How to answer:
+- Check the SNAPSHOT first for headline/roll-up figures. For ANY detail it doesn't fully contain — specific invoices, per-person / per-project / per-period breakdowns, individual time entries, the finance schema, expenses, transactions, clients, tasks — call `run_sql` to fetch it. Almost everything is queryable; prefer querying over saying data is missing. You may call `run_sql` several times to drill down.
+- Ground every claim in snapshot values or query results. Cite exact numbers. Never invent figures.
+- Money is USD, format $12,345 (cents only when they matter). Percentages to one decimal.
+
+KEY DATA SEMANTICS (use these to write correct SQL):
+- time_entries: hours, is_billable (per-entry flag), billed (TRUE once invoiced — app-authoritative), source ('manual' now, 'freshbooks_api' legacy), bill_rate_applied, cost_rate_applied, work_date, project_id, user_id, task_id, subtask_id. UNBILLED BILLABLE work = (is_billable AND NOT billed). Labor cost = hours*cost_rate_applied (all labor is COGS).
+- projects: id, name (e.g. 'LTCP4', 'BWT 1608-Jobcon', 'Aquatech Operations'), is_billable, is_overhead. 'Aquatech Operations' / overhead = non-billable cost, not revenue.
+- users: full_name, role, is_active. Join time_entries.user_id = users.id.
+- invoices: invoice_number, client_name, status (draft|sent|partial|paid|overdue|void|written_off), subtotal_amount, amount_paid, balance_due, start_date, end_date, issue_date, due_date, project_id. Outstanding AR = status NOT IN ('void','draft','paid','written_off') AND balance_due > 0.
+- finance schema (curated views/tables): v_summary, v_money_owed, v_outstanding_net, v_project_economics, v_labor, v_labor_by_project, v_labor_by_person, v_labor_by_month; tables boc_loans, invoice_financing, unbilled, notes, staff_rates. Use these for money owed, BOC advances, and project economics.
+- LTCP4 bills on 4-WEEK periods, not calendar months. Today is {as_of}.
+
+FINAL OUTPUT — after any tool use, your FINAL message must be ONLY a single JSON object (no prose around it, no code fences) with EXACTLY this shape:
+{"answer": "<GitHub-flavored markdown>", "key_numbers": [{"label": "...", "value": "..."}], "charts": [], "answerability": {"status": "answered", "missing_data": "", "suggested_source": ""}}
+- charts: array of 0-3 chart objects, each {"type":"bar|line|pie","title":"...","unit":"$|hrs|%","labels":["..."],"series":[{"name":"...","data":[<numbers>]}]}. Leave [] unless a chart genuinely helps.
+- answerability.status: "answered" when you fully answered (set missing_data & suggested_source to ""). Use "partial"/"unanswered" ONLY for genuine data gaps you could not get even via SQL — then set missing_data to the specific absent data and suggested_source to a concrete thing the app should track. An off-topic question (not about the company) is NOT a data gap.
 - {mode_instructions}
 
-Return JSON matching the schema: `answer` (markdown), `key_numbers` (headline stats to highlight), `charts` (visualizations), `answerability` (whether the data actually covered the question).
+DATABASE SCHEMA (schema.table(columns)):
+{schema}
 
-COMPANY DATA (JSON, current as of today):
+COMPANY DATA SNAPSHOT (JSON, current as of {as_of}):
 {context}
 """
 
 _QUICK = (
-    "QUICK MODE: Be concise — 1-3 sentences or a single number with brief context. "
-    "Put at most the 1-2 most relevant figures in key_numbers. Leave charts EMPTY unless the "
-    "question explicitly asks to visualize."
+    "QUICK MODE: Be concise — 1-3 sentences or a single number with brief context. Put at most "
+    "the 1-2 most relevant figures in key_numbers. Leave charts empty unless explicitly asked to "
+    "visualize. Still use run_sql when the snapshot lacks the detail — a short answer must still be correct."
 )
 _DETAILED = (
-    "DETAILED MODE: Be thorough. Use markdown with short sections, tables, and bullet points where "
-    "helpful. Populate key_numbers with 3-6 headline figures. Include 1-3 charts when the answer is "
-    "quantitative and a chart genuinely aids understanding (e.g. breakdowns, trends, comparisons) — "
-    "otherwise leave charts empty. Choose chart type sensibly (bar for comparisons, line for trends, "
-    "pie for composition)."
+    "DETAILED MODE: Be thorough. Use markdown with short sections, tables, and bullets where helpful. "
+    "Populate key_numbers with 3-6 headline figures. Include 1-3 charts when a visual genuinely aids a "
+    "quantitative answer (bar=comparison, line=trend, pie=composition). Query as much detail as needed."
 )
 
 
@@ -194,9 +270,55 @@ def is_configured(settings) -> bool:
     return bool(getattr(settings, "ANTHROPIC_API_KEY", "") or "")
 
 
+# ---- final-answer parsing ---------------------------------------------------
+
+def _extract_json(text: str) -> dict | None:
+    """Pull the final JSON object out of the model's last text block, tolerating code
+    fences or minor leading/trailing prose."""
+    if not text:
+        return None
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        s = re.sub(r"^(json)?\s*", "", s, flags=re.IGNORECASE)
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    # fall back to the outermost {...}
+    i, j = s.find("{"), s.rfind("}")
+    if 0 <= i < j:
+        try:
+            return json.loads(s[i:j + 1])
+        except Exception:
+            return None
+    return None
+
+
+def _normalize(data: dict, mode: str, model: str, usage: dict | None) -> dict:
+    data.setdefault("answer", "")
+    data.setdefault("key_numbers", [])
+    data.setdefault("charts", [])
+    a = data.get("answerability")
+    a = a if isinstance(a, dict) else {}
+    data["answerability"] = {
+        "status": a.get("status") if a.get("status") in ("answered", "partial", "unanswered") else "answered",
+        "missing_data": (a.get("missing_data") or "").strip()[:600],
+        "suggested_source": (a.get("suggested_source") or "").strip()[:600],
+    }
+    data["mode"] = mode
+    data["model"] = model
+    if usage:
+        data["tokens"] = usage
+    return data
+
+
+# ---- main entry -------------------------------------------------------------
+
 def ask(question: str, mode: str, db, settings) -> dict:
-    """Answer a natural-language question about the company. Returns a dict with
-    answer/key_numbers/charts, or {error, message} on failure."""
+    """Answer a natural-language question about the company. Claude may query the DB
+    read-only via the run_sql tool. Returns a dict with answer/key_numbers/charts/
+    answerability, or {error, message} on failure."""
     if not is_configured(settings):
         return {
             "error": "not_configured",
@@ -209,32 +331,75 @@ def ask(question: str, mode: str, db, settings) -> dict:
     except Exception:
         return {"error": "not_installed", "message": "The `anthropic` package isn't installed on the backend."}
 
+    as_of = datetime.date.today().isoformat()
     context = build_company_context(db)
-    system = _SYSTEM.format(
-        mode_instructions=(_DETAILED if mode == "detailed" else _QUICK),
-        context=json.dumps(context, default=_json_default, ensure_ascii=False),
+    schema = _schema_catalog(db)
+    system = (
+        _SYSTEM
+        .replace("{mode_instructions}", _DETAILED if mode == "detailed" else _QUICK)
+        .replace("{schema}", schema)
+        .replace("{context}", json.dumps(context, default=_json_default, ensure_ascii=False))
+        .replace("{as_of}", as_of)
     )
     model = getattr(settings, "ASSISTANT_MODEL", "claude-opus-4-8") or "claude-opus-4-8"
 
-    output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": _ANSWER_SCHEMA}}
     kwargs: dict[str, Any] = {
         "model": model,
-        "max_tokens": 8000 if mode == "detailed" else 1600,
+        "max_tokens": 8000 if mode == "detailed" else 2000,
         "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        "messages": [{"role": "user", "content": question.strip()[:2000]}],
-        "output_config": output_config,
+        "tools": [_RUN_SQL_TOOL],
     }
     if mode == "detailed":
         kwargs["thinking"] = {"type": "adaptive"}
-        output_config["effort"] = "high"
     else:
-        # Quick = fast & cheap: no thinking (Sonnet 5 would otherwise think by default), low effort.
         kwargs["thinking"] = {"type": "disabled"}
-        output_config["effort"] = "low"
+
+    max_turns = 8 if mode == "detailed" else 5
+    max_sql = 16
+    sql_calls = 0
+    messages: list[dict[str, Any]] = [{"role": "user", "content": question.strip()[:2000]}]
 
     try:
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-        resp = client.messages.create(**kwargs)
+        last = None
+        tot_in = tot_out = 0
+        for _turn in range(max_turns):
+            resp = client.messages.create(messages=messages, **kwargs)
+            last = resp
+            try:
+                tot_in += resp.usage.input_tokens
+                tot_out += resp.usage.output_tokens
+            except Exception:
+                pass
+            if getattr(resp, "stop_reason", None) == "refusal":
+                return {"error": "refusal", "message": "The assistant declined to answer that question."}
+            if getattr(resp, "stop_reason", None) != "tool_use":
+                break
+            # run the requested tool calls, feed results back
+            messages.append({"role": "assistant", "content": resp.content})
+            results = []
+            for block in resp.content:
+                if getattr(block, "type", None) == "tool_use" and block.name == "run_sql":
+                    if sql_calls >= max_sql:
+                        out = {"error": "query budget exhausted for this question"}
+                    else:
+                        sql_calls += 1
+                        out = _run_readonly_sql(db, (block.input or {}).get("query", ""))
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(out, default=_json_default)[:24000],
+                    })
+            if not results:
+                break
+            messages.append({"role": "user", "content": results})
+        else:
+            # ran out of turns — ask for a final answer with no more tools
+            final_kwargs = dict(kwargs)
+            final_kwargs.pop("tools", None)
+            messages.append({"role": "user", "content":
+                             "Stop querying and give your final JSON answer now with what you have."})
+            last = client.messages.create(messages=messages, **final_kwargs)
     except anthropic.AuthenticationError:
         return {"error": "auth", "message": "The ANTHROPIC_API_KEY was rejected (invalid or revoked)."}
     except anthropic.RateLimitError:
@@ -242,32 +407,12 @@ def ask(question: str, mode: str, db, settings) -> dict:
     except Exception as e:
         return {"error": "api", "message": f"Claude API error: {str(e)[:300]}"}
 
-    if getattr(resp, "stop_reason", None) == "refusal":
-        return {"error": "refusal", "message": "The assistant declined to answer that question."}
-
-    text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), None)
+    text = next((b.text for b in getattr(last, "content", []) if getattr(b, "type", None) == "text"), None)
     if not text:
         return {"error": "empty", "message": "The assistant returned an empty response."}
-    try:
-        data = json.loads(text)
-    except Exception:
-        # structured output should guarantee JSON, but never hard-fail the UI
-        return {"answer": text, "key_numbers": [], "charts": [], "mode": mode, "model": model}
-
-    data.setdefault("key_numbers", [])
-    data.setdefault("charts", [])
-    a = data.get("answerability")
-    if not isinstance(a, dict):
-        a = {}
-    data["answerability"] = {
-        "status": a.get("status") if a.get("status") in ("answered", "partial", "unanswered") else "answered",
-        "missing_data": (a.get("missing_data") or "").strip()[:600],
-        "suggested_source": (a.get("suggested_source") or "").strip()[:600],
-    }
-    data["mode"] = mode
-    data["model"] = model
-    try:
-        data["tokens"] = {"in": resp.usage.input_tokens, "out": resp.usage.output_tokens}
-    except Exception:
-        pass
-    return data
+    usage = {"in": tot_in, "out": tot_out, "sql_queries": sql_calls}
+    data = _extract_json(text)
+    if not isinstance(data, dict):
+        # structured parse failed — still return the prose so the UI isn't empty
+        return _normalize({"answer": text}, mode, model, usage)
+    return _normalize(data, mode, model, usage)
