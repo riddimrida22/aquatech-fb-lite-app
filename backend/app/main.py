@@ -9612,6 +9612,102 @@ def unbilled_since_last_invoice(
     return {"as_of": date.today().isoformat(), "by_client": rows, "by_client_project": by_project_rows}
 
 
+@app.get("/reports/salary-accrual")
+def salary_accrual_report(
+    year: int = 0,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Accrued unpaid salary per employee for a year.
+
+    earned  = hours logged (time_entries) x gross hourly pay rate (finance.staff_rates.hourly_cost)
+    paid    = payroll gross for the year (Paychex journals in the inbox)
+    accrued = earned - paid   (positive => wages earned but not yet paid out; a payable)
+
+    Payroll-based: excludes any non-payroll compensation (1099 / owner draws / Zelle)
+    unless it was actually run through payroll. `rate_known`/`payroll_matched` flag rows
+    where a pay rate or a payroll match was missing, so the figure is never silently wrong.
+    """
+    yr = int(year) or date.today().year
+    jan, dec = date(yr, 1, 1), date(yr, 12, 31)
+
+    # gross hourly pay rates (authoritative: finance.staff_rates.hourly_cost)
+    rates: dict[str, float] = {}
+    try:
+        for fn, hc in db.execute(text("SELECT full_name, hourly_cost FROM finance.staff_rates")).all():
+            if fn:
+                rates[str(fn)] = float(hc or 0)
+    except Exception:
+        rates = {}
+
+    # hours logged per user for the year
+    hours_rows = db.execute(
+        select(User.id, User.full_name, func.coalesce(func.sum(TimeEntry.hours), 0.0))
+        .join(TimeEntry, TimeEntry.user_id == User.id)
+        .where(TimeEntry.work_date >= jan, TimeEntry.work_date <= dec)
+        .group_by(User.id, User.full_name)
+    ).all()
+
+    # gross paid per employee-name from the payroll journals (deduped)
+    inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
+    paid_by_name: dict[str, float] = {}
+    if inbox.exists():
+        for period in _deduped_payroll_periods(inbox):
+            if str(period.get("_year")) != str(yr):
+                continue
+            for r in period.get("rows", []) or []:
+                nm = str(r.get("employee") or "")
+                if nm:
+                    paid_by_name[nm] = paid_by_name.get(nm, 0.0) + float(r.get("gross", 0) or 0)
+
+    def _toks(s: str) -> frozenset:
+        return frozenset(re.findall(r"[a-z]+", str(s).lower()))
+
+    def _paid_for(full_name: str) -> tuple[float, bool]:
+        ut = _toks(full_name)
+        total, matched = 0.0, False
+        for nm, g in paid_by_name.items():
+            pt = _toks(nm)
+            if ut and pt and (ut <= pt or pt <= ut):  # name token-set subset either way
+                total += g
+                matched = True
+        return total, matched
+
+    rows: list[dict[str, object]] = []
+    t_earned = t_paid = t_accrued = 0.0
+    for uid, full_name, hrs in hours_rows:
+        hrs = float(hrs or 0)
+        rate = float(rates.get(full_name, 0.0))
+        earned = hrs * rate
+        paid, matched = _paid_for(full_name or "")
+        if hrs == 0 and paid == 0:
+            continue
+        accrued = earned - paid
+        rows.append({
+            "user_id": uid,
+            "name": full_name,
+            "hourly_rate": round(rate, 2),
+            "hours": round(hrs, 1),
+            "earned": round(earned, 2),
+            "paid_gross": round(paid, 2),
+            "accrued_balance": round(accrued, 2),
+            "rate_known": rate > 0,
+            "payroll_matched": matched,
+        })
+        t_earned += earned
+        t_paid += paid
+        t_accrued += accrued
+    rows.sort(key=lambda r: float(r["accrued_balance"]), reverse=True)
+    return {
+        "year": yr,
+        "rows": rows,
+        "totals": {"earned": round(t_earned, 2), "paid_gross": round(t_paid, 2), "accrued_balance": round(t_accrued, 2)},
+        "method": ("earned = hours logged x gross hourly pay rate (finance.staff_rates); "
+                   "paid = payroll gross (Paychex journals). Payroll-based — excludes any "
+                   "non-payroll comp (1099 / owner draws / Zelle) unless run through payroll."),
+    }
+
+
 @app.get("/reports/unbilled-hours")
 def unbilled_hours_report(
     db: Session = Depends(get_db),

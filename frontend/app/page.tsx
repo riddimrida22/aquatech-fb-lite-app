@@ -10,6 +10,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { ARAgingPanel } from "./components/ARAgingPanel";
 import { InvoiceMetricsPanel } from "./components/InvoiceMetricsPanel";
 import { AccountsPayablePanel } from "./components/AccountsPayablePanel";
+import { SalaryAccrualPanel } from "./components/SalaryAccrualPanel";
 import { OwnerCompPlanner } from "./components/OwnerCompPlanner";
 import { ProfitLossPanel, CashFlowPanel, CompReconPanel, BusinessHealth } from "./components/BusinessHealthPanel";
 import { TransfersPanel } from "./components/TransfersPanel";
@@ -1971,6 +1972,7 @@ export default function AquatechPmHome() {
         {workspace === "payables" ? (
           <div className="aq-lite-stack">
             <AccountsPayablePanel payable={payable} owedToYou={invoiceStatus?.total_outstanding ?? 0} />
+            <SalaryAccrualPanel />
             <OwnerCompPlanner plan={compPlan} />
           </div>
         ) : null}
