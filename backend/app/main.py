@@ -4897,19 +4897,23 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
                   if (hours[uid][0] + hours[uid][1]) > 0 and (users[uid].full_name or "").strip()]
 
     cogs_labor = nonbillable = unallocated = bd_labor = 0.0
-    by_emp: list[dict] = []
+    # Aggregate employer cost PER USER first — a person can have several payroll-journal
+    # name variants (full + Paychex-truncated, e.g. "Welch Gilliam, Ailsa" and
+    # "Welch Gilliam, Ai..."), and all should roll into one row, not one row per variant.
+    ec_by_uid: dict[int, float] = defaultdict(float)
     for jn, ec in paycost.items():
-        # Robust payroll->user match (handles Paychex-truncated / multi-surname names that
-        # the old token-intersection dropped into 'unallocated', e.g. "Welch Gilliam, Ai...").
         best_uid = next((uid for uid in candidates
                          if _payroll_name_matches_user(jn, users[uid].full_name)), None)
         if best_uid is None:  # e.g. "Off Cycle Payroll" header rows ($0), or truly unmatched
             unallocated += ec
             continue
+        ec_by_uid[best_uid] += ec
+    by_emp: list[dict] = []
+    for best_uid, ec in ec_by_uid.items():
         ch, oh = hours[best_uid]
         th = ch + oh
-        c = ec * ch / th
-        n = ec * oh / th
+        c = ec * ch / th if th else 0.0
+        n = ec * oh / th if th else 0.0
         bh = bd_hours.get(best_uid, 0.0)
         bc = bd_cost.get(best_uid, 0.0)  # timesheet loaded cost of this person's BD time
         cogs_labor += c
