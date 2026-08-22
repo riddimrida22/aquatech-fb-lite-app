@@ -9658,15 +9658,28 @@ def salary_accrual_report(
                 if nm:
                     paid_by_name[nm] = paid_by_name.get(nm, 0.0) + float(r.get("gross", 0) or 0)
 
-    def _toks(s: str) -> frozenset:
-        return frozenset(re.findall(r"[a-z]+", str(s).lower()))
+    # Match payroll names ("Last, First", sometimes with a second surname or TRUNCATED by
+    # the Paychex PDF, e.g. "Welch Gilliam, Ai...") to a user by last name + first-name
+    # prefix (either direction), with a small alias map for legal-vs-preferred first names.
+    # (Plain token-subset failed on truncated / multi-surname names and dropped whole
+    # paychecks — e.g. it missed all of Ailsa's "Welch Gilliam, Ai..." rows.)
+    _first_aliases = {"roger": {"ruoqian"}, "ruoqian": {"roger"}}
+
+    def _name_tokens(s: str) -> list[str]:
+        return re.findall(r"[a-z]+", str(s).lower())
 
     def _paid_for(full_name: str) -> tuple[float, bool]:
-        ut = _toks(full_name)
+        uts = _name_tokens(full_name)
+        if not uts:
+            return 0.0, False
+        ufirst, ulast = uts[0], uts[-1]
+        aliases = _first_aliases.get(ufirst, set())
         total, matched = 0.0, False
         for nm, g in paid_by_name.items():
-            pt = _toks(nm)
-            if ut and pt and (ut <= pt or pt <= ut):  # name token-set subset either way
+            pts = set(_name_tokens(nm))
+            if ulast not in pts:  # last name must be present (anchor; avoids cross-matching)
+                continue
+            if any(t.startswith(ufirst) or ufirst.startswith(t) or t in aliases for t in pts):
                 total += g
                 matched = True
         return total, matched
