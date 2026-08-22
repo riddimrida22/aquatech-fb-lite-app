@@ -359,6 +359,32 @@ def _normalize_person_name(raw: str | None) -> str:
     return " ".join(part.capitalize() for part in parts)
 
 
+# First-name aliases for legal-vs-preferred names on the payroll journal.
+_PAYROLL_FIRST_ALIASES = {"roger": {"ruoqian"}, "ruoqian": {"roger"}}
+
+
+def _payroll_name_matches_user(payroll_name: str | None, user_full_name: str | None) -> bool:
+    """True if a payroll-journal name (usually "Last, First", and sometimes TRUNCATED by
+    the Paychex PDF, e.g. "Welch Gilliam, Ai...") refers to the given user ("First Last").
+
+    Anchored on the user's LAST name being present in the payroll tokens (so shared first
+    names don't cross-match), plus the user's FIRST name being prefix-compatible with some
+    payroll token in either direction (so truncated names like "Ai..." still match "Ailsa"),
+    plus a legal/preferred first-name alias map (Roger <-> Ruoqian). Use this everywhere a
+    payroll row is matched to a user — plain token-subset/intersection silently DROPS
+    truncated and multi-surname names and loses whole paychecks.
+    """
+    uts = re.findall(r"[a-z]+", (user_full_name or "").lower())
+    pts = set(re.findall(r"[a-z]+", (payroll_name or "").lower()))
+    if not uts or not pts:
+        return False
+    ufirst, ulast = uts[0], uts[-1]
+    if ulast not in pts:
+        return False
+    aliases = _PAYROLL_FIRST_ALIASES.get(ufirst, set())
+    return any(t.startswith(ufirst) or ufirst.startswith(t) or t in aliases for t in pts)
+
+
 def _is_internal_project_or_client(project_name: str | None, client_name: str | None) -> bool:
     combined = " ".join([str(project_name or ""), str(client_name or "")]).strip().lower()
     internal_markers = [
@@ -4867,20 +4893,18 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
 
     users = {u.id: u for u in db.scalars(select(User)).all()}
     # Candidates = users who actually logged hours (avoids stale duplicate user records).
-    candidates = [(uid, _toks(users[uid].full_name)) for uid in hours
-                  if (hours[uid][0] + hours[uid][1]) > 0 and _toks(users[uid].full_name)]
+    candidates = [uid for uid in hours
+                  if (hours[uid][0] + hours[uid][1]) > 0 and (users[uid].full_name or "").strip()]
 
     cogs_labor = nonbillable = unallocated = bd_labor = 0.0
     by_emp: list[dict] = []
     for jn, ec in paycost.items():
-        jt = _toks(jn)
-        best_uid, best_n = None, 0
-        for uid, ut in candidates:
-            n = len(jt & ut)
-            if n > best_n:
-                best_n, best_uid = n, uid
-        if best_uid is None or best_n < 2:  # require BOTH names to match (first + last)
-            unallocated += ec  # e.g. "Off Cycle Payroll" header rows ($0), or truly unmatched
+        # Robust payroll->user match (handles Paychex-truncated / multi-surname names that
+        # the old token-intersection dropped into 'unallocated', e.g. "Welch Gilliam, Ai...").
+        best_uid = next((uid for uid in candidates
+                         if _payroll_name_matches_user(jn, users[uid].full_name)), None)
+        if best_uid is None:  # e.g. "Off Cycle Payroll" header rows ($0), or truly unmatched
+            unallocated += ec
             continue
         ch, oh = hours[best_uid]
         th = ch + oh
@@ -9658,28 +9682,11 @@ def salary_accrual_report(
                 if nm:
                     paid_by_name[nm] = paid_by_name.get(nm, 0.0) + float(r.get("gross", 0) or 0)
 
-    # Match payroll names ("Last, First", sometimes with a second surname or TRUNCATED by
-    # the Paychex PDF, e.g. "Welch Gilliam, Ai...") to a user by last name + first-name
-    # prefix (either direction), with a small alias map for legal-vs-preferred first names.
-    # (Plain token-subset failed on truncated / multi-surname names and dropped whole
-    # paychecks — e.g. it missed all of Ailsa's "Welch Gilliam, Ai..." rows.)
-    _first_aliases = {"roger": {"ruoqian"}, "ruoqian": {"roger"}}
-
-    def _name_tokens(s: str) -> list[str]:
-        return re.findall(r"[a-z]+", str(s).lower())
-
     def _paid_for(full_name: str) -> tuple[float, bool]:
-        uts = _name_tokens(full_name)
-        if not uts:
-            return 0.0, False
-        ufirst, ulast = uts[0], uts[-1]
-        aliases = _first_aliases.get(ufirst, set())
+        # Shared robust payroll->user matcher (handles Paychex-truncated / multi-surname names).
         total, matched = 0.0, False
         for nm, g in paid_by_name.items():
-            pts = set(_name_tokens(nm))
-            if ulast not in pts:  # last name must be present (anchor; avoids cross-matching)
-                continue
-            if any(t.startswith(ufirst) or ufirst.startswith(t) or t in aliases for t in pts):
+            if _payroll_name_matches_user(nm, full_name):
                 total += g
                 matched = True
         return total, matched
