@@ -9628,17 +9628,15 @@ def salary_accrual_report(
     unless it was actually run through payroll. `rate_known`/`payroll_matched` flag rows
     where a pay rate or a payroll match was missing, so the figure is never silently wrong.
     """
+    from sqlalchemy import text  # module scope doesn't import text (matches other endpoints)
     yr = int(year) or date.today().year
     jan, dec = date(yr, 1, 1), date(yr, 12, 31)
 
     # gross hourly pay rates (authoritative: finance.staff_rates.hourly_cost)
     rates: dict[str, float] = {}
-    try:
-        for fn, hc in db.execute(text("SELECT full_name, hourly_cost FROM finance.staff_rates")).all():
-            if fn:
-                rates[str(fn)] = float(hc or 0)
-    except Exception:
-        rates = {}
+    for fn, hc in db.execute(text("SELECT full_name, hourly_cost FROM finance.staff_rates")).all():
+        if fn:
+            rates[str(fn)] = float(hc or 0)
 
     # hours logged per user for the year
     hours_rows = db.execute(
