@@ -9708,7 +9708,7 @@ def salary_accrual_report(
         adj_by_name = {}
 
     rows: list[dict[str, object]] = []
-    t_earned = t_payroll = t_adj = t_accrued = 0.0
+    t_earned = t_payroll = t_adj = t_accrued = t_staff = t_owner = 0.0
     for uid, full_name, hrs in hours_rows:
         hrs = float(hrs or 0)
         rate = float(rates.get(full_name, 0.0))
@@ -9719,6 +9719,10 @@ def salary_accrual_report(
         if hrs == 0 and paid_total == 0:
             continue
         accrued = earned - paid_total
+        # The owner (Bertrand) is compensated via distributions + minimal W-2, so his big
+        # "accrued" is deferred owner comp (handled by the owner-comp reconciliation), NOT a
+        # near-term cash wage payable. Split it out so the staff back-wages liability is clear.
+        is_owner = (full_name or "").strip().lower().startswith("bertrand")
         rows.append({
             "user_id": uid,
             "name": full_name,
@@ -9731,11 +9735,14 @@ def salary_accrual_report(
             "accrued_balance": round(accrued, 2),
             "rate_known": rate > 0,
             "payroll_matched": matched,
+            "is_owner": is_owner,
         })
         t_earned += earned
         t_payroll += payroll
         t_adj += adj
         t_accrued += accrued
+        t_owner += accrued if is_owner else 0.0
+        t_staff += 0.0 if is_owner else accrued
     rows.sort(key=lambda r: float(r["accrued_balance"]), reverse=True)
     return {
         "year": yr,
@@ -9746,6 +9753,8 @@ def salary_accrual_report(
             "adjustments": round(t_adj, 2),
             "paid_total": round(t_payroll + t_adj, 2),
             "accrued_balance": round(t_accrued, 2),
+            "staff_accrued": round(t_staff, 2),   # non-owner back-wages (real liability)
+            "owner_accrued": round(t_owner, 2),   # deferred owner comp (distribution-covered)
         },
         "method": ("earned = hours logged x gross hourly pay rate (finance.staff_rates); "
                    "paid = payroll gross (Paychex + Gusto) plus owner-entered non-payroll comp "

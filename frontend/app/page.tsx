@@ -318,6 +318,9 @@ export default function AquatechPmHome() {
   const [payable, setPayable] = useState<AccountsPayable | null>(null);
   const [compPlan, setCompPlan] = useState<OwnerCompPlannerType | null>(null);
   const [unbilledHours, setUnbilledHours] = useState<UnbilledHoursReport | null>(null);
+  const [salaryAccrual, setSalaryAccrual] = useState<{
+    totals: { staff_accrued: number; owner_accrued: number; accrued_balance: number };
+  } | null>(null);
   const [wbsByProject, setWbsByProject] = useState<Record<number, ProjectWbs>>({});
   const [projectExpenses, setProjectExpenses] = useState<ProjectExpense[]>([]);
   const [bankCategorySummary, setBankCategorySummary] = useState<BankCategorySummaryRow[]>([]);
@@ -459,6 +462,12 @@ export default function AquatechPmHome() {
           .catch(() => setCompanyMonthHours(null));
       }
       if (deriveUserCapabilities(activeUser).canViewFinancials) {
+        // Fire-and-forget accrued-unpaid-salary totals for the dashboard tile.
+        apiGet<{ totals: { staff_accrued: number; owner_accrued: number; accrued_balance: number } }>(
+          "/reports/salary-accrual",
+        )
+          .then(setSalaryAccrual)
+          .catch(() => setSalaryAccrual(null));
         // Fire-and-forget YTD P&L for the dashboard net-income / margin tiles.
         // P&L + Business Health are period-driven; fetched by the finPeriod effect below.
         requests.push(apiGet<Invoice[]>("/invoices"));
@@ -1248,6 +1257,17 @@ export default function AquatechPmHome() {
                   <span>Unbilled hours (now) ↗</span>
                   <strong>{formatNumber(unbilledHours?.billable.totals.hours ?? 0, 1)}</strong>
                 </article>
+                {salaryAccrual ? (
+                  <article
+                    className="aq-lite-kpi"
+                    style={drillStyle}
+                    title={`Unpaid back-wages owed to staff (hours earned − paid, YTD). Owner deferred comp (${formatCurrency(salaryAccrual.totals.owner_accrued)}) is distribution-covered and tracked separately — View Payables & Owner →`}
+                    onClick={() => setWorkspace("payables")}
+                  >
+                    <span>Accrued staff wages ↗</span>
+                    <strong>{formatCurrency(salaryAccrual.totals.staff_accrued)}</strong>
+                  </article>
+                ) : null}
                 {businessHealth ? (
                   <>
                     <article className="aq-lite-kpi" style={drillStyle} title={netAfterSalary ? "Net income after your reasonable owner salary is expensed — View P&L →" : "Book net income (owner draws as distributions) — View P&L →"} onClick={() => setWorkspace("accounting")}>
