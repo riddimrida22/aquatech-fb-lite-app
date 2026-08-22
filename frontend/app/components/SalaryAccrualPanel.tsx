@@ -11,6 +11,8 @@ type AccrualRow = {
   hours: number;
   earned: number;
   paid_gross: number;
+  adjustments: number;
+  paid_total: number;
   accrued_balance: number;
   rate_known: boolean;
   payroll_matched: boolean;
@@ -18,7 +20,7 @@ type AccrualRow = {
 type AccrualReport = {
   year: number;
   rows: AccrualRow[];
-  totals: { earned: number; paid_gross: number; accrued_balance: number };
+  totals: { earned: number; paid_gross: number; adjustments: number; paid_total: number; accrued_balance: number };
   method: string;
 };
 
@@ -66,7 +68,10 @@ export function SalaryAccrualPanel() {
             {num(total)}
           </h3>
           <p className="aq-lite-muted" style={{ fontSize: 12, margin: "3px 0 0" }}>
-            {num(data.totals.earned)} earned − {num(data.totals.paid_gross)} paid (payroll gross)
+            {num(data.totals.earned)} earned − {num(data.totals.paid_total)} paid
+            {data.totals.adjustments > 0.01
+              ? ` (${num(data.totals.paid_gross)} payroll + ${num(data.totals.adjustments)} non-payroll)`
+              : " (payroll)"}
           </p>
         </div>
       </div>
@@ -103,7 +108,12 @@ export function SalaryAccrualPanel() {
                   </td>
                   <td style={{ textAlign: "right", padding: "7px 4px" }}>{formatNumber(r.hours, 1)}</td>
                   <td style={{ textAlign: "right", padding: "7px 4px" }}>{num(r.earned)}</td>
-                  <td style={{ textAlign: "right", padding: "7px 4px", color: "var(--aq-muted)" }}>{num(r.paid_gross)}</td>
+                  <td
+                    style={{ textAlign: "right", padding: "7px 4px", color: "var(--aq-muted)" }}
+                    title={r.adjustments > 0.01 ? `${num(r.paid_gross)} payroll + ${num(r.adjustments)} non-payroll comp` : undefined}
+                  >
+                    {num(r.paid_total)}{r.adjustments > 0.01 ? " *" : ""}
+                  </td>
                   <td style={{ textAlign: "right", padding: "7px 4px", fontWeight: 700, color: owed ? "#8a5b1f" : "#1f8a5b" }}>
                     {r.accrued_balance < 0 ? `(${num(Math.abs(r.accrued_balance))})` : num(r.accrued_balance)}
                   </td>
@@ -116,7 +126,7 @@ export function SalaryAccrualPanel() {
 
       <p className="aq-lite-muted" style={{ fontSize: 10.5, marginTop: 12, opacity: 0.8, lineHeight: 1.5 }}>
         {data.method} A negative (parenthesized) balance means paid more than earned-by-hours this year.
-        ⚠ = missing pay rate or no payroll match.
+        ⚠ = missing pay rate or no payroll match. * = paid includes owner-flagged non-payroll comp (e.g. Zelle).
       </p>
     </section>
   );

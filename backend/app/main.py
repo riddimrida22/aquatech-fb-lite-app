@@ -9671,38 +9671,62 @@ def salary_accrual_report(
                 matched = True
         return total, matched
 
+    # Owner-entered non-payroll comp adjustments (e.g. a specific Zelle counted as pay).
+    # These ADD to paid. Absence of the table must not break the report (supplemental).
+    adj_by_name: dict[str, float] = {}
+    try:
+        for fn, amt in db.execute(text(
+            "SELECT full_name, coalesce(sum(amount),0) FROM finance.comp_adjustments WHERE year=:y GROUP BY full_name"
+        ), {"y": yr}).all():
+            if fn:
+                adj_by_name[str(fn)] = float(amt or 0)
+    except Exception:
+        adj_by_name = {}
+
     rows: list[dict[str, object]] = []
-    t_earned = t_paid = t_accrued = 0.0
+    t_earned = t_payroll = t_adj = t_accrued = 0.0
     for uid, full_name, hrs in hours_rows:
         hrs = float(hrs or 0)
         rate = float(rates.get(full_name, 0.0))
         earned = hrs * rate
-        paid, matched = _paid_for(full_name or "")
-        if hrs == 0 and paid == 0:
+        payroll, matched = _paid_for(full_name or "")
+        adj = float(adj_by_name.get(full_name, 0.0))
+        paid_total = payroll + adj
+        if hrs == 0 and paid_total == 0:
             continue
-        accrued = earned - paid
+        accrued = earned - paid_total
         rows.append({
             "user_id": uid,
             "name": full_name,
             "hourly_rate": round(rate, 2),
             "hours": round(hrs, 1),
             "earned": round(earned, 2),
-            "paid_gross": round(paid, 2),
+            "paid_gross": round(payroll, 2),      # payroll only (Paychex + Gusto)
+            "adjustments": round(adj, 2),          # non-payroll comp counted as pay
+            "paid_total": round(paid_total, 2),
             "accrued_balance": round(accrued, 2),
             "rate_known": rate > 0,
             "payroll_matched": matched,
         })
         t_earned += earned
-        t_paid += paid
+        t_payroll += payroll
+        t_adj += adj
         t_accrued += accrued
     rows.sort(key=lambda r: float(r["accrued_balance"]), reverse=True)
     return {
         "year": yr,
         "rows": rows,
-        "totals": {"earned": round(t_earned, 2), "paid_gross": round(t_paid, 2), "accrued_balance": round(t_accrued, 2)},
+        "totals": {
+            "earned": round(t_earned, 2),
+            "paid_gross": round(t_payroll, 2),
+            "adjustments": round(t_adj, 2),
+            "paid_total": round(t_payroll + t_adj, 2),
+            "accrued_balance": round(t_accrued, 2),
+        },
         "method": ("earned = hours logged x gross hourly pay rate (finance.staff_rates); "
-                   "paid = payroll gross (Paychex journals). Payroll-based — excludes any "
-                   "non-payroll comp (1099 / owner draws / Zelle) unless run through payroll."),
+                   "paid = payroll gross (Paychex + Gusto) plus owner-entered non-payroll comp "
+                   "adjustments (finance.comp_adjustments). Other non-payroll transfers "
+                   "(reimbursements, un-flagged Zelle, owner draws) are excluded."),
     }
 
 
