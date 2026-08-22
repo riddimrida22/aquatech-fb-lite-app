@@ -10329,13 +10329,26 @@ def accounts_payable(
                 "description": f"SS+Medicare on ${reclassified:,.0f} of distributions reclassified to reach reasonable comp — cash already drawn, only the tax is owed.",
                 "category": "owner_tax",
             })
-    # employees genuinely behind -> full accumulated back-wages
+    # employees genuinely behind -> full accumulated back-wages. SINGLE SOURCE OF TRUTH =
+    # the salary-accrual report, so this A/P figure matches the Salary Accrual panel exactly
+    # (it counts every payroll check incl. the latest run, and owner-flagged non-payroll comp
+    # like the $1,500 Zelle — whereas the comp-reconciliation gap excludes a pay run whose
+    # pay date is after today and ignores non-payroll comp).
+    try:
+        _accr_by_first: dict[str, tuple[str, float]] = {}
+        for row in salary_accrual_report(year=today.year, db=db, _=_).get("rows", []):
+            nm2 = str(row.get("name") or "")
+            k = nm2.split()[0].lower() if nm2 else ""
+            if k:
+                _accr_by_first[k] = (nm2, float(row.get("accrued_balance") or 0.0))
+    except Exception:
+        _accr_by_first = {}
     for first in BACKWAGE_FIRST:
-        if gap_by_first.get(first, ("", 0.0))[1] > 0.01:
-            nm, g = gap_by_first[first]
+        nm, bal = _accr_by_first.get(first) or gap_by_first.get(first, ("", 0.0))
+        if bal > 0.01:
             items.append({
-                "entity": nm, "label": nm, "amount": round(g, 2),
-                "description": "Unpaid back-wages — accumulated YTD (earned − W-2 paid)",
+                "entity": nm, "label": nm, "amount": round(bal, 2),
+                "description": "Unpaid back-wages — accrued YTD (earned − paid, incl. non-payroll comp)",
                 "category": "salary",
             })
     # everyone else -> current week only (paid current through last pay run)
