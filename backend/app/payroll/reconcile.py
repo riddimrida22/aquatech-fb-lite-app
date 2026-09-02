@@ -59,8 +59,9 @@ def reconcile(pdf_path: str, db: Session, tax_year: int = 2026) -> dict:
             ytd_gross=Decimal(str(_ytd(db, emp.id, tax_year))),
             w4={"filing_status": emp.fed_filing_status, "step2": emp.fed_multiple_jobs,
                 "dependents_annual": emp.fed_dependents_amt, "extra_per_period": emp.fed_extra_withholding,
-                "ny_marital": ("married" if emp.fed_filing_status == "mfj" else "single"),
-                "ny_exemptions": emp.state_allowances,
+                "ny_marital": emp.ny_marital or "single", "ny_exemptions": emp.state_allowances,
+                "nyc_marital": emp.nyc_marital or emp.ny_marital or "single",
+                "nyc_exemptions": emp.nyc_allowances if emp.nyc_allowances is not None else emp.state_allowances,
                 "nj_exemptions": emp.state_allowances if emp.work_state == "NJ" else 0},
         )
         r = compute_employee(ei)

@@ -46,8 +46,12 @@ class PayrollEmployee(Base):
     fed_other_income: Mapped[float] = mapped_column(Float, default=0.0)           # 4a
     fed_deductions: Mapped[float] = mapped_column(Float, default=0.0)             # 4b
     fed_extra_withholding: Mapped[float] = mapped_column(Float, default=0.0)      # 4c
-    state_allowances: Mapped[int] = mapped_column(Integer, default=0)             # IT-2104 / NJ-W4
+    state_allowances: Mapped[int] = mapped_column(Integer, default=0)             # IT-2104 (NY) / NJ-W4
     state_extra_withholding: Mapped[float] = mapped_column(Float, default=0.0)
+    ny_marital: Mapped[str] = mapped_column(String(16), default="single")         # NY: single|married
+    # NYC allowances/status can differ from NY State on IT-2104 (line 2 vs line 1).
+    nyc_marital: Mapped[str | None] = mapped_column(String(16), nullable=True)    # falls back to ny_marital
+    nyc_allowances: Mapped[int | None] = mapped_column(Integer, nullable=True)    # falls back to state_allowances
 
     # Direct deposit (ENCRYPTED)
     bank_routing_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
