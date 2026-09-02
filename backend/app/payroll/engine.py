@@ -161,9 +161,22 @@ def _ny_income_tax(taxable_period: Decimal, e: EmployeeInput):
 
 
 def _nyc_income_tax(taxable_period: Decimal, e: EmployeeInput):
+    """NYC resident tax, NYS-50-T-NYC Method II (biweekly)."""
     if not T.NYC_WITHHOLDING:
-        return None  # TODO: NYS-50-T-NYC biweekly schedule
-    return None
+        return None
+    w = e.w4
+    marital = w.get("nyc_marital", w.get("ny_marital", "single"))
+    exempt = min(int(w.get("nyc_exemptions", w.get("ny_exemptions", 0))), 10)
+    allow = Decimal(str(T.NYC_WITHHOLDING["allowance_biweekly"][marital][exempt]))
+    net = taxable_period - allow
+    if net <= 0:
+        return Decimal("0.00")
+    sched = T.NYC_WITHHOLDING["schedule_biweekly"][marital]
+    col3 = rate = add = 0
+    for c3, r, a in sched:
+        if net >= c3:
+            col3, rate, add = c3, r, a
+    return cents((net - Decimal(str(col3))) * Decimal(str(rate)) + Decimal(str(add)))
 
 
 def _nj_income_tax(taxable_period: Decimal, e: EmployeeInput):

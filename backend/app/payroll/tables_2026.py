@@ -108,8 +108,17 @@ NY_WITHHOLDING: dict = {
     },
 }
 
-# NYC resident tax — NYS-50-T-NYC (separate pub). TODO: add biweekly exact-calc schedule.
-NYC_WITHHOLDING: dict = {}
+# --- NYC resident income tax: NYS-50-T-NYC (1/26) Method II (biweekly) ---
+# Low brackets are identical for single/married (only NYC residents withhold this).
+_NYC_SCHED = [(0, 0.0205, 0), (308, 0.0280, 6.31), (334, 0.0325, 7.08),
+              (577, 0.0395, 14.92), (962, 0.0415, 30.12), (2308, 0.0425, 86.00)]
+NYC_WITHHOLDING: dict = {
+    "allowance_biweekly": {
+        "single":  [192.30, 230.80, 269.30, 307.80, 346.30, 384.80, 423.30, 461.80, 500.30, 538.80, 577.30],
+        "married": [211.50, 250.00, 288.50, 327.00, 365.50, 404.00, 442.50, 481.00, 519.50, 558.00, 596.50],
+    },
+    "schedule_biweekly": {"single": _NYC_SCHED, "married": _NYC_SCHED},
+}
 
 # --- New Jersey income tax: NJ-WT percentage method, Rate Table A, BIWEEKLY ---
 # taxable = period wages (after 401k, which NJ excludes) minus $38.40 per allowance.

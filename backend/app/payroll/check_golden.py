@@ -49,7 +49,7 @@ def run_report() -> tuple[int, int, list[str]]:
             rows.append(f"  [{flag}] {emp['name'][:22]:22} {line:9} want {want:>9}  got {got}")
         # State income tax (reverse-engineered allowances) — reported with a 2-cent
         # tolerance (NY method/rounding + NJ rate-table selection are confirm-later).
-        for line in ("ny_inc", "nj_inc"):
+        for line in ("ny_inc", "nyc", "nj_inc"):
             if line in emp["withholdings"]:
                 want = Decimal(str(emp["withholdings"][line]))
                 got = res.lines.get(line)
@@ -95,6 +95,6 @@ if __name__ == "__main__":
     npass, nfail, rows = run_report()
     print("\n".join(rows))
     print(f"\n  IMPLEMENTED lines: {npass} PASS / {nfail} FAIL")
-    print("  STATE income tax implemented (NY + NJ), net pay computes -> both within ~2 cents (see OK~/NET rows).")
-    print("  PENDING: NYC resident tax (Stacey), Roger's NJ rate table (28c), YTD ledger for capped taxes,")
-    print("           and company employer experience rates (NY/NJ UI, FUTA).")
+    print("  Fed + NY + NYC + NJ income tax implemented; NET PAY for all 6 employees within ~2 cents.")
+    print("  PENDING: Roger's NJ rate table (28c residual), YTD ledger (exact FICA + capped FUTA/UI),")
+    print("           and company employer experience rates (NY/NJ UI). All flagged.")
