@@ -209,7 +209,8 @@ def _nj_income_tax(taxable_period: Decimal, e: EmployeeInput):
     net = taxable_period - Decimal(str(T.NJ_WITHHOLDING["allowance_biweekly"])) * exempt
     if net <= 0:
         return Decimal("0.00")
-    sched = T.NJ_WITHHOLDING["rate_A_biweekly"]
+    table = (w.get("nj_rate_table") or "A").upper()
+    sched = T.NJ_WITHHOLDING["tables_biweekly"].get(table, T.NJ_WITHHOLDING["tables_biweekly"]["A"])
     over = rate = add = 0
     for o, r, a in sched:
         if net >= o:
