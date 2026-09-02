@@ -47,10 +47,48 @@ ledger, not in this file. Golden-stub employer lines to reconcile once configure
   FUTA 4.33 (0.6% of remaining-under-$7k wages -> needs YTD)
 """
 
-# --- Income-tax tables (Fed Pub 15-T, NY NYS-50-T, NYC, NJ NJ-WT) ---
-# TODO(next): percentage-method brackets per filing status + pay frequency.
-# Requires each employee's W-4 / IT-2104 / NJ-W4 (the onboarding data) as inputs.
-FED_PERCENTAGE_METHOD: dict = {}   # TODO
-NY_WITHHOLDING: dict = {}          # TODO
-NYC_WITHHOLDING: dict = {}         # TODO
-NJ_WITHHOLDING: dict = {}          # TODO
+# --- Federal income tax: Pub 15-T (2026) percentage method, automated systems ---
+# Source: IRS Pub 15-T (2026), Worksheet 1A + Annual Percentage Method tables
+# (reflects OBBBA / P.L. 119-21). Rows: (lower_bound, base_tax, rate, exceeds).
+# "single" schedule also serves Married Filing Separately.
+PAY_PERIODS = {"weekly": 52, "biweekly": 26, "semimonthly": 24, "monthly": 12}
+
+# Worksheet 1A line 1g standard-deduction adjustment (Step 2 box UNCHECKED).
+# Step 2 checked -> 0 for all.
+FED_STD_ADJUST = {"single": 8600, "mfs": 8600, "mfj": 12900, "hoh": 12900}
+
+FED_PERCENTAGE_METHOD: dict = {
+    "standard": {  # Step 2 box NOT checked
+        "single": [(0, 0, 0.0, 0), (7500, 0, 0.10, 7500), (19900, 1240, 0.12, 19900),
+                   (57900, 5800, 0.22, 57900), (113200, 17966, 0.24, 113200),
+                   (209275, 41024, 0.32, 209275), (263725, 58448, 0.35, 263725),
+                   (648100, 192979.25, 0.37, 648100)],
+        "mfj": [(0, 0, 0.0, 0), (19300, 0, 0.10, 19300), (44100, 2480, 0.12, 44100),
+                (120100, 11600, 0.22, 120100), (230700, 35932, 0.24, 230700),
+                (422850, 82048, 0.32, 422850), (531750, 116896, 0.35, 531750),
+                (788000, 206583.50, 0.37, 788000)],
+        "hoh": [(0, 0, 0.0, 0), (15550, 0, 0.10, 15550), (33250, 1770, 0.12, 33250),
+                (83000, 7740, 0.22, 83000), (121250, 16155, 0.24, 121250),
+                (217300, 39207, 0.32, 217300), (271750, 56631, 0.35, 271750),
+                (656150, 191171, 0.37, 656150)],
+    },
+    "checkbox": {  # Form W-4 Step 2 checkbox CHECKED
+        "single": [(0, 0, 0.0, 0), (8050, 0, 0.10, 8050), (14250, 620, 0.12, 14250),
+                   (33250, 2900, 0.22, 33250), (60900, 8983, 0.24, 60900),
+                   (108938, 20512, 0.32, 108938), (136163, 29224, 0.35, 136163),
+                   (328350, 96489.63, 0.37, 328350)],
+        "mfj": [(0, 0, 0.0, 0), (16100, 0, 0.10, 16100), (28500, 1240, 0.12, 28500),
+                (66500, 5800, 0.22, 66500), (121800, 17966, 0.24, 121800),
+                (217875, 41024, 0.32, 217875), (272325, 58448, 0.35, 272325),
+                (400450, 103291.75, 0.37, 400450)],
+        "hoh": [(0, 0, 0.0, 0), (12075, 0, 0.10, 12075), (20925, 885, 0.12, 20925),
+                (45800, 3870, 0.22, 45800), (64925, 8077.50, 0.24, 64925),
+                (112950, 19603.50, 0.32, 112950), (140175, 28315.50, 0.35, 140175),
+                (332375, 95585.50, 0.37, 332375)],
+    },
+}
+
+# State income tax — TODO next: NY (NYS-50-T + NYC) and NJ (NJ-WT) tables + IT-2104/NJ-W4.
+NY_WITHHOLDING: dict = {}
+NYC_WITHHOLDING: dict = {}
+NJ_WITHHOLDING: dict = {}

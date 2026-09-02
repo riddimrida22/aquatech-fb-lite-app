@@ -18,7 +18,7 @@ from pathlib import Path
 from .engine import EmployeeInput, cents, company_totals, compute_employee
 
 GOLDEN = Path(__file__).parent / "golden" / "run_2026-08-21.json"
-IMPLEMENTED = {"ss", "medicare", "ny_sdi", "ny_pfl", "nj_sdi", "nj_ui", "nj_wf"}
+IMPLEMENTED = {"ss", "medicare", "fed", "ny_sdi", "ny_pfl", "nj_sdi", "nj_ui", "nj_wf"}
 
 
 def _load():
@@ -34,6 +34,7 @@ def run_report() -> tuple[int, int, list[str]]:
         ein = EmployeeInput(
             name=emp["name"], gross=emp["gross"], pretax_401k=emp["k401_ee"],
             state=emp["state"], nyc_resident=emp["nyc"], weeks=weeks,
+            w4=emp.get("w4", {}),
         )
         res = compute_employee(ein)
         results.append(res)
@@ -50,7 +51,7 @@ def run_report() -> tuple[int, int, list[str]]:
     # Company totals for implemented lines
     tot = company_totals(results)
     ct = g["company_totals"]
-    company_checks = [("ss", ct["ss"]), ("ny_sdi", ct["ny_sdi"]), ("ny_pfl", ct["ny_pfl"]),
+    company_checks = [("ss", ct["ss"]), ("fed", ct["fed"]), ("ny_sdi", ct["ny_sdi"]), ("ny_pfl", ct["ny_pfl"]),
                       ("nj_sdi", ct["nj_sdi"]), ("nj_ui", ct["nj_ui"]), ("nj_wf", ct["nj_wf"]),
                       ("gross", ct["gross"]), ("k401_ee", ct["k401_ee"])]
     rows.append("  --- company totals ---")
@@ -79,5 +80,5 @@ if __name__ == "__main__":
     npass, nfail, rows = run_report()
     print("\n".join(rows))
     print(f"\n  IMPLEMENTED lines: {npass} PASS / {nfail} FAIL")
-    print("  PENDING (need income-tax tables + W-4 onboarding): fed, ny_inc, nyc, nj_inc")
+    print("  PENDING (need state income-tax tables + W-4): ny_inc, nyc, nj_inc")
     print("  PENDING (need YTD ledger + company experience rates): FUTA, NY UI/RSF, NJ ER UI/SDI/WF, net")
