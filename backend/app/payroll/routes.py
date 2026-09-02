@@ -12,7 +12,7 @@ import tempfile
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -192,6 +192,21 @@ def onboard_import(body: ImportIn, db: Session = Depends(get_db), _: User = Depe
     """Import from a supplied workers payload (same shape as the Paychex API) —
     for migration from an export, or testing without a live Paychex connection."""
     return onboarding.import_workers(db, body.workers, dry_run=body.dry_run)
+
+
+# ----------------------------------------------------------------- reconciliation
+@router.post("/reconcile")
+def reconcile_endpoint(file: UploadFile = File(...), db: Session = Depends(get_db),
+                       _: User = Depends(PERM)):
+    """Upload a Paychex journal PDF; get the engine-vs-Paychex diff for that period."""
+    from . import reconcile as recon
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+        tf.write(file.file.read())
+        path = tf.name
+    try:
+        return recon.reconcile(path, db)
+    except Exception as ex:
+        raise HTTPException(400, f"Reconciliation failed: {ex}")
 
 
 # ----------------------------------------------------------------- YTD ledger
