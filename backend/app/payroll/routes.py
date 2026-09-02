@@ -145,6 +145,57 @@ def create_employee(body: EmployeeIn, db: Session = Depends(get_db), _: User = D
     return {"id": e.id}
 
 
+class EmployeeUpdate(BaseModel):
+    legal_name: str | None = None
+    pay_rate: float | None = None
+    is_salary: bool | None = None
+    work_state: str | None = None
+    nyc_resident: bool | None = None
+    k401_deferral_pct: float | None = None
+    k401_is_roth: bool | None = None
+    k401_er_match_pct: float | None = None
+    fed_filing_status: str | None = None
+    fed_multiple_jobs: bool | None = None
+    fed_dependents_amt: float | None = None
+    fed_extra_withholding: float | None = None
+    state_allowances: int | None = None
+    ny_marital: str | None = None
+    nyc_marital: str | None = None
+    nyc_allowances: int | None = None
+    nj_rate_table: str | None = None
+    is_active: bool | None = None
+
+
+@router.get("/employees/{emp_id}")
+def get_employee(emp_id: int, db: Session = Depends(get_db), _: User = Depends(PERM)):
+    e = db.get(PayrollEmployee, emp_id)
+    if not e:
+        raise HTTPException(404, "employee not found")
+    return {
+        "id": e.id, "legal_name": e.legal_name, "pay_rate": e.pay_rate, "is_salary": e.is_salary,
+        "work_state": e.work_state, "nyc_resident": e.nyc_resident,
+        "k401_deferral_pct": e.k401_deferral_pct, "k401_is_roth": e.k401_is_roth,
+        "k401_er_match_pct": e.k401_er_match_pct,
+        "fed_filing_status": e.fed_filing_status, "fed_multiple_jobs": e.fed_multiple_jobs,
+        "fed_dependents_amt": e.fed_dependents_amt, "fed_extra_withholding": e.fed_extra_withholding,
+        "state_allowances": e.state_allowances, "ny_marital": e.ny_marital,
+        "nyc_marital": e.nyc_marital, "nyc_allowances": e.nyc_allowances,
+        "nj_rate_table": e.nj_rate_table, "is_active": e.is_active,
+        "ssn_last4": crypto.last4(e.ssn_enc), "linked": e.user_id is not None,
+    }
+
+
+@router.put("/employees/{emp_id}")
+def update_employee(emp_id: int, body: EmployeeUpdate, db: Session = Depends(get_db), _: User = Depends(PERM)):
+    e = db.get(PayrollEmployee, emp_id)
+    if not e:
+        raise HTTPException(404, "employee not found")
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(e, k, v)
+    db.commit()
+    return {"ok": True, "id": e.id}
+
+
 @router.post("/employees/seed-sample")
 def seed_sample(db: Session = Depends(get_db), _: User = Depends(PERM)):
     existing = {e.legal_name for e in db.scalars(select(PayrollEmployee))}

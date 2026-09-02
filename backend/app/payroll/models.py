@@ -52,6 +52,7 @@ class PayrollEmployee(Base):
     # NYC allowances/status can differ from NY State on IT-2104 (line 2 vs line 1).
     nyc_marital: Mapped[str | None] = mapped_column(String(16), nullable=True)    # falls back to ny_marital
     nyc_allowances: Mapped[int | None] = mapped_column(Integer, nullable=True)    # falls back to state_allowances
+    nj_rate_table: Mapped[str] = mapped_column(String(1), default="A")            # NJ-W4 wage-chart letter A-E
 
     # Direct deposit (ENCRYPTED)
     bank_routing_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
