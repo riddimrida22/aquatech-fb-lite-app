@@ -57,6 +57,38 @@ ahead). **182 dated obligations Sep 2026 → early 2028.**
 - **EFTPS + state e-file enrollment** — enroll the company before first self-deposit.
 - **W-4 / IT-2104 / NJ-W4 on file** for every employee.
 
+## Cash management — pay just-in-time (keep your money until it's due)
+
+The calendar dates every **tax** deposit on the **latest legal due date** — never
+early. To hold the cash while never risking a late penalty:
+
+- **Schedule ahead, execute on the due date.** On payday, log into **EFTPS** (and
+  the NY/NJ portals) and schedule the deposit with an **execution date = the due
+  date**. The money leaves your account that day, not before. EFTPS lets you queue
+  payments up to a year out.
+- **Biggest lever = federal depositor status.** A **monthly** depositor pays by the
+  **15th of the following month** (holds the cash ~2–6 weeks); a **semiweekly**
+  depositor pays within days of payday. Confirm yours on the IRS deposit-schedule
+  notice (mailed each November) and set `FED_DEPOSIT_SCHEDULE`. The calendar
+  currently defaults to **semiweekly** (always-safe); switching to monthly, if
+  you qualify, is the single biggest float gain.
+- **NY (NYS-1)** — remit on the last allowed business day (3–5 days after hitting
+  $700 cumulative). **NJ (NJ-500)** — the 15th. Both dated at the latest legal day.
+- **401(k): split the two halves.**
+  - **Employee deferrals** (withheld from pay) are held in trust → deposit
+    **promptly** (~2 business days), never stretched for float.
+  - **Employer match** is *company money* → fund it **monthly** (calendar dates it
+    on the 15th) — or quarterly/annually. Limits: your **plan document** governs
+    the timing; a **safe-harbor** match not funded per-payroll must be in by the
+    **end of the following quarter**; and it's only **deductible** if funded by the
+    **1120-S deadline + extension**. Recordkeeper: **Human Interest** (confirm the
+    plan doc's stated cadence). Config: `K401_MATCH_SCHEDULE`.
+- Withheld income/FICA taxes are trust funds too, but the law lets you hold them
+  until the deposit due date, so scheduling to the due date is fine.
+
+Never late: a single late federal deposit penalty (2–15%) dwarfs the interest you'd
+earn holding the cash, so the reminders fire 2 days ahead and you pre-schedule.
+
 ## Using the calendar
 
 1. Import/subscribe to `AqtPM_Payroll_Compliance.ics` in Google Calendar or Outlook
