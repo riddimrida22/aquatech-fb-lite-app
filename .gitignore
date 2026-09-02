@@ -33,3 +33,6 @@ data/
 backups/
 *.dump
 invoicing/app/assets/signatures/_orig_backup/
+
+# Local payroll dev DB (encrypted SSNs + pay data — never commit)
+backend/payroll_dev.db
