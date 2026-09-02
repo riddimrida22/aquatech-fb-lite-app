@@ -1080,6 +1080,12 @@ export default function AquatechPmHome() {
               <small>Parallel-run vs Paychex</small>
             </a>
           ) : null}
+          {capabilities.canViewFinancials ? (
+            <a href="/payroll/employees" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
+              <span>Employees →</span>
+              <small>Tax setup / W-4</small>
+            </a>
+          ) : null}
           <a href="/payroll/me" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
             <span>My Pay Settings →</span>
             <small>401(k) + W-4</small>
