@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { apiGet, apiPut } from "../../../lib/api";
+import PayrollNav from "../PayrollNav";
 
 type Profile = {
   linked: boolean; id?: number; legal_name?: string; work_state?: string; nyc_resident?: boolean;
@@ -50,13 +51,18 @@ export default function MyTaxProfilePage() {
   if (!p) return <div style={{ padding: 24 }}>Loading…</div>;
   if (!p.linked)
     return (
-      <div style={{ padding: 24 }}>
+      <>
+      <PayrollNav active="me" />
+      <div style={{ padding: 24, maxWidth: 680, margin: "0 auto" }}>
         <h1>My Pay Settings</h1>
         <div style={{ ...card, background: "#fff8e1" }}>Your payroll record isn’t linked to your account yet. Ask the owner to link you, then refresh.</div>
       </div>
+      </>
     );
 
   return (
+    <>
+    <PayrollNav active="me" />
     <div style={{ maxWidth: 680, margin: "0 auto", padding: 24, fontSize: 14 }}>
       <h1 style={{ marginBottom: 2 }}>My Pay Settings</h1>
       <p style={{ color: "#666", marginTop: 0 }}>{p.legal_name} · {p.work_state}{p.nyc_resident ? " (NYC)" : ""} · rate ${p.pay_rate?.toFixed(2)}/hr</p>
@@ -109,5 +115,6 @@ export default function MyTaxProfilePage() {
 
       <button disabled={busy} onClick={save} style={{ padding: "8px 18px", fontSize: 15 }}>{busy ? "Saving…" : "Save my settings"}</button>
     </div>
+    </>
   );
 }

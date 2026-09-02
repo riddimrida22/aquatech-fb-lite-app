@@ -406,7 +406,21 @@ def preview(body: PreviewIn, db: Session = Depends(get_db), _: User = Depends(PE
                    "employer_taxes": _f(run.employer_taxes), "net": _f(run.net)},
         "journal": [{"account": l.account, "debit": _f(l.debit), "credit": _f(l.credit)} for l in jl],
         "journal_balanced": ok,
+        "cash_requirements": service.cash_requirements(run, body.check_date),
     }
+
+
+@router.get("/runs/{run_id}/cash-requirements")
+def run_cash_requirements(run_id: int, db: Session = Depends(get_db), _: User = Depends(PERM)):
+    run = db.get(PayrollRun, run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    lines = db.scalars(select(PayrollLine).where(PayrollLine.run_id == run_id)).all()
+    emps = {e.id: e for e in db.scalars(select(PayrollEmployee))}
+    inputs = [_emp_to_input(emps[l.employee_id], hours=0.0, gross=l.gross,
+                            ytd_gross=_ytd_gross(db, l.employee_id, run.tax_year)) for l in lines]
+    rr = service.compute_run(run.period_start, run.period_end, run.check_date, inputs, weeks=run.weeks)
+    return service.cash_requirements(rr, run.check_date)
 
 
 @router.post("/runs")

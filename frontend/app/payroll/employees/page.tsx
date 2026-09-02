@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { apiGet, apiPut } from "../../../lib/api";
+import PayrollNav from "../PayrollNav";
 
 type Emp = {
   id: number; legal_name: string; pay_rate: number; is_salary?: boolean;
@@ -51,6 +52,8 @@ export default function EditEmployeesPage() {
   const inp: React.CSSProperties = { width: 120, textAlign: "right" };
 
   return (
+    <>
+    <PayrollNav active="employees" />
     <div style={{ maxWidth: 760, margin: "0 auto", padding: 22, fontSize: 14 }}>
       <h1 style={{ marginBottom: 2 }}>Employees — Tax Setup (owner)</h1>
       <p style={{ color: "#666", marginTop: 0 }}>Edit any employee's pay rate, W-4, state allowances, and 401(k). Changes apply to their next run.</p>
@@ -124,5 +127,6 @@ export default function EditEmployeesPage() {
         </div>
       )}
     </div>
+    </>
   );
 }
