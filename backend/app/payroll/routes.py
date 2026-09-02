@@ -32,7 +32,7 @@ PERM = require_permission("MANAGE_PAYROLL")
 _SAMPLE = [
     ("Byrne, Dr Bertrand", 99.23, "NY", False, {"filing_status": "single"}),
     ("Gilliam, Zachary", 53.00, "NY", False, {"filing_status": "single", "ny_exemptions": 2}),
-    ("Hodge, Stacey", 52.50, "NY", True, {"filing_status": "mfj", "ny_marital": "married", "ny_exemptions": 6, "nyc_marital": "single"}),
+    ("Hodge, Stacey", 52.50, "NY", True, {"filing_status": "mfj", "ny_marital": "married", "ny_exemptions": 6, "nyc_marital": "single", "nyc_allowances": 0}),
     ("Svadlenka, Robert", 61.50, "NY", False, {"filing_status": "single", "ny_exemptions": 2}),
     ("Wang, Ruoqian", 90.00, "NJ", False, {"filing_status": "single", "extra_per_period": 38.16}),
     ("Welch Gilliam, Ailsa", 78.50, "NY", False, {"filing_status": "single"}),
@@ -84,8 +84,10 @@ def _emp_to_input(emp: PayrollEmployee, hours: float, gross: float | None,
         "step2": emp.fed_multiple_jobs,
         "dependents_annual": emp.fed_dependents_amt,
         "extra_per_period": emp.fed_extra_withholding,
-        "ny_marital": ("married" if emp.fed_filing_status == "mfj" else "single"),
+        "ny_marital": emp.ny_marital or "single",
         "ny_exemptions": emp.state_allowances,
+        "nyc_marital": emp.nyc_marital or emp.ny_marital or "single",
+        "nyc_exemptions": emp.nyc_allowances if emp.nyc_allowances is not None else emp.state_allowances,
         "nj_exemptions": emp.state_allowances if emp.work_state == "NJ" else 0,
     }
     return EmployeeInput(
@@ -155,7 +157,10 @@ def seed_sample(db: Session = Depends(get_db), _: User = Depends(PERM)):
             k401_deferral_pct=0.0, k401_er_match_pct=4.0,
             fed_filing_status=w4.get("filing_status", "single"),
             fed_extra_withholding=w4.get("extra_per_period", 0.0),
-            state_allowances=w4.get("ny_exemptions", 0), is_active=True))
+            state_allowances=w4.get("ny_exemptions", 0),
+            ny_marital=w4.get("ny_marital", "single"),
+            nyc_marital=w4.get("nyc_marital"), nyc_allowances=w4.get("nyc_allowances"),
+            is_active=True))
         created += 1
     db.commit()
     return {"created": created, "note": "PII (SSN/bank) not set; onboard via Paychex workers API later"}
