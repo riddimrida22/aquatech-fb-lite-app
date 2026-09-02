@@ -6,6 +6,7 @@ import { apiGet, apiPost } from "../../lib/api";
 type Employee = {
   id: number; legal_name: string; pay_rate: number; work_state: string;
   nyc_resident: boolean; k401_deferral_pct: number; k401_er_match_pct: number;
+  ssn_last4?: string | null; linked?: boolean;
 };
 type PreviewEmp = {
   employee_id: number; name: string; gross: number; pretax_401k: number;
@@ -61,6 +62,8 @@ export default function PayrollPage() {
     try { await fn(); } catch (e: any) { setErr(String(e.message || e)); } finally { setBusy(false); }
   }
   const doSeed = () => guard(async () => { const r = await apiPost<any>("/payroll/employees/seed-sample", {}); setMsg(`Seeded ${r.created} employees.`); await refresh(); });
+  const doOnboardPreview = () => guard(async () => { const r = await apiGet<any>("/payroll/onboard/paychex/preview"); setMsg(`Paychex preview: ${r.created} new, ${r.updated} existing — ${r.workers.map((w:any)=>w.legal_name+" (SSN ••"+(w.ssn_last4||"?")+")").join(", ")}`); });
+  const doOnboardImport = () => guard(async () => { const r = await apiPost<any>("/payroll/onboard/paychex", {}); setMsg(`Imported from Paychex: ${r.created} created, ${r.updated} updated, ${r.users_linked} linked.`); await refresh(); });
   const doPreview = () => guard(async () => { setPreview(await apiPost<Preview>("/payroll/preview", body())); setDetail(null); });
   const doCreate = () => guard(async () => { const r = await apiPost<any>("/payroll/runs", body()); setMsg(`Run #${r.id} created (draft).`); setPreview(null); await refresh(); });
   const openRun = (id: number) => guard(async () => { setDetail(await apiGet<any>(`/payroll/runs/${id}`)); setPreview(null); });
@@ -77,6 +80,15 @@ export default function PayrollPage() {
       <p style={{ color: "#666", marginTop: 0 }}>In-house payroll — preview, approve (dual-control), pay, and pay stubs. Owner-only.</p>
       {msg && <div style={{ ...card, background: "#e8f5e9", borderColor: "#a5d6a7" }}>{msg}</div>}
       {err && <div style={{ ...card, background: "#ffebee", borderColor: "#ef9a9a", whiteSpace: "pre-wrap" }}>{err}</div>}
+
+      <div style={card}>
+        <h3 style={{ marginTop: 0 }}>Onboarding</h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button disabled={busy} onClick={doOnboardPreview}>Preview from Paychex</button>
+          <button disabled={busy} onClick={doOnboardImport}>Import from Paychex</button>
+          <span style={{ color: "#777", fontSize: 12 }}>Pulls names, work state, DOB, hire date & SSN (stored encrypted). 401(k)/W-4 are set by each employee in <b>My Pay Settings</b>.</span>
+        </div>
+      </div>
 
       {employees.length === 0 && (
         <div style={card}>
@@ -95,13 +107,15 @@ export default function PayrollPage() {
             <label>Check date <input type="date" value={checkDate} onChange={(e) => setCheckDate(e.target.value)} /></label>
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={{ ...th, textAlign: "left" }}>Employee</th><th style={th}>Rate</th><th style={th}>State</th><th style={th}>Hours</th></tr></thead>
+            <thead><tr><th style={{ ...th, textAlign: "left" }}>Employee</th><th style={th}>Rate</th><th style={th}>State</th><th style={th}>SSN</th><th style={th}>Linked</th><th style={th}>Hours</th></tr></thead>
             <tbody>
               {employees.map((e) => (
                 <tr key={e.id}>
                   <td style={{ ...td, textAlign: "left" }}>{e.legal_name}</td>
                   <td style={td}>{money(e.pay_rate)}</td>
                   <td style={td}>{e.work_state}{e.nyc_resident ? " (NYC)" : ""}</td>
+                  <td style={td}>{e.ssn_last4 ? `••${e.ssn_last4}` : "—"}</td>
+                  <td style={td}>{e.linked ? "✓" : "—"}</td>
                   <td style={td}><input style={{ width: 70, textAlign: "right" }} value={hours[e.id] || ""} onChange={(ev) => setHours({ ...hours, [e.id]: ev.target.value })} placeholder="0" /></td>
                 </tr>
               ))}

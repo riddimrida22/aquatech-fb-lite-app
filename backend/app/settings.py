@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     SESSION_HTTPS_ONLY: bool = False
     SESSION_SAME_SITE: str = "lax"
     CORS_ALLOW_INTERNAL_REGEX: bool = True
+    # Payroll PII encryption (SSN, bank). A urlsafe-base64 32-byte Fernet key.
+    # If blank, a stable key is derived from SESSION_SECRET (fine for dev; set a
+    # dedicated key in prod). Generate: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+    PAYROLL_ENC_KEY: str = ""
     # AI Assistant ("Ask AqtPM") — natural-language company Q&A
     ANTHROPIC_API_KEY: str = ""
     ASSISTANT_MODEL: str = "claude-opus-4-8"
