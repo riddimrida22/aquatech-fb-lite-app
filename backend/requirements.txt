@@ -14,4 +14,5 @@ email-validator
 apscheduler
 pymupdf
 pypdf
+cryptography
 anthropic>=0.115
