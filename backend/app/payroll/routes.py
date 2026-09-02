@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from ..authz import get_current_user, require_permission
 from ..db import get_db
 from ..models import User
-from . import service
+from . import crypto, onboarding, service
 from .engine import EmployeeInput, EmployeeResult, cents
 from .models import PayrollEmployee, PayrollLine, PayrollRun
 from .stubs import render_stub_pdf
@@ -121,7 +121,9 @@ def list_employees(db: Session = Depends(get_db), _: User = Depends(PERM)):
     return [{"id": e.id, "legal_name": e.legal_name, "pay_rate": e.pay_rate,
              "work_state": e.work_state, "nyc_resident": e.nyc_resident,
              "k401_deferral_pct": e.k401_deferral_pct, "k401_er_match_pct": e.k401_er_match_pct,
-             "fed_filing_status": e.fed_filing_status, "state_allowances": e.state_allowances}
+             "fed_filing_status": e.fed_filing_status, "state_allowances": e.state_allowances,
+             "ssn_last4": crypto.last4(e.ssn_enc), "user_id": e.user_id,
+             "linked": e.user_id is not None}
             for e in rows]
 
 
@@ -148,6 +150,39 @@ def seed_sample(db: Session = Depends(get_db), _: User = Depends(PERM)):
         created += 1
     db.commit()
     return {"created": created, "note": "PII (SSN/bank) not set; onboard via Paychex workers API later"}
+
+
+# ----------------------------------------------------------------- onboarding (Paychex)
+class ImportIn(BaseModel):
+    workers: list[dict]
+    dry_run: bool = False
+
+
+@router.get("/onboard/paychex/preview")
+def onboard_preview(db: Session = Depends(get_db), _: User = Depends(PERM)):
+    """Dry-run: what the Paychex workers API would import (SSN shown as last-4 only)."""
+    try:
+        workers = onboarding.fetch_paychex_workers()
+    except Exception as ex:
+        raise HTTPException(400, f"Paychex fetch failed: {ex}")
+    return onboarding.import_workers(db, workers, dry_run=True)
+
+
+@router.post("/onboard/paychex")
+def onboard_paychex(db: Session = Depends(get_db), _: User = Depends(PERM)):
+    """Import employees from Paychex (encrypts SSN, links users). Owner-only."""
+    try:
+        workers = onboarding.fetch_paychex_workers()
+    except Exception as ex:
+        raise HTTPException(400, f"Paychex fetch failed: {ex}")
+    return onboarding.import_workers(db, workers, dry_run=False)
+
+
+@router.post("/onboard/import")
+def onboard_import(body: ImportIn, db: Session = Depends(get_db), _: User = Depends(PERM)):
+    """Import from a supplied workers payload (same shape as the Paychex API) —
+    for migration from an export, or testing without a live Paychex connection."""
+    return onboarding.import_workers(db, body.workers, dry_run=body.dry_run)
 
 
 # ----------------------------------------------------------------- staff self-service
