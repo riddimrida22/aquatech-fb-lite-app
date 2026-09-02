@@ -1074,6 +1074,12 @@ export default function AquatechPmHome() {
               <small>Preview · approve · pay · stubs</small>
             </a>
           ) : null}
+          {capabilities.canViewFinancials ? (
+            <a href="/payroll/reconcile" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
+              <span>Reconcile →</span>
+              <small>Parallel-run vs Paychex</small>
+            </a>
+          ) : null}
           <a href="/payroll/me" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
             <span>My Pay Settings →</span>
             <small>401(k) + W-4</small>

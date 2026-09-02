@@ -203,13 +203,29 @@ def onboard_import(body: ImportIn, db: Session = Depends(get_db), _: User = Depe
 @router.post("/reconcile")
 def reconcile_endpoint(file: UploadFile = File(...), db: Session = Depends(get_db),
                        _: User = Depends(PERM)):
-    """Upload a Paychex journal PDF; get the engine-vs-Paychex diff for that period."""
+    """Upload a Paychex journal PDF *or* the reports .zip; get the engine-vs-Paychex diff."""
+    import zipfile
     from . import reconcile as recon
+    data = file.file.read()
+    name = (file.filename or "").lower()
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-        tf.write(file.file.read())
+        if name.endswith(".zip") or data[:2] == b"PK":
+            try:
+                zf = zipfile.ZipFile(__import__("io").BytesIO(data))
+                pdfname = next((n for n in zf.namelist() if "PYRJRN" in n.upper() and n.lower().endswith(".pdf")),
+                              next((n for n in zf.namelist() if n.lower().endswith(".pdf")), None))
+                if not pdfname:
+                    raise HTTPException(400, "No PYRJRN PDF found in the zip")
+                tf.write(zf.read(pdfname))
+            except zipfile.BadZipFile:
+                raise HTTPException(400, "Uploaded file is not a valid zip")
+        else:
+            tf.write(data)
         path = tf.name
     try:
         return recon.reconcile(path, db)
+    except HTTPException:
+        raise
     except Exception as ex:
         raise HTTPException(400, f"Reconciliation failed: {ex}")
 
