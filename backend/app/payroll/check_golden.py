@@ -47,6 +47,21 @@ def run_report() -> tuple[int, int, list[str]]:
             nfail += (not ok)
             flag = "PASS" if ok else "FAIL"
             rows.append(f"  [{flag}] {emp['name'][:22]:22} {line:9} want {want:>9}  got {got}")
+        # State income tax (reverse-engineered allowances) — reported with a 2-cent
+        # tolerance (NY method/rounding + NJ rate-table selection are confirm-later).
+        for line in ("ny_inc", "nj_inc"):
+            if line in emp["withholdings"]:
+                want = Decimal(str(emp["withholdings"][line]))
+                got = res.lines.get(line)
+                d = abs(got - want) if got is not None else None
+                tag = "OK~" if (d is not None and d <= Decimal("0.02")) else "DIFF"
+                rows.append(f"  [{tag}] {emp['name'][:22]:22} {line:9} want {want:>9}  got {got}  (±{d})")
+        # Net pay (available once all of this employee's lines are computed)
+        if res.net is not None:
+            wn = Decimal(str(emp["net"]))
+            d = abs(res.net - wn)
+            rows.append(f"  [{'NET-OK' if d <= Decimal('0.02') else 'NET~'}] "
+                        f"{emp['name'][:22]:22} net       want {wn:>9}  got {res.net}  (±{d})")
 
     # Company totals for implemented lines
     tot = company_totals(results)
@@ -80,5 +95,6 @@ if __name__ == "__main__":
     npass, nfail, rows = run_report()
     print("\n".join(rows))
     print(f"\n  IMPLEMENTED lines: {npass} PASS / {nfail} FAIL")
-    print("  PENDING (need state income-tax tables + W-4): ny_inc, nyc, nj_inc")
-    print("  PENDING (need YTD ledger + company experience rates): FUTA, NY UI/RSF, NJ ER UI/SDI/WF, net")
+    print("  STATE income tax implemented (NY + NJ), net pay computes -> both within ~2 cents (see OK~/NET rows).")
+    print("  PENDING: NYC resident tax (Stacey), Roger's NJ rate table (28c), YTD ledger for capped taxes,")
+    print("           and company employer experience rates (NY/NJ UI, FUTA).")

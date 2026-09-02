@@ -140,22 +140,48 @@ def _fed_income_tax(taxable_period: Decimal, e: EmployeeInput):
     return cents(per_period)
 
 
-def _ny_income_tax(taxable: Decimal, e: EmployeeInput):
+def _ny_income_tax(taxable_period: Decimal, e: EmployeeInput):
+    """NY State, NYS-50-T-NYS Method II (biweekly). taxable_period = wages after 401k."""
     if not T.NY_WITHHOLDING:
         return None
-    raise NotImplementedError
+    w = e.w4
+    marital = w.get("ny_marital", "single")
+    exempt = min(int(w.get("ny_exemptions", 0)), 10)
+    allow = Decimal(str(T.NY_WITHHOLDING["allowance_biweekly"][marital][exempt]))
+    net = taxable_period - allow
+    if net <= 0:
+        return Decimal("0.00")
+    sched = T.NY_WITHHOLDING["schedule_biweekly"][marital]
+    col3 = rate = add = 0
+    for c3, r, a in sched:
+        if net >= c3:
+            col3, rate, add = c3, r, a
+    wh = (net - Decimal(str(col3))) * Decimal(str(rate)) + Decimal(str(add))
+    return cents(wh + Decimal(str(w.get("ny_extra_per_period", 0) or 0)))
 
 
-def _nyc_income_tax(taxable: Decimal, e: EmployeeInput):
+def _nyc_income_tax(taxable_period: Decimal, e: EmployeeInput):
     if not T.NYC_WITHHOLDING:
-        return None
-    raise NotImplementedError
+        return None  # TODO: NYS-50-T-NYC biweekly schedule
+    return None
 
 
-def _nj_income_tax(taxable: Decimal, e: EmployeeInput):
+def _nj_income_tax(taxable_period: Decimal, e: EmployeeInput):
+    """NJ, NJ-WT Rate Table A (biweekly). taxable = wages after 401k minus allowances."""
     if not T.NJ_WITHHOLDING:
         return None
-    raise NotImplementedError
+    w = e.w4
+    exempt = int(w.get("nj_exemptions", 0))
+    net = taxable_period - Decimal(str(T.NJ_WITHHOLDING["allowance_biweekly"])) * exempt
+    if net <= 0:
+        return Decimal("0.00")
+    sched = T.NJ_WITHHOLDING["rate_A_biweekly"]
+    over = rate = add = 0
+    for o, r, a in sched:
+        if net >= o:
+            over, rate, add = o, r, a
+    wh = (net - Decimal(str(over))) * Decimal(str(rate)) + Decimal(str(add))
+    return cents(wh + Decimal(str(w.get("nj_extra_per_period", 0) or 0)))
 
 
 def company_totals(results: list[EmployeeResult]) -> dict[str, Decimal]:
