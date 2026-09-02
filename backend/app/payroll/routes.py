@@ -22,7 +22,7 @@ from ..db import get_db
 from ..models import User
 from . import crypto, onboarding, service
 from .engine import EmployeeInput, EmployeeResult, cents
-from .models import PayrollEmployee, PayrollLine, PayrollRun
+from .models import PayrollEmployee, PayrollLine, PayrollRun, PayrollYtd
 from .stubs import render_stub_pdf
 
 router = APIRouter(prefix="/payroll", tags=["payroll"])
@@ -70,7 +70,14 @@ class EmployeeIn(BaseModel):
 
 
 # ----------------------------------------------------------------- helpers
-def _emp_to_input(emp: PayrollEmployee, hours: float, gross: float | None) -> EmployeeInput:
+def _ytd_gross(db: Session, employee_id: int, tax_year: int) -> float:
+    row = db.scalar(select(PayrollYtd).where(PayrollYtd.employee_id == employee_id,
+                                             PayrollYtd.tax_year == tax_year))
+    return float(row.ytd_gross) if row else 0.0
+
+
+def _emp_to_input(emp: PayrollEmployee, hours: float, gross: float | None,
+                  ytd_gross: float = 0.0) -> EmployeeInput:
     g = Decimal(str(gross)) if gross is not None else Decimal(str(emp.pay_rate)) * Decimal(str(hours))
     w4 = {
         "filing_status": emp.fed_filing_status,
@@ -86,6 +93,7 @@ def _emp_to_input(emp: PayrollEmployee, hours: float, gross: float | None) -> Em
         pretax_401k=cents(g * Decimal(str(emp.k401_deferral_pct)) / 100),
         state=emp.work_state, nyc_resident=emp.nyc_resident,
         k401_er_match_pct=Decimal(str(emp.k401_er_match_pct)), w4=w4,
+        ytd_gross=Decimal(str(ytd_gross)),
     )
 
 
@@ -107,7 +115,8 @@ def _run_result_from_entries(db: Session, body: PreviewIn) -> tuple[service.RunR
         emp = emps.get(entry.employee_id)
         if not emp:
             raise HTTPException(404, f"employee {entry.employee_id} not found")
-        inputs.append(_emp_to_input(emp, entry.hours, entry.gross))
+        inputs.append(_emp_to_input(emp, entry.hours, entry.gross,
+                                    ytd_gross=_ytd_gross(db, emp.id, body.check_date.year)))
         order.append(emp.id)
     run = service.compute_run(body.period_start, body.period_end, body.check_date,
                               inputs, weeks=body.weeks)
@@ -183,6 +192,36 @@ def onboard_import(body: ImportIn, db: Session = Depends(get_db), _: User = Depe
     """Import from a supplied workers payload (same shape as the Paychex API) —
     for migration from an export, or testing without a live Paychex connection."""
     return onboarding.import_workers(db, body.workers, dry_run=body.dry_run)
+
+
+# ----------------------------------------------------------------- YTD ledger
+class YtdSeed(BaseModel):
+    employee_id: int
+    ytd_gross: float
+    tax_year: int = 2026
+
+
+@router.get("/ytd")
+def list_ytd(tax_year: int = 2026, db: Session = Depends(get_db), _: User = Depends(PERM)):
+    rows = db.scalars(select(PayrollYtd).where(PayrollYtd.tax_year == tax_year)).all()
+    return [{"employee_id": r.employee_id, "ytd_gross": r.ytd_gross} for r in rows]
+
+
+@router.post("/ytd/seed")
+def seed_ytd(items: list[YtdSeed], db: Session = Depends(get_db), _: User = Depends(PERM)):
+    """Set each employee's starting YTD (from their last Paychex stub) for a mid-year
+    cutover, so wage-base caps (FUTA, SS, NY/NJ UI) compute correctly."""
+    n = 0
+    for it in items:
+        row = db.scalar(select(PayrollYtd).where(PayrollYtd.employee_id == it.employee_id,
+                                                 PayrollYtd.tax_year == it.tax_year))
+        if not row:
+            row = PayrollYtd(employee_id=it.employee_id, tax_year=it.tax_year, ytd_gross=0.0)
+            db.add(row)
+        row.ytd_gross = it.ytd_gross
+        n += 1
+    db.commit()
+    return {"seeded": n}
 
 
 # ----------------------------------------------------------------- staff self-service
@@ -333,7 +372,8 @@ def pay(run_id: int, db: Session = Depends(get_db), user: User = Depends(PERM)):
     inputs, order = [], []
     for l in lines:
         emp = emps[l.employee_id]
-        inputs.append(_emp_to_input(emp, hours=0.0, gross=l.gross))
+        inputs.append(_emp_to_input(emp, hours=0.0, gross=l.gross,
+                                    ytd_gross=_ytd_gross(db, l.employee_id, run.tax_year)))
         order.append(l.employee_id)
     rr = service.compute_run(run.period_start, run.period_end, run.check_date, inputs, weeks=run.weeks)
     for r, eid in zip(rr.results, order):

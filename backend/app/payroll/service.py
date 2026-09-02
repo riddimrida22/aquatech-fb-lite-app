@@ -59,9 +59,13 @@ class RunResult:
 
     @property
     def employer_taxes(self) -> Decimal:
-        base = sum((v for r in self.results for k, v in r.employer.items()
-                    if k in ("ss", "medicare") and v is not None), Decimal("0"))
-        return base + sum(self.employer_extra.values(), Decimal("0"))
+        # every employer-side tax (ss, medicare, futa, ny_ui, ny_rsf, nj_*) except the 401k match
+        total = Decimal("0")
+        for r in self.results:
+            for k, v in r.employer.items():
+                if k != "k401_er" and v is not None:
+                    total += v
+        return total + sum(self.employer_extra.values(), Decimal("0"))
 
 
 def compute_run(period_start: date, period_end: date, check_date: date,
@@ -157,10 +161,16 @@ def mark_paid(db, run, run_result: RunResult) -> list[JournalLine]:
         "journal": [{"account": l.account, "debit": str(l.debit), "credit": str(l.credit)} for l in journal],
     })
     run.status = "paid"
-    # advance YTD ledger
+    # advance YTD ledger (accumulate per employee + year)
+    from sqlalchemy import select as _select
     for r in run_result.results:
-        row = PayrollYtd(employee_id=getattr(r, "employee_id", 0) or 0, tax_year=run.tax_year,
-                         ytd_gross=float(r.gross))
-        db.add(row)
+        eid = getattr(r, "employee_id", 0) or 0
+        row = db.scalar(_select(PayrollYtd).where(PayrollYtd.employee_id == eid,
+                                                  PayrollYtd.tax_year == run.tax_year))
+        if not row:
+            row = PayrollYtd(employee_id=eid, tax_year=run.tax_year, ytd_gross=0.0)
+            db.add(row)
+        row.ytd_gross = float(row.ytd_gross or 0) + float(r.gross)
+        row.updated_at = datetime.utcnow()
     db.flush()
     return journal

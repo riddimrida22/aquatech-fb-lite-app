@@ -50,6 +50,9 @@ class EmployeeInput:
     def __post_init__(self):
         self.gross = Decimal(str(self.gross))
         self.pretax_401k = Decimal(str(self.pretax_401k))
+        self.ytd_gross = Decimal(str(self.ytd_gross))
+        self.ytd_ss_wages = Decimal(str(self.ytd_ss_wages))
+        self.k401_er_match_pct = Decimal(str(self.k401_er_match_pct))
 
 
 @dataclass
@@ -76,6 +79,20 @@ def compute_employee(e: EmployeeInput) -> EmployeeResult:
     # Employer 401(k) match (company money; stub = 4% of gross)
     if e.k401_er_match_pct:
         er["k401_er"] = cents(e.gross * Decimal(str(e.k401_er_match_pct)) / Decimal("100"))
+
+    # Employer experience-rated + FUTA — wage-base capped by YTD wages.
+    def _cap(base) -> Decimal:
+        return min(e.gross, max(Decimal("0"), Decimal(str(base)) - e.ytd_gross))
+    R = T.COMPANY_ER_RATES
+    er["futa"] = cents(_cap(T.FUTA_WAGE_BASE) * Decimal(str(R["futa"])))
+    if e.state == "NY":
+        ny_ui_w = _cap(T.NY_UI_WAGE_BASE)
+        er["ny_ui"] = cents(ny_ui_w * Decimal(str(R["ny_ui"])))
+        er["ny_rsf"] = cents(ny_ui_w * Decimal(str(R["ny_rsf"])))
+    elif e.state == "NJ":
+        er["nj_ui"] = cents(_cap(T.NJ_UI_WAGE_BASE) * Decimal(str(R["nj_ui"])))
+        er["nj_sdi"] = cents(_cap(T.NJ_TDI_ER_WAGE_BASE) * Decimal(str(R["nj_tdi"])))
+        er["nj_wf"] = cents(_cap(T.NJ_UI_WAGE_BASE) * Decimal(str(R["nj_wf"])))
     # (Additional Medicare over $200k YTD — none of the current roster is close.)
 
     # --- State employee statutory items (uncapped for this roster / period) ---

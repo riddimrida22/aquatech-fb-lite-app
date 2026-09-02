@@ -38,14 +38,23 @@ NJ_UI_EE_WAGE_BASE = 43_300    # VERIFY 2026
 # NJ FLI (family leave) did not appear on the stub for this employee this run;
 # add NJ_FLI_EE_RATE + base once confirmed for 2026.
 
-EMPLOYER_RATE_NOTES = """
-Employer UI/SDI are EXPERIENCE-RATED (per-employer, from the annual state rate
-notice) and wage-base capped, so they live in company config + need the YTD
-ledger, not in this file. Golden-stub employer lines to reconcile once configured:
-  NY Unemploy 39.10, NY Re-empl Svc (RSF 0.075%) 1.61   (NY UI base ~ VERIFY)
-  NJ Disability(ER) 15.30 (~0.50%), NJ Unemploy(ER) 82.08 (~2.6824%), NJ ER Work Dev 3.60
-  FUTA 4.33 (0.6% of remaining-under-$7k wages -> needs YTD)
-"""
+# --- Employer experience-rated taxes (COMPANY-SPECIFIC; from state rate notices) ---
+# Wage-base capped -> the engine applies these against YTD-remaining wages.
+# Rates marked DERIVED were reverse-engineered from the golden stub (Roger, who is
+# under all NJ bases so his rates apply to full gross); confirm all vs the 2026
+# NY/NJ employer rate notices before go-live.
+NY_UI_WAGE_BASE = 12_800          # VERIFY 2026 NY UI base
+NJ_UI_WAGE_BASE = 43_300          # VERIFY 2026 NJ UI/WF base
+NJ_TDI_ER_WAGE_BASE = 45_200      # VERIFY 2026 NJ employer TDI base
+
+COMPANY_ER_RATES = {
+    "futa": 0.006,                # 0.6% on first $7,000 (federal)
+    "ny_ui": 0.0405,              # NY employer UI experience rate — VERIFY (placeholder)
+    "ny_rsf": 0.00075,            # NY Re-employment Service Fund 0.075%
+    "nj_ui": 0.026824,            # DERIVED (Roger 82.08/3060) — VERIFY notice
+    "nj_tdi": 0.0050,             # DERIVED (15.30/3060) — VERIFY
+    "nj_wf": 0.001176,            # DERIVED (3.60/3060) — VERIFY
+}
 
 # --- Federal income tax: Pub 15-T (2026) percentage method, automated systems ---
 # Source: IRS Pub 15-T (2026), Worksheet 1A + Annual Percentage Method tables
