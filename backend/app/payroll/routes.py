@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
@@ -379,6 +379,21 @@ def link_employee_user(emp_id: int, user_id: int, db: Session = Depends(get_db),
 
 
 # ----------------------------------------------------------------- run workflow
+@router.get("/next-period")
+def next_period(db: Session = Depends(get_db), _: User = Depends(PERM)):
+    """The next biweekly pay period to run: the day after the last run's period,
+    14-day period, check date 5 days after period end. Falls back to a 2026 anchor."""
+    last = db.scalar(select(PayrollRun).order_by(PayrollRun.period_end.desc()))
+    if last:
+        start = last.period_end + timedelta(days=1)
+    else:
+        start = date(2026, 8, 31)  # anchor: first period after the seed data
+    end = start + timedelta(days=13)
+    check = end + timedelta(days=5)
+    return {"period_start": str(start), "period_end": str(end), "check_date": str(check)}
+
+
+
 @router.post("/preview")
 def preview(body: PreviewIn, db: Session = Depends(get_db), _: User = Depends(PERM)):
     run, order = _run_result_from_entries(db, body)
