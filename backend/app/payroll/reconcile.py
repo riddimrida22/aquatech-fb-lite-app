@@ -62,7 +62,8 @@ def reconcile(pdf_path: str, db: Session, tax_year: int = 2026) -> dict:
                 "ny_marital": emp.ny_marital or "single", "ny_exemptions": emp.state_allowances,
                 "nyc_marital": emp.nyc_marital or emp.ny_marital or "single",
                 "nyc_exemptions": emp.nyc_allowances if emp.nyc_allowances is not None else emp.state_allowances,
-                "nj_exemptions": emp.state_allowances if emp.work_state == "NJ" else 0},
+                "nj_exemptions": emp.state_allowances if emp.work_state == "NJ" else 0,
+                "nj_rate_table": emp.nj_rate_table or "A"},
         )
         r = compute_employee(ei)
         for k in _TAX_KEYS:

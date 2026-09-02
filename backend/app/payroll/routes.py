@@ -89,6 +89,7 @@ def _emp_to_input(emp: PayrollEmployee, hours: float, gross: float | None,
         "nyc_marital": emp.nyc_marital or emp.ny_marital or "single",
         "nyc_exemptions": emp.nyc_allowances if emp.nyc_allowances is not None else emp.state_allowances,
         "nj_exemptions": emp.state_allowances if emp.work_state == "NJ" else 0,
+        "nj_rate_table": emp.nj_rate_table or "A",
     }
     return EmployeeInput(
         name=emp.legal_name, gross=g,
