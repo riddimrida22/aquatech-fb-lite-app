@@ -24,13 +24,25 @@ FED_DEPOSIT_SCHEDULE = "semiweekly"   # "semiweekly" | "monthly". Default to the
 NJ_WH_DEPOSIT = "monthly"             # Roger ~$3k/yr NJ WH -> monthly (by 15th). VERIFY
 NY_NYS1_THRESHOLD = 700.0             # NY: remit (NYS-1) within 5 business days once
 #   cumulative withholding since last remittance reaches $700. VERIFY 3 vs 5 days.
-K401_DEPOSIT_BIZ_DAYS = 7             # DOL small-plan safe harbor: deposit deferrals
-#   within 7 business days of payday. (Best practice: same/next day.)
+K401_DEPOSIT_BIZ_DAYS = 2             # 401k deferrals are EMPLOYEE money held in
+#   trust -> deposit PROMPTLY (fiduciary duty). Do NOT stretch to the 7-day DOL
+#   safe-harbor limit to hold float; just-in-time applies to *your* taxes, not this.
+
+# CASH MANAGEMENT (just-in-time): all *tax* deposits below are dated on the LATEST
+# legal due date. On payday, SCHEDULE the payment in EFTPS / the state portal with
+# an execution date = the due date -> cash stays in your account until then and you
+# never risk being late. Never pay early; never late. Biggest float lever = federal
+# DEPOSITOR STATUS: monthly (pay by the 15th of the following month, holds ~2-6 wks)
+# vs semiweekly (a few days). Confirm from the IRS notice; set FED_DEPOSIT_SCHEDULE.
 MCTMT_APPLIES = False                 # NY MCTMT employer tax applies only if MCTD
 #   quarterly payroll > $312,500. AqtPM ~ $81k/qtr -> EXEMPT. Re-check if headcount grows.
 HAS_NJ = True                         # Roger Wang
 FILES_1099 = False                    # all W-2 currently; set True if any contractor
 PLAN_5500_REQUIRED = True             # 401k plan -> Form 5500-EZ/SF (VERIFY which; assets/participants)
+K401_MATCH_SCHEDULE = "monthly"       # EMPLOYER match funding cadence: "per_payroll"|"monthly"|
+#   "quarterly". Company money -> flexible. Limits: (1) plan document's stated timing GOVERNS;
+#   (2) safe-harbor match not funded per-payroll must be in by end of the FOLLOWING quarter;
+#   (3) deduct only if funded by the 1120-S deadline + extension. Recordkeeper: Human Interest.
 
 # Biweekly pay schedule anchor: a known real check date; paydays every 14 days.
 PAY_ANCHOR = date(2026, 8, 21)        # Friday, from the golden-stub run
@@ -117,15 +129,21 @@ def generate(start: date, end: date) -> list[Obligation]:
             obs.append(Obligation(_semiweekly_fed_due(pd),
                                   "Federal 941 tax deposit (EFTPS)", "Federal", "deposit",
                                   "Deposit withheld fed income tax + both halves FICA via EFTPS "
-                                  "(semiweekly: Wed/Thu/Fri payday -> next Wed; else next Fri)."))
+                                  "(semiweekly: Wed/Thu/Fri payday -> next Wed; else next Fri). "
+                                  "SCHEDULE in EFTPS on payday to execute on THIS date - hold cash "
+                                  "until due, never early, never late."))
         obs.append(Obligation(add_biz_days(pd, 5),
                               "NY withholding remittance (NYS-1)", "NY", "deposit",
                               f"Remit NY (incl. NYC resident) withholding via NYS-1 within 5 business "
                               f"days once cumulative >= ${NY_NYS1_THRESHOLD:.0f}. VERIFY 3 vs 5 days."))
         obs.append(Obligation(add_biz_days(pd, K401_DEPOSIT_BIZ_DAYS),
-                              "401(k) deferral deposit", "401k", "deposit",
-                              "Send employee deferrals + employer match to the recordkeeper "
-                              "(DOL small-plan safe harbor: within 7 business days of payday)."))
+                              "401(k) employee deferral deposit", "401k", "deposit",
+                              "Send EMPLOYEE deferrals to the recordkeeper (Human Interest) PROMPTLY "
+                              "- employee money held in trust; do NOT stretch for float."))
+        if K401_MATCH_SCHEDULE == "per_payroll":
+            obs.append(Obligation(add_biz_days(pd, K401_DEPOSIT_BIZ_DAYS),
+                                  "401(k) EMPLOYER match funding (per payroll)", "401k", "deposit",
+                                  "Fund the employer match with this run (company money)."))
 
     # ---- monthly ----
     y = start.year
@@ -140,6 +158,11 @@ def generate(start: date, end: date) -> list[Obligation]:
                 if HAS_NJ and NJ_WH_DEPOSIT == "monthly":
                     obs.append(Obligation(due, "NJ withholding deposit (NJ-500)", "NJ", "deposit",
                                           "Remit prior month's NJ gross income tax withheld (monthly filer)."))
+                if K401_MATCH_SCHEDULE == "monthly":
+                    obs.append(Obligation(due, "401(k) EMPLOYER match funding (monthly)", "401k", "deposit",
+                                          "Fund the employer match for the prior month (company money - flexible). "
+                                          "Plan document governs timing; safe-harbor match: by end of following "
+                                          "quarter; deductible if funded by the 1120-S deadline + extension."))
         y += 1
 
     # ---- quarterly ----
@@ -166,6 +189,13 @@ def generate(start: date, end: date) -> list[Obligation]:
                 if _in(nj_due):
                     obs.append(Obligation(nj_due, f"NJ-927 + WR-30 (Q{q}) - NJ quarterly", "NJ", "filing",
                                           "NJ employer's quarterly return (WH + UI/DI) and wage report (30th)."))
+            if K401_MATCH_SCHEDULE == "quarterly":
+                # safe-harbor match: fund by end of the FOLLOWING quarter
+                match_due = next_biz(_last_of_next_month(_quarter_ends(qend.year + (q == 4))[q % 4]))
+                if _in(match_due):
+                    obs.append(Obligation(match_due, f"401(k) EMPLOYER match funding (Q{q})", "401k", "deposit",
+                                          "Fund the employer match for the quarter (company money; safe-harbor "
+                                          "match must be in by end of the following quarter)."))
 
     # ---- annual ----
     for yr in range(start.year, end.year + 1):
