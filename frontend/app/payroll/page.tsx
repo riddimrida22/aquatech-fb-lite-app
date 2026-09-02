@@ -31,9 +31,9 @@ export default function PayrollPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [hours, setHours] = useState<Record<number, string>>({});
-  const [periodStart, setPeriodStart] = useState("2026-08-03");
-  const [periodEnd, setPeriodEnd] = useState("2026-08-16");
-  const [checkDate, setCheckDate] = useState("2026-08-21");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
+  const [checkDate, setCheckDate] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [detail, setDetail] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,11 +42,14 @@ export default function PayrollPage() {
 
   async function refresh() {
     try {
-      const [emps, rr] = await Promise.all([
+      const [emps, rr, np] = await Promise.all([
         apiGet<Employee[]>("/payroll/employees"),
         apiGet<RunRow[]>("/payroll/runs"),
+        apiGet<{ period_start: string; period_end: string; check_date: string }>("/payroll/next-period"),
       ]);
       setEmployees(emps); setRuns(rr);
+      // Auto-fill the next pay period so the owner only enters hours.
+      setPeriodStart(np.period_start); setPeriodEnd(np.period_end); setCheckDate(np.check_date);
     } catch (e: any) { setErr(String(e.message || e)); }
   }
   useEffect(() => { refresh(); }, []);
@@ -101,6 +104,7 @@ export default function PayrollPage() {
       {employees.length > 0 && (
         <div style={card}>
           <h3 style={{ marginTop: 0 }}>New run</h3>
+          <p style={{ marginTop: -6, color: "#777", fontSize: 12 }}>Period is auto-filled to your next pay period — just enter hours below and click Preview.</p>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
             <label>Period start <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
             <label>Period end <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} /></label>
