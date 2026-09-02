@@ -120,7 +120,7 @@ const NAV: NavEntry[] = [
     hint: "Books · payroll · billing",
     children: [
       { key: "accounting", label: "Overview", hint: "P&L · Cash Flow · Balance · Loans" },
-      { key: "payroll", label: "Payroll", hint: "Journal · COGS" },
+      { key: "payroll", label: "Labor Costs", hint: "Payroll → COGS" },
       { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log" },
       { key: "categorize", label: "Categorize", hint: "Sort transactions" },
       { key: "costs", label: "Costs & Expenses", hint: "Spend + tax" },
@@ -1065,32 +1065,37 @@ export default function AquatechPmHome() {
               </div>
             );
           })}
+          {(() => {
+            const pOpen = openGroups["payroll"] ?? true;
+            const link = (href: string, label: string, hint: string) => (
+              <a href={href} className={classNames("aq-lite-nav-item", "aq-lite-nav-child")} style={{ textDecoration: "none" }}>
+                <span>{label}</span>
+                <small>{hint}</small>
+              </a>
+            );
+            return (
+              <div className="aq-lite-nav-group">
+                <button
+                  type="button"
+                  className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head")}
+                  aria-expanded={pOpen}
+                  onClick={() => setOpenGroups((g) => ({ ...g, payroll: !pOpen }))}
+                >
+                  <span>Payroll</span>
+                  <small>{pOpen ? "▾" : "▸"} Run · pay · reconcile</small>
+                </button>
+                {pOpen ? (
+                  <>
+                    {capabilities.canViewFinancials ? link("/payroll", "Run payroll", "Preview · approve · pay · stubs") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/reconcile", "Reconcile", "Parallel-run vs Paychex") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/employees", "Employees", "Tax setup / W-4") : null}
+                    {link("/payroll/me", "My Pay Settings", "401(k) + W-4")}
+                  </>
+                ) : null}
+              </div>
+            );
+          })()}
         </nav>
-        <div className="aq-lite-sidebar-card">
-          <p className="aq-lite-sidebar-label">Payroll</p>
-          {capabilities.canViewFinancials ? (
-            <a href="/payroll" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
-              <span>Run payroll →</span>
-              <small>Preview · approve · pay · stubs</small>
-            </a>
-          ) : null}
-          {capabilities.canViewFinancials ? (
-            <a href="/payroll/reconcile" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
-              <span>Reconcile →</span>
-              <small>Parallel-run vs Paychex</small>
-            </a>
-          ) : null}
-          {capabilities.canViewFinancials ? (
-            <a href="/payroll/employees" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
-              <span>Employees →</span>
-              <small>Tax setup / W-4</small>
-            </a>
-          ) : null}
-          <a href="/payroll/me" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
-            <span>My Pay Settings →</span>
-            <small>401(k) + W-4</small>
-          </a>
-        </div>
         {timeOnly ? (
           forceTimeOnly && isBackOffice ? (
             <div className="aq-lite-sidebar-card">
