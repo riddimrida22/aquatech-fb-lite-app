@@ -40,6 +40,7 @@ class EmployeeInput:
     state: str = "NY"                    # work/withholding state: "NY" or "NJ"
     nyc_resident: bool = False
     weeks: int = 2                       # pay-period length (for flat weekly items)
+    k401_er_match_pct: Decimal = Decimal("0")  # employer match as % of gross (stub = 4%)
     # YTD (for capped/cumulative taxes) — seed from the cumulative report; 0 = start of year.
     ytd_gross: Decimal = Decimal("0")
     ytd_ss_wages: Decimal = Decimal("0")
@@ -72,6 +73,9 @@ def compute_employee(e: EmployeeInput) -> EmployeeResult:
     er["ss"] = lines["ss"]
     lines["medicare"] = cents(e.gross * Decimal(str(T.MEDICARE_RATE)))
     er["medicare"] = lines["medicare"]
+    # Employer 401(k) match (company money; stub = 4% of gross)
+    if e.k401_er_match_pct:
+        er["k401_er"] = cents(e.gross * Decimal(str(e.k401_er_match_pct)) / Decimal("100"))
     # (Additional Medicare over $200k YTD — none of the current roster is close.)
 
     # --- State employee statutory items (uncapped for this roster / period) ---

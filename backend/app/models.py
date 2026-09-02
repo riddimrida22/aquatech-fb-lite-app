@@ -677,3 +677,9 @@ class InvoiceGeneration(Base):
     generated_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     this_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+# Register the in-house payroll module's tables (payroll_employees, payroll_runs,
+# payroll_lines, payroll_ytd, payroll_tax_tables) with the shared metadata so
+# init_db()/create_all creates them. Import kept at the bottom to avoid cycles.
+from .payroll import models as _payroll_models  # noqa: E402,F401
