@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from .engine import EmployeeInput, EmployeeResult, cents, compute_employee
@@ -86,6 +86,82 @@ class JournalLine:
     account: str
     debit: Decimal = Decimal("0")
     credit: Decimal = Decimal("0")
+
+
+def _line_sum(run: RunResult, key: str, employer: bool = False) -> Decimal:
+    total = Decimal("0")
+    for r in run.results:
+        v = (r.employer if employer else r.lines).get(key)
+        if v is not None:
+            total += v
+    return total
+
+
+def cash_requirements(run: RunResult, check_date: date) -> dict:
+    """What cash goes out for this run, in which buckets, and by when.
+
+    Groups the run into pay + tax-deposit + benefit buckets, each with the
+    latest legal due date (from the compliance rules). This is the owner's
+    'how much do I need and when' report (our version of Paychex CASHREQ)."""
+    from . import compliance as C
+
+    fed = _line_sum(run, "fed")
+    ss = _line_sum(run, "ss") + _line_sum(run, "ss", employer=True)
+    medi = _line_sum(run, "medicare") + _line_sum(run, "medicare", employer=True)
+    ny_wh = _line_sum(run, "ny_inc") + _line_sum(run, "nyc")
+    ny_sdi_pfl = _line_sum(run, "ny_sdi") + _line_sum(run, "ny_pfl")
+    ny_ui = _line_sum(run, "ny_ui", employer=True) + _line_sum(run, "ny_rsf", employer=True)
+    nj_wh = _line_sum(run, "nj_inc")
+    nj_other = (_line_sum(run, "nj_sdi") + _line_sum(run, "nj_ui") + _line_sum(run, "nj_wf")
+                + _line_sum(run, "nj_sdi", employer=True) + _line_sum(run, "nj_ui", employer=True)
+                + _line_sum(run, "nj_wf", employer=True))
+    futa = _line_sum(run, "futa", employer=True)
+
+    def _nth_next_month(d: date, day: int) -> date:
+        m = d.month + 1
+        y = d.year + (m > 12)
+        return date(y, (m - 1) % 12 + 1, day)
+
+    fed_due = (C._semiweekly_fed_due(check_date) if C.FED_DEPOSIT_SCHEDULE == "semiweekly"
+               else C.next_biz(_nth_next_month(check_date, 15)))
+    nj_due = C.next_biz(_nth_next_month(check_date, 15))          # NJ-500 monthly, by the 15th
+    k401_due = C.add_biz_days(check_date, C.K401_DEPOSIT_BIZ_DAYS)
+    ny_due = C.add_biz_days(check_date, 5)                        # NYS-1, within 5 business days
+    # quarter end, then the quarterly filing/deposit due (end of the following month)
+    qmonth = ((check_date.month - 1) // 3 + 1) * 3
+    qend = date(check_date.year + (qmonth == 12), (qmonth % 12) + 1, 1) - timedelta(days=1)
+    q_due = C.next_biz(C._last_of_next_month(qend))
+
+    def bucket(label, amount, due, how, cat):
+        return {"label": label, "amount": float(cents(amount)), "due": str(due) if due else None,
+                "how": how, "category": cat}
+
+    buckets = [
+        bucket("Net pay (direct deposits)", run.net, check_date, "ACH from your bank to employees", "pay"),
+        bucket("401(k) — employee + employer", run.ee_401k + run.er_401k, k401_due,
+               "To Human Interest (deposit promptly — trust money)", "benefit"),
+        bucket("Federal 941 deposit", fed + ss + medi, fed_due,
+               "EFTPS (fed income tax + Social Security + Medicare, both halves)", "federal"),
+        bucket("NY / NYC withholding (NYS-1)", ny_wh, ny_due, "NY Online Services", "ny"),
+        bucket("NJ withholding (NJ-500)", nj_wh, nj_due, "NJ portal (monthly)", "nj"),
+    ]
+    if ny_sdi_pfl > 0:
+        buckets.append(bucket("NY SDI + PFL", ny_sdi_pfl, None, "To your DBL/PFL carrier (per carrier schedule)", "ny"))
+    if ny_ui > 0:
+        buckets.append(bucket("NY UI + Re-employment (employer)", ny_ui, q_due, "With NYS-45 (quarterly)", "ny"))
+    if nj_other > 0:
+        buckets.append(bucket("NJ UI/SDI/WF (employee + employer)", nj_other, q_due, "With NJ-927 (quarterly)", "nj"))
+    if futa > 0:
+        buckets.append(bucket("FUTA (employer)", futa, q_due, "EFTPS if accrued > $500 (Form 940)", "federal"))
+
+    immediate = sum(b["amount"] for b in buckets if b["due"] and b["due"] <= str(k401_due))
+    return {
+        "check_date": str(check_date),
+        "total_employer_cost": float(cents(run.gross + run.employer_taxes + run.er_401k)),
+        "buckets": buckets,
+        "total_cash_out": float(cents(run.gross + run.employer_taxes + run.er_401k)),
+        "immediate_cash_needed": float(cents(Decimal(str(immediate)))),
+    }
 
 
 def build_journal(run: RunResult) -> list[JournalLine]:

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import PayrollNav from "../PayrollNav";
 
 type EmpRow = {
   name: string; matched: boolean; skipped?: boolean;
@@ -47,6 +48,8 @@ export default function ReconcilePage() {
   const clean = rep && rep.discrepancies === 0;
 
   return (
+    <>
+    <PayrollNav active="reconcile" />
     <div style={{ maxWidth: 900, margin: "0 auto", padding: 22, fontSize: 14 }}>
       <h1 style={{ marginBottom: 2 }}>Parallel-Run Reconciliation</h1>
       <p style={{ color: "#666", marginTop: 0 }}>
@@ -122,5 +125,6 @@ export default function ReconcilePage() {
         </>
       )}
     </div>
+    </>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../../lib/api";
+import PayrollNav from "./PayrollNav";
 
 type Employee = {
   id: number; legal_name: string; pay_rate: number; work_state: string;
@@ -12,11 +13,14 @@ type PreviewEmp = {
   employee_id: number; name: string; gross: number; pretax_401k: number;
   taxes: Record<string, number>; employer: Record<string, number>; net: number | null;
 };
+type CashBucket = { label: string; amount: number; due: string | null; how: string; category: string };
+type CashReq = { check_date: string; total_cash_out: number; immediate_cash_needed: number; buckets: CashBucket[] };
 type Preview = {
   employees: PreviewEmp[];
   totals: { gross: number; ee_withholdings: number; k401_ee: number; k401_er: number; employer_taxes: number; net: number };
   journal: { account: string; debit: number; credit: number }[];
   journal_balanced: boolean;
+  cash_requirements: CashReq;
 };
 type RunRow = { id: number; period_start: string; period_end: string; check_date: string; status: string; net: number | null };
 
@@ -37,6 +41,7 @@ export default function PayrollPage() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [detail, setDetail] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editPeriod, setEditPeriod] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -78,6 +83,8 @@ export default function PayrollPage() {
   const td: React.CSSProperties = { textAlign: "right", padding: "4px 8px", fontVariantNumeric: "tabular-nums" };
 
   return (
+    <>
+    <PayrollNav active="run" />
     <div style={{ maxWidth: 1040, margin: "0 auto", padding: 20, fontSize: 14 }}>
       <h1 style={{ marginBottom: 4 }}>Payroll</h1>
       <p style={{ color: "#666", marginTop: 0 }}>In-house payroll — preview, approve (dual-control), pay, and pay stubs. Owner-only.</p>
@@ -105,10 +112,20 @@ export default function PayrollPage() {
         <div style={card}>
           <h3 style={{ marginTop: 0 }}>New run</h3>
           <p style={{ marginTop: -6, color: "#777", fontSize: 12 }}>Period is auto-filled to your next pay period — just enter hours below and click Preview.</p>
-          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
-            <label>Period start <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
-            <label>Period end <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} /></label>
-            <label>Check date <input type="date" value={checkDate} onChange={(e) => setCheckDate(e.target.value)} /></label>
+          <div style={{ marginBottom: 12, fontSize: 13 }}>
+            {editPeriod ? (
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+                <label>From <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
+                <label>To <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} /></label>
+                <label>Check <input type="date" value={checkDate} onChange={(e) => setCheckDate(e.target.value)} /></label>
+                <button onClick={() => setEditPeriod(false)}>Done</button>
+              </div>
+            ) : (
+              <span>
+                <b>Pay period:</b> {periodStart || "…"} → {periodEnd || "…"} &nbsp;·&nbsp; <b>Check date:</b> {checkDate || "…"}
+                <button style={{ marginLeft: 10, fontSize: 12 }} onClick={() => setEditPeriod(true)}>Edit dates</button>
+              </span>
+            )}
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr><th style={{ ...th, textAlign: "left" }}>Employee</th><th style={th}>Rate</th><th style={th}>State</th><th style={th}>SSN</th><th style={th}>Linked</th><th style={th}>Hours</th></tr></thead>
@@ -179,6 +196,45 @@ export default function PayrollPage() {
               </tbody>
             </table>
           </div>
+
+          {preview.cash_requirements && (
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid #eee" }}>
+              <b>Cash requirements</b>
+              <span style={{ color: "#777", fontSize: 12, marginLeft: 8 }}>
+                What you need to fund for this run, and by when.
+              </span>
+              <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 6 }}>
+                <thead><tr>
+                  <th style={{ ...th, textAlign: "left" }}>What</th>
+                  <th style={th}>Amount</th>
+                  <th style={{ ...th, textAlign: "left" }}>Due by</th>
+                  <th style={{ ...th, textAlign: "left" }}>How to pay</th>
+                </tr></thead>
+                <tbody>
+                  {preview.cash_requirements.buckets.map((b, i) => (
+                    <tr key={i}>
+                      <td style={{ ...td, textAlign: "left" }}>{b.label}</td>
+                      <td style={{ ...td, fontWeight: 600 }}>{money(b.amount)}</td>
+                      <td style={{ ...td, textAlign: "left" }}>{b.due || "per carrier"}</td>
+                      <td style={{ ...td, textAlign: "left", color: "#666", fontSize: 12 }}>{b.how}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: "2px solid #ccc" }}>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>Total employer cost (gross + ER taxes + match)</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{money(preview.cash_requirements.total_cash_out)}</td>
+                    <td colSpan={2} style={{ ...td }} />
+                  </tr>
+                  <tr>
+                    <td style={{ ...td, textAlign: "left", color: "#21737e", fontWeight: 600 }}>Cash needed on/around check date</td>
+                    <td style={{ ...td, fontWeight: 700, color: "#21737e" }}>{money(preview.cash_requirements.immediate_cash_needed)}</td>
+                    <td colSpan={2} style={{ ...td, color: "#666", fontSize: 12 }}>Net pay + 401(k) + federal deposit</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -219,5 +275,6 @@ export default function PayrollPage() {
         </div>
       )}
     </div>
+    </>
   );
 }
