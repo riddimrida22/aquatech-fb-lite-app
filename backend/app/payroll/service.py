@@ -128,10 +128,12 @@ def create_run(db, period_start: date, period_end: date, check_date: date,
     return run
 
 
-def approve_run(db, run, approver_id: int) -> None:
-    """Dual control: the approver must differ from the creator."""
-    if run.created_by is not None and approver_id == run.created_by:
-        raise ValueError("dual-control: approver must differ from the run's creator")
+def approve_run(db, run, approver_id: int, require_separate_approver: bool = False) -> None:
+    """Approve a run. Separation-of-duties is OPTIONAL: small firms often have a
+    single admin (the owner), so by default the creator may approve. Firms with
+    2+ admins can require a distinct approver by passing require_separate_approver."""
+    if require_separate_approver and run.created_by is not None and approver_id == run.created_by:
+        raise ValueError("separation-of-duties: approver must differ from the run's creator")
     run.status = "approved"
     run.approved_by = approver_id
     run.approved_at = datetime.utcnow()

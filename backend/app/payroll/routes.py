@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..authz import require_permission
+from ..authz import get_current_user, require_permission
 from ..db import get_db
 from ..models import User
 from . import service
@@ -148,6 +148,72 @@ def seed_sample(db: Session = Depends(get_db), _: User = Depends(PERM)):
         created += 1
     db.commit()
     return {"created": created, "note": "PII (SSN/bank) not set; onboard via Paychex workers API later"}
+
+
+# ----------------------------------------------------------------- staff self-service
+class TaxProfileIn(BaseModel):
+    k401_deferral_pct: float = 0.0
+    k401_is_roth: bool = False
+    fed_filing_status: str = "single"      # single | mfj | hoh
+    fed_multiple_jobs: bool = False         # W-4 Step 2 checkbox
+    fed_dependents_amt: float = 0.0         # W-4 Step 3 (annual $)
+    fed_extra_withholding: float = 0.0      # W-4 Step 4c (per pay period)
+    state_allowances: int = 0               # IT-2104 / NJ-W4 allowances
+
+
+def _my_employee(db: Session, user: User):
+    e = db.scalar(select(PayrollEmployee).where(PayrollEmployee.user_id == user.id))
+    if e:
+        return e
+    # best-effort auto-link an unlinked record by name (first + last token match)
+    fn = (user.full_name or "").lower().split()
+    if fn:
+        for cand in db.scalars(select(PayrollEmployee).where(PayrollEmployee.user_id.is_(None))):
+            ln = cand.legal_name.lower()
+            if fn[0] in ln and fn[-1] in ln:
+                cand.user_id = user.id
+                db.commit()
+                return cand
+    return None
+
+
+@router.get("/me/tax-profile")
+def my_tax_profile(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Any employee: view their own 401(k) + W-4 settings."""
+    e = _my_employee(db, user)
+    if not e:
+        return {"linked": False}
+    return {"linked": True, "id": e.id, "legal_name": e.legal_name, "work_state": e.work_state,
+            "nyc_resident": e.nyc_resident, "pay_rate": e.pay_rate,
+            "k401_deferral_pct": e.k401_deferral_pct, "k401_is_roth": e.k401_is_roth,
+            "k401_er_match_pct": e.k401_er_match_pct,
+            "fed_filing_status": e.fed_filing_status, "fed_multiple_jobs": e.fed_multiple_jobs,
+            "fed_dependents_amt": e.fed_dependents_amt, "fed_extra_withholding": e.fed_extra_withholding,
+            "state_allowances": e.state_allowances}
+
+
+@router.put("/me/tax-profile")
+def update_my_tax_profile(body: TaxProfileIn, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """Any employee: update ONLY their own 401(k) deferral + W-4/state elections."""
+    e = _my_employee(db, user)
+    if not e:
+        raise HTTPException(404, "No payroll record is linked to your account yet. Ask the owner to link you.")
+    for k, v in body.model_dump().items():
+        setattr(e, k, v)
+    db.commit()
+    return {"ok": True, "id": e.id}
+
+
+@router.post("/employees/{emp_id}/link")
+def link_employee_user(emp_id: int, user_id: int, db: Session = Depends(get_db), _: User = Depends(PERM)):
+    """Owner: link a payroll record to an app user (enables that person's self-service)."""
+    e = db.get(PayrollEmployee, emp_id)
+    if not e:
+        raise HTTPException(404, "employee not found")
+    e.user_id = user_id
+    db.commit()
+    return {"ok": True, "employee_id": emp_id, "user_id": user_id}
 
 
 # ----------------------------------------------------------------- run workflow
