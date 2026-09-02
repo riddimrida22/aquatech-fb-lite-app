@@ -88,7 +88,36 @@ FED_PERCENTAGE_METHOD: dict = {
     },
 }
 
-# State income tax — TODO next: NY (NYS-50-T + NYC) and NJ (NJ-WT) tables + IT-2104/NJ-W4.
-NY_WITHHOLDING: dict = {}
+# --- New York State income tax: NYS-50-T-NYS (1/26) Method II exact calculation ---
+# BIWEEKLY only (their pay frequency). net wages = period wages (after 401k) minus
+# the Table A biweekly deduction+exemption allowance; then apply the schedule:
+# withhold = (net - col3) * col4 + col5.  (col3 == "at least" bound.)
+NY_WITHHOLDING: dict = {
+    "allowance_biweekly": {  # Table A, index = # exemptions (0..10)
+        "single":  [284.60, 323.10, 361.60, 400.10, 438.60, 477.10, 515.60, 554.10, 592.60, 631.10, 669.60],
+        "married": [305.80, 344.30, 382.80, 421.30, 459.80, 498.30, 536.80, 575.30, 613.80, 652.30, 690.80],
+    },
+    "schedule_biweekly": {  # (at_least/col3, rate/col4, add/col5)
+        "single": [(0, 0.0390, 0), (327, 0.0440, 12.77), (450, 0.0515, 18.15), (535, 0.0540, 22.54),
+                   (3102, 0.0590, 161.15), (3723, 0.0703, 197.81), (4140, 0.0753, 227.15),
+                   (6063, 0.0640, 372.04), (8285, 0.1144, 514.19), (10208, 0.0735, 734.27)],
+        "married": [(0, 0.0390, 0), (327, 0.0440, 12.77), (450, 0.0515, 18.15), (535, 0.0540, 22.54),
+                    (3102, 0.0590, 161.15), (3723, 0.0657, 197.81), (4140, 0.0707, 225.19),
+                    (6063, 0.0801, 361.08), (8137, 0.0640, 527.23), (12431, 0.1349, 802.08),
+                    (14354, 0.0735, 1061.54), (41444, 0.0765, 3052.65)],
+    },
+}
+
+# NYC resident tax — NYS-50-T-NYC (separate pub). TODO: add biweekly exact-calc schedule.
 NYC_WITHHOLDING: dict = {}
-NJ_WITHHOLDING: dict = {}
+
+# --- New Jersey income tax: NJ-WT percentage method, Rate Table A, BIWEEKLY ---
+# taxable = period wages (after 401k, which NJ excludes) minus $38.40 per allowance.
+# withhold = (taxable - of_excess_over) * rate + base_add.  Rate-table selection
+# (A-E) comes from the NJ-W4 wage chart; default A. VERIFY table per employee.
+NJ_WITHHOLDING: dict = {
+    "allowance_biweekly": 38.40,
+    "rate_A_biweekly": [(0, 0.015, 0.0), (769, 0.020, 12.00), (1346, 0.039, 23.00),
+                        (1538, 0.061, 31.00), (2885, 0.070, 113.00), (19231, 0.099, 1257.00),
+                        (38462, 0.118, 3161.00)],
+}
