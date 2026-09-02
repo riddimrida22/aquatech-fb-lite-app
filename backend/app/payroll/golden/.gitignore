@@ -1,0 +1,4 @@
+# Golden-stub fixtures are built from real Paychex journals (employee names +
+# pay = PII). Keep them LOCAL only, never in git — same rule as the payroll inbox.
+*.json
+*.pdf
