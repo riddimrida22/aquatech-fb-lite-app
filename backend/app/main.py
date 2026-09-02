@@ -204,6 +204,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# In-house payroll module (owner-only): run workflow, pay stubs, finance journals.
+from .payroll.routes import router as payroll_router  # noqa: E402
+
+app.include_router(payroll_router)
+
 HIDDEN_PROJECT_NAMES = {"no project", "imported project"}
 NO_SUBTASK_CODE = "NO-SUBTASK"
 NO_SUBTASK_NAME = "No Sub-Task"
