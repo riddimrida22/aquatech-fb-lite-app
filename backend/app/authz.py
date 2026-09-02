@@ -28,6 +28,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "RUN_MONTH_CLOSE_EXPORT",
         "MANAGE_TIMEFRAMES",
         "MANAGE_USERS",
+        "MANAGE_PAYROLL",
     },
 }
 
