@@ -1066,6 +1066,19 @@ export default function AquatechPmHome() {
             );
           })}
         </nav>
+        <div className="aq-lite-sidebar-card">
+          <p className="aq-lite-sidebar-label">Payroll</p>
+          {capabilities.canViewFinancials ? (
+            <a href="/payroll" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
+              <span>Run payroll →</span>
+              <small>Preview · approve · pay · stubs</small>
+            </a>
+          ) : null}
+          <a href="/payroll/me" className="aq-lite-nav-item" style={{ textDecoration: "none" }}>
+            <span>My Pay Settings →</span>
+            <small>401(k) + W-4</small>
+          </a>
+        </div>
         {timeOnly ? (
           forceTimeOnly && isBackOffice ? (
             <div className="aq-lite-sidebar-card">
