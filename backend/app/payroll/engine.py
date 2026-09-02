@@ -109,11 +109,35 @@ def compute_employee(e: EmployeeInput) -> EmployeeResult:
     )
 
 
-# --- Income-tax stubs (return None until tables + W-4 onboarding land) ---
-def _fed_income_tax(taxable: Decimal, e: EmployeeInput):
+# --- Federal income tax: Pub 15-T (2026) Worksheet 1A percentage method ---
+def _fed_income_tax(taxable_period: Decimal, e: EmployeeInput):
+    """taxable_period = gross - pre-tax deductions (401k etc.) for this period."""
     if not T.FED_PERCENTAGE_METHOD:
         return None
-    raise NotImplementedError  # TODO: Pub 15-T percentage method
+    w = e.w4
+    status = w.get("filing_status", "single")
+    sched_key = status if status in ("single", "mfj", "hoh") else "single"  # mfs -> single schedule
+    step2 = bool(w.get("step2", False))
+    periods = int(w.get("periods", T.PAY_PERIODS.get("biweekly", 26)))
+    dec = lambda k: Decimal(str(w.get(k, 0) or 0))
+
+    annual = taxable_period * periods + dec("other_income_annual")            # 1e
+    std = Decimal("0") if step2 else Decimal(str(T.FED_STD_ADJUST.get(status, 8600)))
+    adj = annual - dec("deductions_annual") - std                            # 1i
+    if adj < 0:
+        adj = Decimal("0")
+
+    sched = T.FED_PERCENTAGE_METHOD["checkbox" if step2 else "standard"][sched_key]
+    base = pct = exceeds = 0
+    for lower, b, p, ex in sched:
+        if adj >= lower:
+            base, pct, exceeds = b, p, ex
+    annual_tentative = Decimal(str(base)) + Decimal(str(pct)) * (adj - Decimal(str(exceeds)))  # 2g
+    annual_after = annual_tentative - dec("dependents_annual")               # Step 3 credit
+    if annual_after < 0:
+        annual_after = Decimal("0")
+    per_period = annual_after / Decimal(periods) + dec("extra_per_period")    # Step 4
+    return cents(per_period)
 
 
 def _ny_income_tax(taxable: Decimal, e: EmployeeInput):
