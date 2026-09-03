@@ -1018,6 +1018,37 @@ export default function AquatechPmHome() {
           </div>
         </div>
         <nav className="aq-lite-nav">
+          {(() => {
+            const pOpen = openGroups["payroll"] ?? true;
+            const link = (href: string, label: string, hint: string) => (
+              <a href={href} className={classNames("aq-lite-nav-item", "aq-lite-nav-child")} style={{ textDecoration: "none" }}>
+                <span>{label}</span>
+                <small>{hint}</small>
+              </a>
+            );
+            return (
+              <div className="aq-lite-nav-group">
+                <button
+                  type="button"
+                  className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head")}
+                  aria-expanded={pOpen}
+                  onClick={() => setOpenGroups((g) => ({ ...g, payroll: !pOpen }))}
+                >
+                  <span>Payroll</span>
+                  <small>{pOpen ? "▾" : "▸"} Run · pay · reconcile</small>
+                </button>
+                {pOpen ? (
+                  <>
+                    {capabilities.canViewFinancials ? link("/payroll", "Run payroll", "Preview · approve · pay · stubs") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/reconcile", "Reconcile", "Parallel-run vs Paychex") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/employees", "Employees", "Tax setup / W-4") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/ytd", "YTD setup", "Mid-year cutover figures") : null}
+                    {link("/payroll/me", "My Pay Settings", "401(k) + W-4")}
+                  </>
+                ) : null}
+              </div>
+            );
+          })()}
           {(timeOnly ? NAV.filter((entry) => !isNavGroup(entry) && (entry as NavLeaf).key === "time") : NAV).map((entry) => {
             if (!isNavGroup(entry)) {
               if (entry.requires && !(capabilities as Record<string, boolean>)[entry.requires]) return null;
@@ -1065,37 +1096,6 @@ export default function AquatechPmHome() {
               </div>
             );
           })}
-          {(() => {
-            const pOpen = openGroups["payroll"] ?? true;
-            const link = (href: string, label: string, hint: string) => (
-              <a href={href} className={classNames("aq-lite-nav-item", "aq-lite-nav-child")} style={{ textDecoration: "none" }}>
-                <span>{label}</span>
-                <small>{hint}</small>
-              </a>
-            );
-            return (
-              <div className="aq-lite-nav-group">
-                <button
-                  type="button"
-                  className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head")}
-                  aria-expanded={pOpen}
-                  onClick={() => setOpenGroups((g) => ({ ...g, payroll: !pOpen }))}
-                >
-                  <span>Payroll</span>
-                  <small>{pOpen ? "▾" : "▸"} Run · pay · reconcile</small>
-                </button>
-                {pOpen ? (
-                  <>
-                    {capabilities.canViewFinancials ? link("/payroll", "Run payroll", "Preview · approve · pay · stubs") : null}
-                    {capabilities.canViewFinancials ? link("/payroll/reconcile", "Reconcile", "Parallel-run vs Paychex") : null}
-                    {capabilities.canViewFinancials ? link("/payroll/employees", "Employees", "Tax setup / W-4") : null}
-                    {capabilities.canViewFinancials ? link("/payroll/ytd", "YTD setup", "Mid-year cutover figures") : null}
-                    {link("/payroll/me", "My Pay Settings", "401(k) + W-4")}
-                  </>
-                ) : null}
-              </div>
-            );
-          })()}
         </nav>
         {timeOnly ? (
           forceTimeOnly && isBackOffice ? (
