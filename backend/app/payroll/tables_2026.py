@@ -49,7 +49,7 @@ NJ_TDI_ER_WAGE_BASE = 45_200      # VERIFY 2026 NJ employer TDI base
 
 COMPANY_ER_RATES = {
     "futa": 0.006,                # 0.6% on first $7,000 (federal)
-    "ny_ui": 0.0405,              # NY employer UI experience rate — VERIFY (placeholder)
+    "ny_ui": 0.018243,           # NY employer UI experience rate (backed out from Paychex 2026; confirm vs NY rate notice)
     "ny_rsf": 0.00075,            # NY Re-employment Service Fund 0.075%
     "nj_ui": 0.026824,            # DERIVED (Roger 82.08/3060) — VERIFY notice
     "nj_tdi": 0.0050,             # DERIVED (15.30/3060) — VERIFY
