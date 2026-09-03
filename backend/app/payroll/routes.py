@@ -70,14 +70,19 @@ class EmployeeIn(BaseModel):
 
 
 # ----------------------------------------------------------------- helpers
-def _ytd_gross(db: Session, employee_id: int, tax_year: int) -> float:
+def _ytd_pair(db: Session, employee_id: int, tax_year: int) -> tuple[float, float]:
+    """(ytd_gross, ytd_ss_wages) for wage-base caps; (0, 0) if unseeded.
+    ytd_ss_wages falls back to ytd_gross for rows seeded before the SS field existed."""
     row = db.scalar(select(PayrollYtd).where(PayrollYtd.employee_id == employee_id,
                                              PayrollYtd.tax_year == tax_year))
-    return float(row.ytd_gross) if row else 0.0
+    if not row:
+        return 0.0, 0.0
+    g = float(row.ytd_gross or 0.0)
+    return g, float(row.ytd_ss_wages or g)
 
 
 def _emp_to_input(emp: PayrollEmployee, hours: float, gross: float | None,
-                  ytd_gross: float = 0.0) -> EmployeeInput:
+                  ytd_gross: float = 0.0, ytd_ss_wages: float = 0.0) -> EmployeeInput:
     g = Decimal(str(gross)) if gross is not None else Decimal(str(emp.pay_rate)) * Decimal(str(hours))
     w4 = {
         "filing_status": emp.fed_filing_status,
@@ -96,7 +101,7 @@ def _emp_to_input(emp: PayrollEmployee, hours: float, gross: float | None,
         pretax_401k=cents(g * Decimal(str(emp.k401_deferral_pct)) / 100),
         state=emp.work_state, nyc_resident=emp.nyc_resident,
         k401_er_match_pct=Decimal(str(emp.k401_er_match_pct)), w4=w4,
-        ytd_gross=Decimal(str(ytd_gross)),
+        ytd_gross=Decimal(str(ytd_gross)), ytd_ss_wages=Decimal(str(ytd_ss_wages)),
     )
 
 
@@ -118,8 +123,9 @@ def _run_result_from_entries(db: Session, body: PreviewIn) -> tuple[service.RunR
         emp = emps.get(entry.employee_id)
         if not emp:
             raise HTTPException(404, f"employee {entry.employee_id} not found")
+        _yg, _ys = _ytd_pair(db, emp.id, body.check_date.year)
         inputs.append(_emp_to_input(emp, entry.hours, entry.gross,
-                                    ytd_gross=_ytd_gross(db, emp.id, body.check_date.year)))
+                                    ytd_gross=_yg, ytd_ss_wages=_ys))
         order.append(emp.id)
     run = service.compute_run(body.period_start, body.period_end, body.check_date,
                               inputs, weeks=body.weeks)
@@ -286,19 +292,28 @@ def reconcile_endpoint(file: UploadFile = File(...), db: Session = Depends(get_d
 class YtdSeed(BaseModel):
     employee_id: int
     ytd_gross: float
+    # Wage bases for caps. If omitted, they default to ytd_gross (correct for
+    # most W-2 staff: SS/FUTA/UI wages == gross since 401k doesn't reduce them).
+    ytd_ss_wages: float | None = None
+    ytd_medicare: float | None = None
+    ytd_futa_wages: float | None = None
+    ytd_ui_wages: float | None = None
     tax_year: int = 2026
 
 
 @router.get("/ytd")
 def list_ytd(tax_year: int = 2026, db: Session = Depends(get_db), _: User = Depends(PERM)):
     rows = db.scalars(select(PayrollYtd).where(PayrollYtd.tax_year == tax_year)).all()
-    return [{"employee_id": r.employee_id, "ytd_gross": r.ytd_gross} for r in rows]
+    return [{"employee_id": r.employee_id, "ytd_gross": r.ytd_gross,
+             "ytd_ss_wages": r.ytd_ss_wages, "ytd_medicare": r.ytd_medicare,
+             "ytd_futa_wages": r.ytd_futa_wages, "ytd_ui_wages": r.ytd_ui_wages} for r in rows]
 
 
 @router.post("/ytd/seed")
 def seed_ytd(items: list[YtdSeed], db: Session = Depends(get_db), _: User = Depends(PERM)):
     """Set each employee's starting YTD (from their last Paychex stub) for a mid-year
-    cutover, so wage-base caps (FUTA, SS, NY/NJ UI) compute correctly."""
+    cutover, so wage-base caps (FUTA, SS, NY/NJ UI) compute correctly. Wage-base
+    fields default to ytd_gross when omitted."""
     n = 0
     for it in items:
         row = db.scalar(select(PayrollYtd).where(PayrollYtd.employee_id == it.employee_id,
@@ -307,6 +322,10 @@ def seed_ytd(items: list[YtdSeed], db: Session = Depends(get_db), _: User = Depe
             row = PayrollYtd(employee_id=it.employee_id, tax_year=it.tax_year, ytd_gross=0.0)
             db.add(row)
         row.ytd_gross = it.ytd_gross
+        row.ytd_ss_wages = it.ytd_gross if it.ytd_ss_wages is None else it.ytd_ss_wages
+        row.ytd_medicare = it.ytd_gross if it.ytd_medicare is None else it.ytd_medicare
+        row.ytd_futa_wages = it.ytd_gross if it.ytd_futa_wages is None else it.ytd_futa_wages
+        row.ytd_ui_wages = it.ytd_gross if it.ytd_ui_wages is None else it.ytd_ui_wages
         n += 1
     db.commit()
     return {"seeded": n}
@@ -417,8 +436,11 @@ def run_cash_requirements(run_id: int, db: Session = Depends(get_db), _: User = 
         raise HTTPException(404, "run not found")
     lines = db.scalars(select(PayrollLine).where(PayrollLine.run_id == run_id)).all()
     emps = {e.id: e for e in db.scalars(select(PayrollEmployee))}
-    inputs = [_emp_to_input(emps[l.employee_id], hours=0.0, gross=l.gross,
-                            ytd_gross=_ytd_gross(db, l.employee_id, run.tax_year)) for l in lines]
+    inputs = []
+    for l in lines:
+        _yg, _ys = _ytd_pair(db, l.employee_id, run.tax_year)
+        inputs.append(_emp_to_input(emps[l.employee_id], hours=0.0, gross=l.gross,
+                                    ytd_gross=_yg, ytd_ss_wages=_ys))
     rr = service.compute_run(run.period_start, run.period_end, run.check_date, inputs, weeks=run.weeks)
     return service.cash_requirements(rr, run.check_date)
 
@@ -489,8 +511,9 @@ def pay(run_id: int, db: Session = Depends(get_db), user: User = Depends(PERM)):
     inputs, order = [], []
     for l in lines:
         emp = emps[l.employee_id]
+        _yg, _ys = _ytd_pair(db, l.employee_id, run.tax_year)
         inputs.append(_emp_to_input(emp, hours=0.0, gross=l.gross,
-                                    ytd_gross=_ytd_gross(db, l.employee_id, run.tax_year)))
+                                    ytd_gross=_yg, ytd_ss_wages=_ys))
         order.append(l.employee_id)
     rr = service.compute_run(run.period_start, run.period_end, run.check_date, inputs, weeks=run.weeks)
     for r, eid in zip(rr.results, order):

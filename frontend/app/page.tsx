@@ -1089,6 +1089,7 @@ export default function AquatechPmHome() {
                     {capabilities.canViewFinancials ? link("/payroll", "Run payroll", "Preview · approve · pay · stubs") : null}
                     {capabilities.canViewFinancials ? link("/payroll/reconcile", "Reconcile", "Parallel-run vs Paychex") : null}
                     {capabilities.canViewFinancials ? link("/payroll/employees", "Employees", "Tax setup / W-4") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/ytd", "YTD setup", "Mid-year cutover figures") : null}
                     {link("/payroll/me", "My Pay Settings", "401(k) + W-4")}
                   </>
                 ) : null}

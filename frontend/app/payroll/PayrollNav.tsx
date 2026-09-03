@@ -8,6 +8,7 @@ export default function PayrollNav({ active }: { active?: string }) {
     { href: "/payroll", label: "Run payroll", key: "run" },
     { href: "/payroll/reconcile", label: "Reconcile", key: "reconcile" },
     { href: "/payroll/employees", label: "Employees", key: "employees" },
+    { href: "/payroll/ytd", label: "YTD setup", key: "ytd" },
     { href: "/payroll/me", label: "My Pay Settings", key: "me" },
   ];
   return (
