@@ -45,6 +45,10 @@ def render_stub_pdf(path: str, meta: dict, r) -> str:
     line(f"Pay period: {meta['period_start']} to {meta['period_end']}    Check date: {meta['check_date']}", 22, 9.5)
 
     line("Earnings", 16, 11, bold=True)
+    hrs = getattr(r, "hours", None)
+    rate = getattr(r, "rate", None)
+    if hrs is not None and rate is not None:
+        row(f"Regular  ({float(hrs):g} hrs @ {_money(rate)}/hr)", _money(r.gross))
     row("Gross pay", _money(r.gross), bold=True)
     y += 8
 
