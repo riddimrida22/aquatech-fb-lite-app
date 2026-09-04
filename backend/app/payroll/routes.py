@@ -537,6 +537,9 @@ def stub(run_id: int, employee_id: int, db: Session = Depends(get_db), _: User =
         raise HTTPException(404, "not found")
     from .engine import compute_employee
     res = compute_employee(_emp_to_input(emp, hours=0.0, gross=line.gross))
+    # attach earnings detail for the stub (hours recovered from gross / pay rate)
+    res.rate = emp.pay_rate
+    res.hours = round(line.gross / emp.pay_rate, 2) if emp.pay_rate else None
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
         path = tf.name
     render_stub_pdf(path, {"period_start": str(run.period_start), "period_end": str(run.period_end),
