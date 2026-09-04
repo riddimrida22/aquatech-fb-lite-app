@@ -58,7 +58,7 @@ def render_stub_pdf(path: str, data: dict) -> str:
     # --- header: logo + company ---
     if os.path.exists(_LOGO):
         try:
-            pg.insert_image(fitz.Rect(40, 30, 190, 76), filename=_LOGO, keep_proportion=True)
+            pg.insert_image(fitz.Rect(40, 34, 115, 57), filename=_LOGO, keep_proportion=True)
         except Exception:
             pass
     T(360, 44, "Aquatech Engineering P.C.", 10, True)
