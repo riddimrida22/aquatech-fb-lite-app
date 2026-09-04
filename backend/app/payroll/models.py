@@ -121,6 +121,9 @@ class PayrollYtd(Base):
     ytd_medicare: Mapped[float] = mapped_column(Float, default=0.0)
     ytd_futa_wages: Mapped[float] = mapped_column(Float, default=0.0)
     ytd_ui_wages: Mapped[float] = mapped_column(Float, default=0.0)
+    # Per-line YTD for pay stubs (net, ee_401k, er_match, and each tax line).
+    # JSON blob: {"net": .., "ee_401k": .., "er_match": .., "ss": .., "fed": .., ...}
+    ytd_lines_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
