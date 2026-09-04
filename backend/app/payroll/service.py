@@ -237,7 +237,7 @@ def mark_paid(db, run, run_result: RunResult) -> list[JournalLine]:
         "journal": [{"account": l.account, "debit": str(l.debit), "credit": str(l.credit)} for l in journal],
     })
     run.status = "paid"
-    # advance YTD ledger (accumulate per employee + year)
+    # advance YTD ledger (accumulate per employee + year), including per-line YTD for pay stubs
     from sqlalchemy import select as _select
     for r in run_result.results:
         eid = getattr(r, "employee_id", 0) or 0
@@ -246,7 +246,24 @@ def mark_paid(db, run, run_result: RunResult) -> list[JournalLine]:
         if not row:
             row = PayrollYtd(employee_id=eid, tax_year=run.tax_year, ytd_gross=0.0)
             db.add(row)
-        row.ytd_gross = float(row.ytd_gross or 0) + float(r.gross)
+        g = float(r.gross)
+        row.ytd_gross = float(row.ytd_gross or 0) + g
+        # wage bases (SS ~ gross; FUTA/UI cap off ytd_gross in the engine)
+        row.ytd_ss_wages = float(row.ytd_ss_wages or 0) + g
+        row.ytd_futa_wages = float(row.ytd_futa_wages or 0) + g
+        row.ytd_ui_wages = float(row.ytd_ui_wages or 0) + g
+        # per-line YTD (net, 401k EE/ER, and every withholding line)
+        lj = json.loads(row.ytd_lines_json) if row.ytd_lines_json else {}
+        def _acc(k, v):
+            if v:
+                lj[k] = round(float(lj.get(k, 0.0)) + float(v), 2)
+        _acc("gross", r.gross)
+        _acc("net", r.net)
+        _acc("ee_401k", r.pretax_401k)
+        _acc("er_match", (r.employer or {}).get("k401_er"))
+        for k, v in (r.lines or {}).items():
+            _acc(k, v)
+        row.ytd_lines_json = json.dumps(lj)
         row.updated_at = datetime.utcnow()
     db.flush()
     return journal

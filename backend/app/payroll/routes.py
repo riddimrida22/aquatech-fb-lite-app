@@ -535,15 +535,53 @@ def stub(run_id: int, employee_id: int, db: Session = Depends(get_db), _: User =
     emp = db.get(PayrollEmployee, employee_id)
     if not (run and line and emp):
         raise HTTPException(404, "not found")
-    from .engine import compute_employee
-    res = compute_employee(_emp_to_input(emp, hours=0.0, gross=line.gross))
-    # attach earnings detail for the stub (hours recovered from gross / pay rate)
-    res.rate = emp.pay_rate
-    res.hours = round(line.gross / emp.pay_rate, 2) if emp.pay_rate else None
+
+    TOP = ("gross", "net", "ee_401k", "er_match")
+    # current period (from the stored line)
+    ctax = json.loads(line.lines_json) if line.lines_json else {}
+    rate = float(emp.pay_rate or 0)
+    hours = line.hours or (round(line.gross / rate, 2) if rate else None)
+    match_pct = min(float(emp.k401_deferral_pct or 0), float(emp.k401_er_match_pct or 0))
+    er_match = round(match_pct / 100 * float(line.gross), 2)
+    cur = {"gross": line.gross, "net": line.net, "ee_401k": line.pretax_401k,
+           "er_match": er_match, "tax": ctax}
+
+    # YTD from the ledger; ledger already includes this run once it is paid,
+    # otherwise add the current period so a draft stub still shows YTD-to-date.
+    yrow = db.scalar(select(PayrollYtd).where(PayrollYtd.employee_id == employee_id,
+                                              PayrollYtd.tax_year == run.tax_year))
+    led = json.loads(yrow.ytd_lines_json) if (yrow and yrow.ytd_lines_json) else {}
+    add_cur = run.status != "paid"
+    ytd_top = {k: float(led.get(k, 0.0)) + (float(cur.get(k) or 0) if add_cur else 0.0) for k in TOP}
+    ytd_tax = {}
+    for k in set(list(led.keys()) + list(ctax.keys())):
+        if k in TOP:
+            continue
+        ytd_tax[k] = round(float(led.get(k, 0.0)) + (float(ctax.get(k) or 0) if add_cur else 0.0), 2)
+    ytd = {**ytd_top, "tax": ytd_tax}
+
+    # filing-status display
+    _fed_map = {"single": "Single", "mfj": "MFJ", "married": "Married", "hoh": "Head of Household"}
+    fed_fs = _fed_map.get(emp.fed_filing_status, emp.fed_filing_status.title())
+    if emp.fed_extra_withholding:
+        fed_fs += f" +${float(emp.fed_extra_withholding):.0f}"
+    state_fs = (f"Rate {emp.nj_rate_table}" if emp.work_state == "NJ"
+                else f"{(emp.ny_marital or 'single').title()} {emp.state_allowances}")
+
+    addr_lines = [a.strip() for a in (emp.address or "").replace("\r", "").split("\n") if a.strip()][:2]
+    data = {
+        "employee": {"name": emp.legal_name, "address_lines": addr_lines, "emp_id": emp.id},
+        "period": {"start": str(run.period_start), "end": str(run.period_end),
+                   "check_date": str(run.check_date), "pay_method": "Direct Deposit"},
+        "rate": rate, "hours": hours,
+        "deferral_pct": emp.k401_deferral_pct, "match_pct": emp.k401_er_match_pct or 4,
+        "roth": emp.k401_is_roth,
+        "filing": {"fed": fed_fs, "state": state_fs},
+        "current": cur, "ytd": ytd,
+    }
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
         path = tf.name
-    render_stub_pdf(path, {"period_start": str(run.period_start), "period_end": str(run.period_end),
-                           "check_date": str(run.check_date)}, res)
+    render_stub_pdf(path, data)
     data = open(path, "rb").read()
     return Response(content=data, media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="paystub_{employee_id}.pdf"'})
