@@ -46,6 +46,8 @@ def init_db() -> None:
     _ensure_bank_columns()
     _ensure_assistant_columns()
     _ensure_contact_columns()
+    _ensure_library_columns()
+    _ensure_time_entry_columns()
     _ensure_dedup_indexes()
 
 
@@ -179,6 +181,45 @@ def _ensure_invoice_line_columns() -> None:
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+
+
+def _ensure_time_entry_columns() -> None:
+    insp = inspect(engine)
+    if not insp.has_table("time_entries"):
+        return
+    cols = {c["name"] for c in insp.get_columns("time_entries")}
+    if "pursuit_id" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE time_entries ADD COLUMN pursuit_id INTEGER"))
+
+
+def _ensure_library_columns() -> None:
+    insp = inspect(engine)
+    if not insp.has_table("library_documents"):
+        return
+    cols = {c["name"] for c in insp.get_columns("library_documents")}
+    statements: list[str] = []
+    if "sector" not in cols:
+        statements.append("ALTER TABLE library_documents ADD COLUMN sector VARCHAR(48)")
+    if "agency" not in cols:
+        statements.append("ALTER TABLE library_documents ADD COLUMN agency VARCHAR(96)")
+    if "discipline" not in cols:
+        statements.append("ALTER TABLE library_documents ADD COLUMN discipline VARCHAR(64)")
+    if "person_user_id" not in cols:
+        statements.append("ALTER TABLE library_documents ADD COLUMN person_user_id INTEGER")
+    if "project_id" not in cols:
+        statements.append("ALTER TABLE library_documents ADD COLUMN project_id INTEGER")
+    if "is_current" not in cols:
+        statements.append("ALTER TABLE library_documents ADD COLUMN is_current BOOLEAN DEFAULT TRUE")
+    if "expires_on" not in cols:
+        statements.append("ALTER TABLE library_documents ADD COLUMN expires_on DATE")
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+        if "is_current" not in cols:
+            conn.execute(text("UPDATE library_documents SET is_current = TRUE WHERE is_current IS NULL"))
 
 
 def _ensure_contact_columns() -> None:

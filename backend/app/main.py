@@ -17,7 +17,7 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 import requests
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 import httpx
@@ -56,6 +56,7 @@ from .models import (
     PursuitPartner,
     RecurringInvoiceSchedule,
     TeamingPartner,
+    WinLossReview,
     Subtask,
     Task,
     TimeEntry,
@@ -3847,6 +3848,37 @@ def accounting_pl(
         cogs_incomplete = True
         print(f"[accounting_pl] COGS payroll parse failed: {exc!r}", flush=True)
 
+    # Fallback when no EXTERNAL payroll journal covered this window: source labor COGS
+    # from payroll RUNS produced in-app (the timekeeping → payroll → COGS integration).
+    # Mirrors _labor_cost_split's fallback (same source + employer-cost formula) so the
+    # billable/non-billable split reconciles. Prod is unaffected while journals exist.
+    if payroll_breakdown["gross"] == 0.0 and not cogs_incomplete:
+        try:
+            from .payroll.models import PayrollLine, PayrollRun
+
+            for gross, lj in db.execute(
+                select(PayrollLine.gross, PayrollLine.lines_json)
+                .join(PayrollRun, PayrollRun.id == PayrollLine.run_id)
+                .where(
+                    PayrollRun.status == "paid",
+                    PayrollRun.check_date >= s,
+                    PayrollRun.check_date <= e,
+                )
+            ).all():
+                g = float(gross or 0)
+                try:
+                    d = json.loads(lj or "{}")
+                except Exception:
+                    d = {}
+                er_taxes = float(d.get("ss") or 0) + float(d.get("medicare") or 0) + g * 0.012
+                er_match = float(d.get("er_match") or 0)
+                payroll_breakdown["gross"] += g
+                payroll_breakdown["employer_taxes"] += er_taxes
+                payroll_breakdown["employer_401k"] += er_match
+                cogs += g + er_taxes + er_match
+        except Exception as exc:
+            print(f"[accounting_pl] in-app payroll COGS fallback failed: {exc!r}", flush=True)
+
     # Benefits-to-COGS: per user, NYSIF (workers comp + disability) and Nu Era
     # (health insurance for one employee) are per-employee benefit costs that
     # belong in COGS, not OPEX. Pull bank outflows matching those merchants.
@@ -4679,6 +4711,24 @@ SALARY_RATES = {
 }
 
 
+# Demo / white-label builds may supply their own name→rate map (keyed by any
+# lowercase name token, e.g. a surname) via env, without touching the prod map.
+def _merge_rate_override(target: dict, env_key: str, lower_keys: bool) -> None:
+    import os
+
+    raw = os.environ.get(env_key)
+    if not raw:
+        return
+    try:
+        for k, v in json.loads(raw).items():
+            target[k.lower() if lower_keys else k] = float(v)
+    except Exception:
+        pass
+
+
+_merge_rate_override(SALARY_RATES, "DEMO_SALARY_RATES_JSON", lower_keys=True)
+
+
 def _salary_rate_for(name: str) -> float:
     nl = (name or "").lower()
     for k, v in SALARY_RATES.items():
@@ -4857,6 +4907,41 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
                 continue
             for r in period.get("rows", []):
                 paycost[(r.get("employee") or "").strip()] += float(r.get("employer_cost") or 0)
+
+    # Fallback when no EXTERNAL payroll journal (Gusto/Paychex) covers this window:
+    # source employer cost from payroll RUNS produced in-app. This is the
+    # timekeeping → payroll → COGS integration — a firm running payroll inside AqtPM
+    # gets labor COGS without any external file. Prod is unaffected while journals
+    # exist (this branch only runs when the journal produced nothing for [s, e]).
+    if not paycost:
+        try:
+            import json as _json
+
+            from .payroll.models import PayrollEmployee, PayrollLine, PayrollRun
+
+            run_rows = db.execute(
+                select(PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json)
+                .join(PayrollLine, PayrollLine.employee_id == PayrollEmployee.id)
+                .join(PayrollRun, PayrollRun.id == PayrollLine.run_id)
+                .where(
+                    PayrollRun.status == "paid",
+                    PayrollRun.check_date >= s,
+                    PayrollRun.check_date <= e,
+                )
+            ).all()
+            for legal_name, gross, lj in run_rows:
+                g = float(gross or 0)
+                try:
+                    d = _json.loads(lj or "{}")
+                except Exception:
+                    d = {}
+                # Employer cost = gross + employer SS/Medicare match + 401k match + ~UI/FUTA.
+                er_ss = float(d.get("ss") or 0)
+                er_med = float(d.get("medicare") or 0)
+                er_match = float(d.get("er_match") or 0)
+                paycost[(legal_name or "").strip()] += g + er_ss + er_med + er_match + g * 0.012
+        except Exception:
+            pass
 
     def _toks(n: str) -> set:
         return set(t for t in (n or "").replace(",", " ").lower().split() if len(t) >= 3)
@@ -5780,6 +5865,7 @@ def get_pursuit(pursuit_id: int, db: Session = Depends(get_db),
     parts = db.scalars(select(PursuitPartner).where(PursuitPartner.pursuit_id == pursuit_id)).all()
     pcs = db.scalars(select(PursuitContact).where(PursuitContact.pursuit_id == pursuit_id)).all()
     out = _pursuit_out(p)
+    out["bd_hours"], out["bd_cost"] = _pursuit_bd_effort(db, pursuit_id)
     out["activities"] = [{"id": a.id, "kind": a.kind, "subject": a.subject, "body": a.body,
                           "due_date": a.due_date.isoformat() if a.due_date else None,
                           "completed": a.completed, "contact_id": a.contact_id,
@@ -5823,15 +5909,9 @@ def score_pursuit_gng(pursuit_id: int, body: GngIn, db: Session = Depends(get_db
     p = db.get(Pursuit, pursuit_id)
     if not p:
         raise HTTPException(status_code=404, detail="Pursuit not found")
-    total = 0.0
-    for key, _label, weight in _GNG_FACTORS:
-        raw = body.scores.get(key)
-        if raw is None:
-            continue
-        s = max(1, min(int(raw), 5))
-        total += weight * (s / 5.0) * 100.0
-    score = round(total, 1)
-    rec = "go" if score >= 70 else ("conditional" if score >= 50 else "no_go")
+    score = _gng_score_value(body.scores)
+    cal = _gng_calibration(db)               # thresholds + win-rate learned from history
+    rec = _gng_recommendation(score, cal)
     p.gng_score = score
     p.gng_recommendation = rec
     p.gng_scores_json = json.dumps({k: int(v) for k, v in body.scores.items()})
@@ -5843,7 +5923,328 @@ def score_pursuit_gng(pursuit_id: int, body: GngIn, db: Session = Depends(get_db
         p.win_probability = _STAGE_WIN_PROB["go_no_go"]
     db.commit()
     db.refresh(p)
-    return _pursuit_out(p)
+    return {**_pursuit_out(p), "expected_win_rate": _gng_expected_win_rate(cal, score),
+            "calibrated": cal["calibrated"], "thresholds": cal["thresholds"]}
+
+
+# ---- Go/No-Go ALGORITHM (Phase 2): auto-scoring + win/loss calibration ----------
+_GNG_BANDS = [(0, 50, "under 50"), (50, 70, "50-69"), (70, 85, "70-84"), (85, 101, "85-100")]
+
+
+def _gng_auto_scores(db: Session, p: Pursuit) -> dict:
+    """Derive a starting 1..5 score per factor from what the pursuit already knows.
+    Neutral (3) where we have no signal; the owner adjusts. Returns {scores, notes}."""
+    scores: dict[str, int] = {k: 3 for k, _l, _w in _GNG_FACTORS}
+    notes: dict[str, str] = {}
+
+    # Competitive position — incumbency is the biggest single tell.
+    if p.incumbent and "aquatech" not in (p.incumbent or "").lower():
+        scores["competitive_position"] = 2; notes["competitive_position"] = f"Incumbent: {p.incumbent}"
+    elif not p.incumbent:
+        scores["competitive_position"] = 4; notes["competitive_position"] = "No incumbent named"
+
+    # Profitability — bigger fee, better prize (rough tiers; refine with cost later).
+    fee = float(p.est_fee or 0)
+    if fee >= 250_000:
+        scores["profitability"] = 5; scores["pursuit_cost"] = 5
+    elif fee >= 100_000:
+        scores["profitability"] = 4; scores["pursuit_cost"] = 4
+    elif 0 < fee < 30_000:
+        scores["profitability"] = 2; scores["pursuit_cost"] = 2
+    if fee:
+        notes["profitability"] = f"Est. fee ${fee:,.0f}"
+
+    # Teaming / MWBE — any MWBE teaming partner, or we bid prime, is a plus.
+    try:
+        mwbe = db.scalar(
+            select(func.count(TeamingPartner.id))
+            .join(PursuitPartner, PursuitPartner.teaming_partner_id == TeamingPartner.id)
+            .where(PursuitPartner.pursuit_id == p.id,
+                   or_(TeamingPartner.is_mbe.is_(True), TeamingPartner.is_wbe.is_(True),
+                       TeamingPartner.is_dbe.is_(True)))
+        ) or 0
+    except Exception:
+        mwbe = 0
+    if mwbe or (p.role or "") == "prime":
+        scores["teaming"] = 4
+        notes["teaming"] = ("MWBE partner on team" if mwbe else "Bidding prime")
+
+    # Past performance — do we have project sheets / caps in this sector already?
+    if p.sector:
+        try:
+            refs = db.scalar(
+                select(func.count(LibraryDocument.id)).where(
+                    LibraryDocument.sector == p.sector,
+                    LibraryDocument.category.in_(("project", "capability_statement")))
+            ) or 0
+        except Exception:
+            refs = 0
+        if refs >= 4:
+            scores["past_performance"] = 5; notes["past_performance"] = f"{refs} {p.sector} references on file"
+        elif refs >= 1:
+            scores["past_performance"] = 4; notes["past_performance"] = f"{refs} {p.sector} reference(s) on file"
+
+    # Schedule feasibility — how much runway to the proposal due date.
+    if p.proposal_due_date:
+        days = (p.proposal_due_date - date.today()).days
+        if days < 7:
+            scores["schedule"] = 2; notes["schedule"] = f"{days} days to due date"
+        elif days < 14:
+            scores["schedule"] = 3; notes["schedule"] = f"{days} days to due date"
+        else:
+            scores["schedule"] = 4; notes["schedule"] = f"{days} days to due date"
+
+    return {"scores": scores, "notes": notes}
+
+
+def _gng_score_value(scores: dict) -> float:
+    total = 0.0
+    for key, _label, weight in _GNG_FACTORS:
+        raw = scores.get(key)
+        if raw is None:
+            continue
+        total += weight * (max(1, min(int(raw), 5)) / 5.0) * 100.0
+    return round(total, 1)
+
+
+def _gng_calibration(db: Session) -> dict:
+    """Learn from history: win rate by score band + which factors separate wins from
+    losses. 'Decided' = scored pursuits that reached won/lost (no_go/abandoned are
+    pre-bid drops, excluded from win rate)."""
+    rows = db.scalars(
+        select(Pursuit).where(Pursuit.gng_score.isnot(None), Pursuit.stage.in_(("won", "lost")))
+    ).all()
+    n = len(rows)
+    bands = []
+    for lo, hi, label in _GNG_BANDS:
+        grp = [r for r in rows if lo <= (r.gng_score or 0) < hi]
+        wins = sum(1 for r in grp if r.stage == "won")
+        bands.append({"band": label, "lo": lo, "hi": hi, "n": len(grp), "wins": wins,
+                      "win_rate": round(wins / len(grp), 3) if grp else None})
+    # per-factor lift = mean factor score among wins minus among losses
+    factor_lift = []
+    for key, label, _w in _GNG_FACTORS:
+        won_vals, lost_vals = [], []
+        for r in rows:
+            try:
+                v = json.loads(r.gng_scores_json or "{}").get(key)
+            except Exception:
+                v = None
+            if v is None:
+                continue
+            (won_vals if r.stage == "won" else lost_vals).append(float(v))
+        if won_vals and lost_vals:
+            lift = round(sum(won_vals) / len(won_vals) - sum(lost_vals) / len(lost_vals), 2)
+            factor_lift.append({"key": key, "label": label, "lift": lift,
+                                "avg_won": round(sum(won_vals) / len(won_vals), 2),
+                                "avg_lost": round(sum(lost_vals) / len(lost_vals), 2)})
+    factor_lift.sort(key=lambda x: -x["lift"])
+    # data-driven thresholds: lowest band whose win rate clears the target
+    calibrated = n >= 8
+    go_cut, cond_cut = 70.0, 50.0
+    if calibrated:
+        go_bands = [b for b in bands if b["win_rate"] is not None and b["win_rate"] >= 0.5 and b["n"] >= 2]
+        cond_bands = [b for b in bands if b["win_rate"] is not None and b["win_rate"] >= 0.3 and b["n"] >= 2]
+        if go_bands:
+            go_cut = float(min(b["lo"] for b in go_bands))
+        if cond_bands:
+            cond_cut = float(min(b["lo"] for b in cond_bands))
+    overall_win_rate = round(sum(1 for r in rows if r.stage == "won") / n, 3) if n else None
+    return {"sample_size": n, "calibrated": calibrated, "overall_win_rate": overall_win_rate,
+            "bands": bands, "factor_lift": factor_lift,
+            "thresholds": {"go": go_cut, "conditional": cond_cut}}
+
+
+def _gng_expected_win_rate(cal: dict, score: float):
+    if not cal.get("calibrated"):
+        return None
+    for b in cal["bands"]:
+        if b["lo"] <= score < b["hi"] and b["win_rate"] is not None:
+            return b["win_rate"]
+    return cal.get("overall_win_rate")
+
+
+def _gng_recommendation(score: float, cal: dict) -> str:
+    th = cal["thresholds"]
+    return "go" if score >= th["go"] else ("conditional" if score >= th["conditional"] else "no_go")
+
+
+@app.get("/bd/gng/calibration")
+def bd_gng_calibration(db: Session = Depends(get_db),
+                       _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    return _gng_calibration(db)
+
+
+@app.post("/pursuits/{pursuit_id}/gng/suggest")
+def suggest_pursuit_gng(pursuit_id: int, db: Session = Depends(get_db),
+                        _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    """Algorithm proposes a starting score set from the pursuit's own data (does not save)."""
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    auto = _gng_auto_scores(db, p)
+    score = _gng_score_value(auto["scores"])
+    cal = _gng_calibration(db)
+    return {"scores": auto["scores"], "notes": auto["notes"], "preview_score": score,
+            "recommendation": _gng_recommendation(score, cal),
+            "expected_win_rate": _gng_expected_win_rate(cal, score),
+            "factors": [{"key": k, "label": l, "weight": w} for k, l, w in _GNG_FACTORS]}
+
+
+# ---- BD time per pursuit (Phase 3): what chasing each job actually costs ----------
+def _user_cost_rate(db: Session, user_id: int) -> float:
+    r = db.scalar(select(UserRate).where(UserRate.user_id == user_id)
+                  .order_by(UserRate.effective_date.desc()))
+    return float(r.cost_rate) if r else 0.0
+
+
+def _bd_overhead_ids(db: Session) -> tuple[int, int, int]:
+    """Find-or-create the Business Development overhead project/task/subtask that BD
+    time is logged against (so it lands as indirect labor, not billable project time)."""
+    proj = db.scalar(select(Project).where(Project.name == "Business Development"))
+    if not proj:
+        proj = Project(name="Business Development", client_name="Internal", is_overhead=True,
+                       is_billable=False, is_active=True, lifecycle_status="active",
+                       source="system", overall_budget_fee=0.0)
+        db.add(proj); db.flush()
+    task = db.scalar(select(Task).where(Task.project_id == proj.id, Task.name == "Pursuits"))
+    if not task:
+        task = Task(project_id=proj.id, name="Pursuits", is_billable=False)
+        db.add(task); db.flush()
+    sub = db.scalar(select(Subtask).where(Subtask.task_id == task.id))
+    if not sub:
+        sub = Subtask(task_id=task.id, code="BD", name="Business development", budget_hours=0, budget_fee=0)
+        db.add(sub); db.flush()
+    return proj.id, task.id, sub.id
+
+
+def _pursuit_bd_effort(db: Session, pursuit_id: int) -> tuple[float, float]:
+    hrs, cost = db.execute(
+        select(func.coalesce(func.sum(TimeEntry.hours), 0.0),
+               func.coalesce(func.sum(TimeEntry.hours * TimeEntry.cost_rate_applied), 0.0))
+        .where(TimeEntry.pursuit_id == pursuit_id)).one()
+    return round(float(hrs or 0), 1), round(float(cost or 0), 2)
+
+
+class PursuitTimeIn(BaseModel):
+    hours: float
+    user_id: int | None = None
+    work_date: str | None = None
+    note: str | None = None
+
+
+@app.post("/pursuits/{pursuit_id}/time")
+def log_pursuit_time(pursuit_id: int, body: PursuitTimeIn, db: Session = Depends(get_db),
+                     user: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    """Log business-development hours against a pursuit. Books as overhead labor at the
+    person's loaded cost rate, tagged with the pursuit so cost-per-pursuit rolls up."""
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    if not body.hours or body.hours <= 0:
+        raise HTTPException(status_code=400, detail="Hours must be positive.")
+    uid = body.user_id or user.id
+    cost = _user_cost_rate(db, uid)
+    proj_id, task_id, sub_id = _bd_overhead_ids(db)
+    wd = _bd_parse_date(body.work_date) or date.today()
+    db.add(TimeEntry(user_id=uid, project_id=proj_id, task_id=task_id, subtask_id=sub_id,
+                     work_date=wd, hours=float(body.hours), note=(body.note or f"BD: {p.name}"),
+                     bill_rate_applied=0.0, cost_rate_applied=cost, pursuit_id=pursuit_id,
+                     is_billable=False, billed=False, source="manual"))
+    db.commit()
+    hrs, tcost = _pursuit_bd_effort(db, pursuit_id)
+    return {"ok": True, "bd_hours": hrs, "bd_cost": tcost, "entry_cost_rate": cost}
+
+
+# ---- Phase 4: assemble a proposal kit + win/loss reviews ---------------------------
+def _lib_pick(db: Session, category: str, sector=None, agency=None,
+              current_only: bool = False, limit: int = 8) -> list[dict]:
+    """Rank vault docs of a category for this pursuit by sector/agency/current match."""
+    conds = [LibraryDocument.category == category]
+    if current_only:
+        conds.append(LibraryDocument.is_current.is_(True))
+    rows = db.scalars(select(LibraryDocument).where(*conds)).all()
+
+    def score(d) -> int:
+        s = 0
+        if sector and d.sector == sector:
+            s += 2
+        if agency and d.agency and agency.lower() in (d.agency or "").lower():
+            s += 2
+        if d.is_current:
+            s += 1
+        return s
+
+    return [_library_out(d) for d in sorted(rows, key=score, reverse=True)[:limit]]
+
+
+@app.get("/pursuits/{pursuit_id}/assemble")
+def assemble_pursuit(pursuit_id: int, db: Session = Depends(get_db),
+                     _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    """Surface a proposal working set for this solicitation: the right resumes, project
+    sheets, capability statement, certifications, references and past proposals — one call."""
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    sec, ag = p.sector, p.agency
+    kit = {
+        "resumes": _lib_pick(db, "resume", sector=sec, current_only=True, limit=8),
+        "project_sheets": _lib_pick(db, "project", sector=sec, agency=ag, limit=8),
+        "capability_statements": _lib_pick(db, "capability_statement", sector=sec, current_only=True, limit=4),
+        "certifications": _lib_pick(db, "certificate", current_only=True, limit=12),
+        "client_references": _lib_pick(db, "client_reference", agency=ag, limit=5),
+        "past_proposals": _lib_pick(db, "past_proposal", sector=sec, agency=ag, limit=6),
+    }
+    return {"pursuit": {"id": p.id, "name": p.name, "agency": ag, "sector": sec},
+            "counts": {k: len(v) for k, v in kit.items()}, **kit}
+
+
+def _review_out(r: WinLossReview) -> dict:
+    return {"exists": True, "id": r.id, "pursuit_id": r.pursuit_id, "outcome": r.outcome,
+            "price_competitive": r.price_competitive,
+            "reasons": [t.strip() for t in (r.reasons or "").split(",") if t.strip()],
+            "reuse_notes": r.reuse_notes,
+            "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None}
+
+
+class ReviewIn(BaseModel):
+    outcome: str | None = None
+    price_competitive: int | None = None
+    reasons: str | None = None
+    reuse_notes: str | None = None
+
+
+@app.get("/pursuits/{pursuit_id}/review")
+def get_review(pursuit_id: int, db: Session = Depends(get_db),
+               _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    rev = db.scalar(select(WinLossReview).where(WinLossReview.pursuit_id == pursuit_id))
+    return _review_out(rev) if rev else {"exists": False}
+
+
+@app.post("/pursuits/{pursuit_id}/review")
+def upsert_review(pursuit_id: int, body: ReviewIn, db: Session = Depends(get_db),
+                  user: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    p = db.get(Pursuit, pursuit_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pursuit not found")
+    rev = db.scalar(select(WinLossReview).where(WinLossReview.pursuit_id == pursuit_id))
+    if not rev:
+        default_outcome = p.stage if p.stage in ("won", "lost", "no_go") else "lost"
+        rev = WinLossReview(pursuit_id=pursuit_id, outcome=body.outcome or default_outcome)
+        db.add(rev)
+    if body.outcome:
+        rev.outcome = body.outcome
+    if body.price_competitive is not None:
+        rev.price_competitive = body.price_competitive
+    if body.reasons is not None:
+        rev.reasons = body.reasons[:512]
+    if body.reuse_notes is not None:
+        rev.reuse_notes = body.reuse_notes
+    rev.reviewed_by = user.id
+    rev.reviewed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(rev)
+    return _review_out(rev)
 
 
 @app.post("/pursuits/{pursuit_id}/convert")
@@ -6052,6 +6453,30 @@ def bd_metrics(db: Session = Depends(get_db), _: User = Depends(require_permissi
     loss_reasons: dict[str, int] = {}
     for p in lost:
         loss_reasons[p.outcome_reason or "unspecified"] = loss_reasons.get(p.outcome_reason or "unspecified", 0) + 1
+    # BD effort cost per pursuit (Phase 3): what chasing work costs, and cost per win.
+    bd_rows = db.execute(
+        select(TimeEntry.pursuit_id, func.sum(TimeEntry.hours),
+               func.sum(TimeEntry.hours * TimeEntry.cost_rate_applied))
+        .where(TimeEntry.pursuit_id.isnot(None)).group_by(TimeEntry.pursuit_id)).all()
+    bd_by_pursuit = {pid: (float(h or 0), float(c or 0)) for pid, h, c in bd_rows}
+    pmap = {p.id: p for p in pursuits}
+    bd_cost_total = round(sum(c for _h, c in bd_by_pursuit.values()), 2)
+    bd_hours_total = round(sum(h for h, _c in bd_by_pursuit.values()), 1)
+    bd_cost_won = round(sum(bd_by_pursuit.get(p.id, (0.0, 0.0))[1] for p in won), 2)
+    cost_per_win = round(bd_cost_total / len(won), 2) if won else None
+    top_bd_cost = sorted(
+        [{"pursuit_id": pid, "name": pmap[pid].name if pid in pmap else "?",
+          "stage": pmap[pid].stage if pid in pmap else "", "hours": round(h, 1), "cost": round(c, 2)}
+         for pid, (h, c) in bd_by_pursuit.items()],
+        key=lambda x: -x["cost"])[:8]
+    # Win/loss review insights (Phase 4): reason tags tallied by outcome.
+    review_reasons: dict[str, dict[str, int]] = {"won": {}, "lost": {}, "no_go": {}}
+    for r in db.scalars(select(WinLossReview)).all():
+        bucket = review_reasons.setdefault(r.outcome or "lost", {})
+        for tag in (r.reasons or "").split(","):
+            tag = tag.strip()
+            if tag:
+                bucket[tag] = bucket.get(tag, 0) + 1
     return {
         "open_count": len(open_p),
         "weighted_pipeline": round(weighted, 2),
@@ -6064,6 +6489,10 @@ def bd_metrics(db: Session = Depends(get_db), _: User = Depends(require_permissi
         "upcoming": upcoming[:20],
         "aging": aging[:20],
         "loss_reasons": loss_reasons,
+        "bd_cost_total": bd_cost_total, "bd_hours_total": bd_hours_total,
+        "bd_cost_won": bd_cost_won, "cost_per_win": cost_per_win,
+        "top_bd_cost": top_bd_cost,
+        "review_reasons": review_reasons,
     }
 
 
@@ -6074,7 +6503,11 @@ _LIBRARY_CATEGORIES = [
     ("rfp", "RFPs / Solicitations"),
     ("resume", "Resumes"),
     ("project", "Past Projects"),
+    ("capability_statement", "Capability Statements"),
     ("certificate", "Certificates & Licenses"),
+    ("client_reference", "Client References"),
+    ("past_proposal", "Past Proposals"),
+    ("win_theme", "Win Themes / Lessons"),
     ("financial", "Financials"),
     ("boilerplate", "Boilerplate / Narratives"),
     ("other", "Other"),
@@ -6092,28 +6525,74 @@ def library_config(_: User = Depends(require_permission("VIEW_FINANCIALS"))):
 
 
 def _library_out(d: LibraryDocument) -> dict:
+    exp = getattr(d, "expires_on", None)
+    days_to_expiry = (exp - date.today()).days if exp else None
     return {
         "id": d.id, "category": d.category, "title": d.title, "description": d.description,
         "tags": [t.strip() for t in (d.tags or "").split(",") if t.strip()],
         "status": d.status, "pursuit_id": d.pursuit_id, "filename": d.filename,
         "content_type": d.content_type, "size_bytes": d.size_bytes,
+        "sector": getattr(d, "sector", None), "agency": getattr(d, "agency", None),
+        "discipline": getattr(d, "discipline", None),
+        "person_user_id": getattr(d, "person_user_id", None),
+        "project_id": getattr(d, "project_id", None),
+        "is_current": bool(getattr(d, "is_current", True)),
+        "expires_on": exp.isoformat() if exp else None,
+        "days_to_expiry": days_to_expiry,
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
 
 
+def _parse_iso_date(s: str | None):
+    if not s or not s.strip():
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(s.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 @app.get("/library")
 def list_library(category: str | None = None, pursuit_id: int | None = None, q: str | None = None,
+                 sector: str | None = None, agency: str | None = None, discipline: str | None = None,
+                 current: bool | None = None,
                  db: Session = Depends(get_db), _: User = Depends(require_permission("VIEW_FINANCIALS"))):
     sel = select(LibraryDocument)
     if category:
         sel = sel.where(LibraryDocument.category == category)
     if pursuit_id:
         sel = sel.where(LibraryDocument.pursuit_id == pursuit_id)
+    if sector:
+        sel = sel.where(LibraryDocument.sector == sector)
+    if agency:
+        sel = sel.where(LibraryDocument.agency == agency)
+    if discipline:
+        sel = sel.where(LibraryDocument.discipline == discipline)
+    if current is True:
+        sel = sel.where(LibraryDocument.is_current.is_(True))
     if q:
-        sel = sel.where(or_(LibraryDocument.title.ilike(f"%{q}%"),
-                            LibraryDocument.tags.ilike(f"%{q}%"),
-                            LibraryDocument.description.ilike(f"%{q}%")))
-    rows = db.scalars(sel.order_by(LibraryDocument.created_at.desc())).all()
+        like = f"%{q}%"
+        sel = sel.where(or_(LibraryDocument.title.ilike(like),
+                            LibraryDocument.tags.ilike(like),
+                            LibraryDocument.description.ilike(like),
+                            LibraryDocument.agency.ilike(like)))
+    rows = db.scalars(sel.order_by(LibraryDocument.is_current.desc(),
+                                   LibraryDocument.created_at.desc())).all()
+    return {"items": [_library_out(d) for d in rows]}
+
+
+@app.get("/library/expiring")
+def library_expiring(within_days: int = 60, db: Session = Depends(get_db),
+                     _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    """Certificates/licenses expiring within `within_days` (default 60) — renewal alerts."""
+    cutoff = date.today() + timedelta(days=within_days)
+    rows = db.scalars(
+        select(LibraryDocument)
+        .where(LibraryDocument.expires_on.isnot(None), LibraryDocument.expires_on <= cutoff)
+        .order_by(LibraryDocument.expires_on.asc())
+    ).all()
     return {"items": [_library_out(d) for d in rows]}
 
 
@@ -6126,6 +6605,13 @@ async def upload_library(
     tags: str = Form(""),
     status: str = Form(""),
     pursuit_id: str = Form(""),
+    sector: str = Form(""),
+    agency: str = Form(""),
+    discipline: str = Form(""),
+    expires_on: str = Form(""),
+    is_current: str = Form("true"),
+    person_user_id: str = Form(""),
+    project_id: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("VIEW_FINANCIALS")),
 ):
@@ -6143,6 +6629,12 @@ async def upload_library(
         pursuit_id=pid, filename=(file.filename or "file")[:255],
         content_type=(file.content_type or "application/octet-stream")[:128],
         size_bytes=len(raw), content=raw, uploaded_by_user_id=user.id,
+        sector=(sector.strip() or None), agency=(agency.strip() or None),
+        discipline=(discipline.strip() or None),
+        expires_on=_parse_iso_date(expires_on),
+        is_current=(str(is_current).strip().lower() not in ("false", "0", "no", "")),
+        person_user_id=int(person_user_id) if person_user_id.strip().isdigit() else None,
+        project_id=int(project_id) if project_id.strip().isdigit() else None,
     )
     db.add(d)
     db.commit()
@@ -6159,6 +6651,30 @@ def download_library(doc_id: int, db: Session = Depends(get_db),
     safe = (d.filename or "document").replace('"', "").replace("\n", "")
     return Response(content=d.content, media_type=d.content_type or "application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="{safe}"'})
+
+
+@app.patch("/library/{doc_id}")
+def update_library(doc_id: int, patch: dict = Body(...), db: Session = Depends(get_db),
+                   _: User = Depends(require_permission("VIEW_FINANCIALS"))):
+    """Edit vault metadata in place (tag/classify existing docs without re-uploading)."""
+    d = db.get(LibraryDocument, doc_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    for f in ("title", "description", "tags", "status", "sector", "agency", "discipline"):
+        if f in patch and patch[f] is not None:
+            setattr(d, f, str(patch[f])[:512])
+    if patch.get("category") in _LIBRARY_CAT_KEYS:
+        d.category = patch["category"]
+    if "is_current" in patch:
+        d.is_current = bool(patch["is_current"])
+    if "expires_on" in patch:
+        d.expires_on = _parse_iso_date(patch.get("expires_on"))
+    if "pursuit_id" in patch:
+        pv = patch.get("pursuit_id")
+        d.pursuit_id = int(pv) if str(pv or "").strip().isdigit() else None
+    db.commit()
+    db.refresh(d)
+    return _library_out(d)
 
 
 @app.delete("/library/{doc_id}")

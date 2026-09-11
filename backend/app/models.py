@@ -144,6 +144,9 @@ class TimeEntry(Base):
     note: Mapped[str] = mapped_column(Text, default="")
     bill_rate_applied: Mapped[float] = mapped_column(Float)
     cost_rate_applied: Mapped[float] = mapped_column(Float)
+    # BD time attributed to a specific pursuit (business-development hours), so the true
+    # cost of chasing each job rolls up. Null for normal project / overhead time.
+    pursuit_id: Mapped[int | None] = mapped_column(ForeignKey("pursuits.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     # Provenance + external-id (FreshBooks time-entry id). Used by sync_time_entries to upsert.
     # Values: manual | freshbooks_api
@@ -612,12 +615,21 @@ class LibraryDocument(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     category: Mapped[str] = mapped_column(String(32), default="other", index=True)
-    # rfp | resume | project | certificate | financial | boilerplate | other
+    # rfp | resume | project | certificate | capability_statement | client_reference
+    # | past_proposal | win_theme | financial | boilerplate | other
     title: Mapped[str] = mapped_column(String(255), index=True)
     description: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[str] = mapped_column(String(512), default="")
     status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # RFPs: new|current|previous
     pursuit_id: Mapped[int | None] = mapped_column(ForeignKey("pursuits.id"), nullable=True, index=True)
+    # --- Phase-1 vault metadata: makes "surface the right base data fast" possible ---
+    sector: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)      # water|transportation|buildings|energy|environmental...
+    agency: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)      # DEP|DDC|DOT|PANYNJ|NYCHA|private...
+    discipline: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # civil|mechanical|CPM|modeling|QAQC...
+    person_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)   # resumes
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)    # project sheets
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)            # latest resume/cert/cap statement
+    expires_on: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)       # certs -> expiry alerts
     filename: Mapped[str] = mapped_column(String(255), default="")
     content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(default=0)
@@ -639,6 +651,22 @@ class Activity(Base):
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class WinLossReview(Base):
+    """Structured post-decision review for a pursuit — why we won/lost and what to
+    reuse next time. Feeds 'learning from wins' back into the pursuit process."""
+
+    __tablename__ = "win_loss_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pursuit_id: Mapped[int] = mapped_column(ForeignKey("pursuits.id"), index=True)
+    outcome: Mapped[str] = mapped_column(String(16))                 # won | lost | no_go
+    price_competitive: Mapped[int | None] = mapped_column(nullable=True)  # 1..5 (5 = very)
+    reasons: Mapped[str] = mapped_column(String(512), default="")    # tags: relationship,price,past-performance,teaming,timing,scope
+    reuse_notes: Mapped[str] = mapped_column(Text, default="")       # what to lift into the next proposal
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class AppSetting(Base):
