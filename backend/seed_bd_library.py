@@ -211,14 +211,23 @@ def main():
             continue
         n += 1
         if COMMIT:
-            raw = f.read_bytes()
-            s.add(LibraryDocument(
-                category=r["category"], title=r["title"], description="",
-                tags=r["tags"], status=r.get("status"),
-                agency=r["agency"], sector=r["sector"], discipline=r["discipline"],
-                is_current=r["is_current"], filename=f.name[:255],
-                content_type=CT.get(f.suffix.lower(), "application/octet-stream"),
-                size_bytes=sz, content=raw))
+            try:
+                raw = f.read_bytes()
+                s.add(LibraryDocument(
+                    category=r["category"], title=r["title"], description="",
+                    tags=r["tags"], status=r.get("status"),
+                    agency=r["agency"], sector=r["sector"], discipline=r["discipline"],
+                    is_current=r["is_current"], filename=f.name[:255],
+                    content_type=CT.get(f.suffix.lower(), "application/octet-stream"),
+                    size_bytes=sz, content=raw))
+                s.commit()                          # per-doc commit → single-row insert; durable + resumable
+                existing.add(key)
+                if n % 25 == 0:
+                    print(f"  committed {n} docs...", flush=True)
+            except Exception as ex:                 # one bad/large file won't abort the whole run
+                s.rollback()
+                n -= 1
+                print(f"  SKIP {f.name[:45]} ({sz // 1024}KB): {str(ex)[:70]}", flush=True)
         else:
             print(f"  [{r['category']:14}] {r['title'][:60]:60} "
                   f"agency={r['agency'] or '-':14} tags={r['tags'] or '-'}")
