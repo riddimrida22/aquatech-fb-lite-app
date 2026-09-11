@@ -10,6 +10,7 @@ type Pursuit = {
   win_strategy: string; scope_summary: string; incumbent: string | null;
   gng_score: number | null; gng_recommendation: string | null; gng_scores?: Record<string, number>;
   outcome_reason?: string | null; converted_project_id?: number | null;
+  bd_hours?: number; bd_cost?: number;
   activities?: Activity[];
 };
 type Activity = { id: number; kind: string; subject: string; body: string; due_date: string | null; completed: boolean; occurred_at: string | null };
@@ -21,7 +22,14 @@ type Metrics = {
   upcoming: { pursuit_id: number; name: string; kind: string; date: string; days_out: number }[];
   aging: { pursuit_id: number; name: string; stage: string; days_open: number }[];
   loss_reasons: Record<string, number>;
+  bd_cost_total?: number; bd_hours_total?: number; bd_cost_won?: number; cost_per_win?: number | null;
+  top_bd_cost?: { pursuit_id: number; name: string; stage: string; hours: number; cost: number }[];
+  review_reasons?: { won?: Record<string, number>; lost?: Record<string, number>; no_go?: Record<string, number> };
 };
+type KitDoc = { id: number; title: string; agency: string | null; sector: string | null };
+type Kit = { pursuit: { id: number; name: string; agency: string | null; sector: string | null };
+  counts: Record<string, number>; resumes: KitDoc[]; project_sheets: KitDoc[];
+  capability_statements: KitDoc[]; certifications: KitDoc[]; client_references: KitDoc[]; past_proposals: KitDoc[] };
 
 const STAGE_LABEL: Record<string, string> = {
   lead: "Lead", qualifying: "Qualifying", go_no_go: "Go / No-Go", pursuing: "Pursuing",
@@ -57,7 +65,7 @@ export function BdWorkspace() {
             <button key={t} type="button" onClick={() => setTab(t)}
               style={{ border: "none", cursor: "pointer", borderRadius: 999, padding: "6px 16px", fontSize: 13, fontWeight: 600,
                 background: tab === t ? ACCENT : "transparent", color: tab === t ? "#fff" : "inherit" }}>
-              {t === "dashboard" ? "Dashboard" : t === "pipeline" ? "Pipeline" : "Library"}
+              {t === "dashboard" ? "Dashboard" : t === "pipeline" ? "Pipeline" : "Vault"}
             </button>
           ))}
         </div>
@@ -91,6 +99,58 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   );
 }
 
+type Calibration = {
+  sample_size: number; calibrated: boolean; overall_win_rate: number | null;
+  bands: { band: string; lo: number; hi: number; n: number; wins: number; win_rate: number | null }[];
+  factor_lift: { key: string; label: string; lift: number; avg_won: number; avg_lost: number }[];
+  thresholds: { go: number; conditional: number };
+};
+
+function GngCalibration() {
+  const [cal, setCal] = useState<Calibration | null>(null);
+  useEffect(() => { apiGet<Calibration>("/bd/gng/calibration").then(setCal).catch(() => {}); }, []);
+  if (!cal) return null;
+  const label = { fontSize: 12, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: 0.4, opacity: 0.6, marginBottom: 6 };
+  return (
+    <div className="aq-lite-panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+        <h3 style={{ margin: 0 }}>Go / No-Go calibration</h3>
+        <span style={{ fontSize: 12.5, opacity: 0.6 }}>
+          {cal.calibrated ? `learned from ${cal.sample_size} decided pursuits · recommend GO at ${cal.thresholds.go}+` : `${cal.sample_size} decided pursuits (need 8+ to calibrate)`}
+        </span>
+      </div>
+      {!cal.calibrated ? (
+        <p className="aq-lite-muted" style={{ marginBottom: 0 }}>Score pursuits and record their outcomes; the win rate by score and the factors that predict wins will calibrate to your own history.</p>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 10 }}>
+          <div>
+            <div style={label}>Win rate by score band</div>
+            {cal.bands.filter((b) => b.n > 0).map((b) => (
+              <div key={b.band} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 5 }}>
+                <div style={{ width: 66, fontSize: 12.5, fontFamily: "monospace" }}>{b.band}</div>
+                <div style={{ flex: 1, background: "rgba(0,0,0,0.05)", borderRadius: 5, height: 18 }}>
+                  <div style={{ width: `${(b.win_rate || 0) * 100}%`, background: (b.win_rate || 0) >= 0.5 ? "#10b981" : "#f59e0b", height: "100%", borderRadius: 5, minWidth: 2 }} />
+                </div>
+                <div style={{ width: 82, textAlign: "right", fontSize: 12.5 }}>{b.win_rate != null ? `${Math.round(b.win_rate * 100)}%` : "—"} <span style={{ opacity: 0.5 }}>({b.n})</span></div>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div style={label}>What separates wins from losses</div>
+            {cal.factor_lift.slice(0, 5).map((f) => (
+              <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, fontSize: 12.5 }}>
+                <div style={{ flex: 1 }}>{f.label}</div>
+                <div style={{ fontFamily: "monospace", color: f.lift > 0 ? "#10b981" : "#ef4444", fontWeight: 600 }}>{f.lift > 0 ? "+" : ""}{f.lift.toFixed(1)}</div>
+                <div style={{ width: 96, textAlign: "right", opacity: 0.55 }}>won {f.avg_won} · lost {f.avg_lost}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Dashboard({ metrics, onOpen }: { metrics: Metrics | null; onOpen: (id: number) => void }) {
   if (!metrics) return <div className="aq-lite-panel">Loading pipeline…</div>;
   const maxStage = Math.max(1, ...OPEN_STAGES.map((s) => metrics.by_stage[s]?.value || 0));
@@ -100,6 +160,7 @@ function Dashboard({ metrics, onOpen }: { metrics: Metrics | null; onOpen: (id: 
         <Kpi label="Weighted pipeline" value={fmt$(metrics.weighted_pipeline)} sub={`${fmt$(metrics.raw_pipeline)} unweighted`} />
         <Kpi label="Open pursuits" value={String(metrics.open_count)} />
         <Kpi label="Hit rate" value={metrics.hit_rate_pct != null ? `${metrics.hit_rate_pct}%` : "—"} sub={`${metrics.won_count}W / ${metrics.lost_count}L`} />
+        <Kpi label="Cost per win" value={metrics.cost_per_win != null ? fmt$(metrics.cost_per_win) : "—"} sub={metrics.bd_cost_total != null ? `${fmt$(metrics.bd_cost_total)} BD labor` : undefined} />
         <Kpi label="Deadlines (60d)" value={String(metrics.upcoming.length)} />
       </div>
 
@@ -118,6 +179,54 @@ function Dashboard({ metrics, onOpen }: { metrics: Metrics | null; onOpen: (id: 
           );
         })}
       </div>
+
+      <GngCalibration />
+
+      {metrics.top_bd_cost && metrics.top_bd_cost.length > 0 && (
+        <div className="aq-lite-panel">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+            <h3 style={{ margin: 0 }}>Cost of chasing work</h3>
+            <span style={{ fontSize: 12.5, opacity: 0.6 }}>{fmt$(metrics.bd_cost_total)} BD labor · {metrics.bd_hours_total}h · {fmt$(metrics.cost_per_win)}/win</span>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            {metrics.top_bd_cost.map((t) => {
+              const lost = t.stage === "lost" || t.stage === "no_go";
+              return (
+                <div key={t.pursuit_id} onClick={() => onOpen(t.pursuit_id)} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid var(--aq-border,rgba(0,0,0,0.06))" }}>
+                  <span style={{ flex: 1, fontSize: 13 }}>{t.name.slice(0, 46)}</span>
+                  <span style={{ width: 78, textAlign: "right", fontSize: 11, textTransform: "uppercase", fontWeight: 700, color: t.stage === "won" ? "#10b981" : lost ? "#ef4444" : "#60717a" }}>{STAGE_LABEL[t.stage] || t.stage}</span>
+                  <span style={{ width: 54, textAlign: "right", fontSize: 12.5, opacity: 0.65 }}>{t.hours}h</span>
+                  <span style={{ width: 84, textAlign: "right", fontSize: 13, fontWeight: 600 }}>{fmt$(t.cost)}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="aq-lite-muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>Red = effort spent on pursuits that did not convert.</p>
+        </div>
+      )}
+
+      {metrics.review_reasons && (Object.keys(metrics.review_reasons.won || {}).length > 0 || Object.keys(metrics.review_reasons.lost || {}).length > 0) && (
+        <div className="aq-lite-panel">
+          <h3 style={{ marginTop: 0 }}>Why pursuits are won and lost</h3>
+          <p className="aq-lite-muted" style={{ fontSize: 12.5, marginTop: -4 }}>Tallied from win/loss reviews.</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            {(["won", "lost"] as const).map((k) => (
+              <div key={k}>
+                <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: k === "won" ? "#10b981" : "#ef4444", marginBottom: 6 }}>{k === "won" ? "Wins" : "Losses"}</div>
+                {Object.entries(metrics.review_reasons?.[k] || {}).sort((a, b) => b[1] - a[1]).map(([tag, n]) => (
+                  <div key={tag} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: 13 }}>
+                    <div style={{ flex: 1 }}>{tag}</div>
+                    <div style={{ width: 110, background: "rgba(0,0,0,0.05)", borderRadius: 4, height: 12 }}>
+                      <div style={{ width: `${Math.min(100, n * 14)}%`, background: k === "won" ? "#10b981" : "#ef4444", height: "100%", borderRadius: 4 }} />
+                    </div>
+                    <div style={{ width: 20, textAlign: "right", opacity: 0.6 }}>{n}</div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="aq-lite-grid aq-lite-grid-2">
         <div className="aq-lite-panel">
@@ -232,8 +341,16 @@ function CreateModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
 function DetailModal({ id, factors, onClose, onChanged }: { id: number; factors: GngFactor[]; onClose: () => void; onChanged: () => void }) {
   const [p, setP] = useState<Pursuit | null>(null);
   const [scores, setScores] = useState<Record<string, number>>({});
+  const [expWin, setExpWin] = useState<number | null>(null);
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [logHrs, setLogHrs] = useState("");
+  const [kit, setKit] = useState<Kit | null>(null);
+  const [review, setReview] = useState<{ outcome: string; price_competitive: number | null; reasons: string[]; reuse_notes: string } | null>(null);
   const [actSubject, setActSubject] = useState("");
-  function load() { apiGet<Pursuit>(`/pursuits/${id}`).then((d) => { setP(d); setScores(d.gng_scores || {}); }).catch(() => {}); }
+  function load() {
+    apiGet<Pursuit>(`/pursuits/${id}`).then((d) => { setP(d); setScores(d.gng_scores || {}); }).catch(() => {});
+    apiGet<any>(`/pursuits/${id}/review`).then((r) => { if (r?.exists) setReview({ outcome: r.outcome, price_competitive: r.price_competitive, reasons: r.reasons || [], reuse_notes: r.reuse_notes || "" }); }).catch(() => {});
+  }
   useEffect(load, [id]);
 
   const liveScore = useMemo(() => {
@@ -245,9 +362,25 @@ function DetailModal({ id, factors, onClose, onChanged }: { id: number; factors:
   const recColor = liveScore >= 70 ? "#10b981" : liveScore >= 50 ? "#f59e0b" : "#ef4444";
 
   async function setStage(stage: string) { await apiPatch(`/pursuits/${id}`, { stage }); load(); onChanged(); }
-  async function saveGng() { await apiPost(`/pursuits/${id}/gng`, { scores }); load(); onChanged(); }
+  async function saveGng() { const r: any = await apiPost(`/pursuits/${id}/gng`, { scores }); if (r?.expected_win_rate != null) setExpWin(r.expected_win_rate); load(); onChanged(); }
+  async function suggest() {
+    try {
+      const r: any = await apiPost(`/pursuits/${id}/gng/suggest`, {});
+      if (r?.scores) setScores(r.scores);
+      setNotes(r?.notes || {});
+      setExpWin(r?.expected_win_rate ?? null);
+    } catch { /* ignore */ }
+  }
   async function convert() { if (!confirm("Convert this won pursuit into a Project?")) return; try { await apiPost(`/pursuits/${id}/convert`); load(); onChanged(); } catch (e) { alert("Convert failed: " + (e as Error).message); } }
   async function addTask() { if (!actSubject.trim()) return; await apiPost(`/pursuits/${id}/activities`, { kind: "task", subject: actSubject }); setActSubject(""); load(); }
+  async function logTime() { const h = parseFloat(logHrs); if (!h || h <= 0) return; await apiPost(`/pursuits/${id}/time`, { hours: h }); setLogHrs(""); load(); onChanged(); }
+  async function assemble() { try { setKit(await apiGet<Kit>(`/pursuits/${id}/assemble`)); } catch { /* ignore */ } }
+  function kitDownload(docId: number) { fetch(`${API_BASE}/library/${docId}/download`, { credentials: "include" }).then((r) => r.blob()).then((b) => { const u = URL.createObjectURL(b); const a = document.createElement("a"); a.href = u; a.click(); URL.revokeObjectURL(u); }).catch(() => {}); }
+  const rev = review || { outcome: (p && ["won", "lost", "no_go"].includes(p.stage)) ? p.stage : "lost", price_competitive: null, reasons: [] as string[], reuse_notes: "" };
+  function setRev(patch: Partial<typeof rev>) { setReview({ ...rev, ...patch }); }
+  function toggleReason(tag: string) { setRev({ reasons: rev.reasons.includes(tag) ? rev.reasons.filter((x) => x !== tag) : [...rev.reasons, tag] }); }
+  async function saveReview() { await apiPost(`/pursuits/${id}/review`, { outcome: rev.outcome, price_competitive: rev.price_competitive, reasons: rev.reasons.join(","), reuse_notes: rev.reuse_notes }); onChanged(); }
+  const REASON_TAGS = ["relationship", "price", "past-performance", "teaming", "incumbent", "timing", "scope", "local-knowledge"];
 
   if (!p) return <Modal onClose={onClose} wide>Loading…</Modal>;
   return (
@@ -277,11 +410,19 @@ function DetailModal({ id, factors, onClose, onChanged }: { id: number; factors:
           <div style={{ textAlign: "right" }}>
             <span style={{ fontSize: 24, fontWeight: 800, color: recColor }}>{liveScore}</span>
             <span style={{ fontSize: 13, fontWeight: 700, color: recColor, marginLeft: 8 }}>{rec}</span>
+            {expWin != null && (
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
+                {Math.round(expWin * 100)}% win rate at this score historically
+              </div>
+            )}
           </div>
         </div>
         {factors.map((f) => (
           <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-            <div style={{ flex: 1, fontSize: 13 }}>{f.label} <span style={{ opacity: 0.4 }}>({Math.round(f.weight * 100)}%)</span></div>
+            <div style={{ flex: 1, fontSize: 13 }}>
+              {f.label} <span style={{ opacity: 0.4 }}>({Math.round(f.weight * 100)}%)</span>
+              {notes[f.key] ? <span style={{ opacity: 0.55, fontSize: 11.5, marginLeft: 6 }}>· {notes[f.key]}</span> : null}
+            </div>
             <div style={{ display: "inline-flex", gap: 3 }}>
               {[1, 2, 3, 4, 5].map((n) => (
                 <button key={n} type="button" onClick={() => setScores((s) => ({ ...s, [f.key]: n }))}
@@ -290,8 +431,67 @@ function DetailModal({ id, factors, onClose, onChanged }: { id: number; factors:
             </div>
           </div>
         ))}
-        <button type="button" onClick={saveGng} style={{ marginTop: 8, padding: "7px 16px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", fontWeight: 600, cursor: "pointer" }}>Save score</button>
+        <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+          <button type="button" onClick={suggest} style={{ padding: "7px 16px", borderRadius: 8, border: `1px solid ${ACCENT}`, background: "transparent", color: ACCENT, fontWeight: 600, cursor: "pointer" }}>Suggest from data</button>
+          <button type="button" onClick={saveGng} style={{ padding: "7px 16px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", fontWeight: 600, cursor: "pointer" }}>Save score</button>
+        </div>
       </div>
+
+      <div className="aq-lite-panel" style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <h4 style={{ margin: 0 }}>BD effort on this pursuit</h4>
+          <div style={{ fontSize: 14 }}>
+            <strong>{p.bd_hours ?? 0}h</strong> <span style={{ opacity: 0.55 }}>·</span> <strong>{fmt$(p.bd_cost ?? 0)}</strong> <span style={{ opacity: 0.55, fontSize: 12.5 }}>loaded cost</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+          <input type="number" min="0" step="0.5" value={logHrs} onChange={(e) => setLogHrs(e.target.value)} placeholder="hrs" style={{ ...inputStyle, marginTop: 0, width: 90 }} onKeyDown={(e) => e.key === "Enter" && logTime()} />
+          <button type="button" onClick={logTime} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: ACCENT, color: "#fff", fontWeight: 600, cursor: "pointer" }}>Log BD hours</button>
+          <span className="aq-lite-muted" style={{ fontSize: 12 }}>booked as overhead at your loaded cost rate</span>
+        </div>
+      </div>
+
+      <div className="aq-lite-panel" style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <h4 style={{ margin: 0 }}>Proposal kit</h4>
+          <button type="button" onClick={assemble} style={{ padding: "7px 16px", borderRadius: 8, border: "none", background: ACCENT, color: "#fff", fontWeight: 600, cursor: "pointer" }}>Assemble for this RFP</button>
+        </div>
+        {!kit ? (
+          <p className="aq-lite-muted" style={{ fontSize: 12.5, marginTop: 6, marginBottom: 0 }}>Pull the matching resumes, project sheets, capability statement, certs and references for {p.sector || "this sector"} / {p.agency || "this agency"} in one click.</p>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            {([["resumes", "Resumes"], ["project_sheets", "Project sheets"], ["capability_statements", "Capability statements"], ["certifications", "Certifications"], ["client_references", "Client references"], ["past_proposals", "Past proposals"]] as const).map(([key, label]) => {
+              const docs = (kit as any)[key] as KitDoc[];
+              if (!docs || docs.length === 0) return null;
+              return (
+                <div key={key} style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, opacity: 0.6, marginBottom: 2 }}>{label} ({docs.length})</div>
+                  {docs.slice(0, 5).map((d) => (
+                    <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0", fontSize: 13 }}>
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.title}</span>
+                      {d.agency ? <span style={{ fontSize: 11, opacity: 0.5 }}>{d.agency}</span> : null}
+                      <button type="button" onClick={() => kitDownload(d.id)} style={{ padding: "2px 10px", fontSize: 12, borderRadius: 6, border: "1px solid var(--aq-border,rgba(0,0,0,0.15))", background: "transparent", cursor: "pointer", color: "inherit" }}>Download</button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {["won", "lost", "no_go"].includes(p.stage) && (
+        <div className="aq-lite-panel" style={{ marginBottom: 12 }}>
+          <h4 style={{ margin: "0 0 6px" }}>Win / loss review</h4>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            {REASON_TAGS.map((t) => (
+              <button key={t} type="button" onClick={() => toggleReason(t)} style={{ padding: "4px 10px", borderRadius: 999, fontSize: 12, cursor: "pointer", border: `1px solid ${rev.reasons.includes(t) ? ACCENT : "var(--aq-border,rgba(0,0,0,0.15))"}`, background: rev.reasons.includes(t) ? ACCENT : "transparent", color: rev.reasons.includes(t) ? "#fff" : "inherit" }}>{t}</button>
+            ))}
+          </div>
+          <textarea value={rev.reuse_notes} onChange={(e) => setRev({ reuse_notes: e.target.value })} placeholder="What to reuse next time — win themes, what worked, what to fix…" style={{ ...inputStyle, marginTop: 0, width: "100%", minHeight: 54 }} />
+          <button type="button" onClick={saveReview} style={{ marginTop: 8, padding: "7px 16px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", fontWeight: 600, cursor: "pointer" }}>Save review</button>
+        </div>
+      )}
 
       <div className="aq-lite-panel">
         <h4 style={{ margin: "0 0 6px" }}>Activity & tasks</h4>
@@ -311,8 +511,13 @@ function DetailModal({ id, factors, onClose, onChanged }: { id: number; factors:
   );
 }
 
-// ============================ Proposal content library ============================
-type LibDoc = { id: number; category: string; title: string; description: string; tags: string[]; status: string | null; filename: string; size_bytes: number; created_at: string | null };
+// ============================ Proposal content vault ============================
+type LibDoc = {
+  id: number; category: string; title: string; description: string; tags: string[];
+  status: string | null; filename: string; size_bytes: number; created_at: string | null;
+  sector: string | null; agency: string | null; discipline: string | null;
+  is_current: boolean; expires_on: string | null; days_to_expiry: number | null;
+};
 type LibCat = { key: string; label: string };
 
 function fmtSize(n: number): string {
@@ -324,21 +529,37 @@ function fmtSize(n: number): string {
 function Library() {
   const [cats, setCats] = useState<LibCat[]>([]);
   const [docs, setDocs] = useState<LibDoc[]>([]);
+  const [expiring, setExpiring] = useState<LibDoc[]>([]);
+  // filters
+  const [q, setQ] = useState("");
+  const [filterCat, setFilterCat] = useState("");
+  const [currentOnly, setCurrentOnly] = useState(false);
+  // upload fields
   const [upCat, setUpCat] = useState("project");
   const [upTitle, setUpTitle] = useState("");
   const [upTags, setUpTags] = useState("");
   const [upStatus, setUpStatus] = useState("current");
+  const [upAgency, setUpAgency] = useState("");
+  const [upSector, setUpSector] = useState("");
+  const [upDiscipline, setUpDiscipline] = useState("");
+  const [upExpires, setUpExpires] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   function refresh() {
-    apiGet<{ items: LibDoc[] }>("/library").then((r) => setDocs(r.items || [])).catch(() => {});
+    const p = new URLSearchParams();
+    if (q.trim()) p.set("q", q.trim());
+    if (filterCat) p.set("category", filterCat);
+    if (currentOnly) p.set("current", "true");
+    const qs = p.toString();
+    apiGet<{ items: LibDoc[] }>(`/library${qs ? `?${qs}` : ""}`).then((r) => setDocs(r.items || [])).catch(() => {});
   }
   useEffect(() => {
     apiGet<{ categories: LibCat[] }>("/library/config").then((c) => setCats(c.categories || [])).catch(() => {});
-    refresh();
+    apiGet<{ items: LibDoc[] }>("/library/expiring").then((r) => setExpiring(r.items || [])).catch(() => {});
   }, []);
+  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [q, filterCat, currentOnly]);
 
   async function upload() {
     if (!file || busy) return;
@@ -350,13 +571,18 @@ function Library() {
       fd.append("title", upTitle || file.name);
       fd.append("tags", upTags);
       if (upCat === "rfp") fd.append("status", upStatus);
+      if (upAgency.trim()) fd.append("agency", upAgency.trim());
+      if (upSector.trim()) fd.append("sector", upSector.trim());
+      if (upDiscipline.trim()) fd.append("discipline", upDiscipline.trim());
+      if (upExpires.trim()) fd.append("expires_on", upExpires.trim());
       const res = await fetch(`${API_BASE}/library`, { method: "POST", credentials: "include", body: fd });
       if (!res.ok) throw new Error(await res.text());
       setMsg(`Uploaded “${upTitle || file.name}”.`);
-      setFile(null); setUpTitle(""); setUpTags("");
+      setFile(null); setUpTitle(""); setUpTags(""); setUpAgency(""); setUpSector(""); setUpDiscipline(""); setUpExpires("");
       const el = document.getElementById("lib-file") as HTMLInputElement | null;
       if (el) el.value = "";
       refresh();
+      apiGet<{ items: LibDoc[] }>("/library/expiring").then((r) => setExpiring(r.items || [])).catch(() => {});
     } catch (e) {
       setMsg(e instanceof Error ? e.message.slice(0, 200) : "Upload failed");
     } finally { setBusy(false); }
@@ -380,12 +606,22 @@ function Library() {
   }
 
   const inp = { padding: "9px 11px", borderRadius: 8, border: "1px solid var(--aq-border,rgba(0,0,0,0.15))", background: "var(--aq-input-bg,#fff)", color: "inherit", fontSize: 14 } as const;
+  const chip = { fontSize: 11, padding: "1px 7px", borderRadius: 999, border: "1px solid var(--aq-border,rgba(0,0,0,0.12))", opacity: 0.85 } as const;
+  const showExpiry = upCat === "certificate";
+  const showTaxonomy = ["project", "capability_statement", "past_proposal", "rfp", "client_reference"].includes(upCat);
+
+  function expiryBadge(d: LibDoc) {
+    if (d.days_to_expiry == null) return null;
+    const c = d.days_to_expiry < 0 ? "#ef4444" : d.days_to_expiry <= 60 ? "#d97706" : "#16a34a";
+    const label = d.days_to_expiry < 0 ? "expired" : `${d.days_to_expiry}d to expiry`;
+    return <span style={{ ...chip, color: c, borderColor: c }}>{label}</span>;
+  }
 
   return (
     <div className="aq-lite-stack">
       <section className="aq-lite-panel">
-        <p className="aq-lite-eyebrow" style={{ margin: 0 }}>Proposal content library</p>
-        <h3 style={{ margin: "2px 0 10px" }}>Reusable pieces for future proposals</h3>
+        <p className="aq-lite-eyebrow" style={{ margin: 0 }}>Proposal content vault</p>
+        <h3 style={{ margin: "2px 0 10px" }}>Base data for responding to RFPs fast</h3>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <input id="lib-file" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13 }} />
           <select value={upCat} onChange={(e) => setUpCat(e.target.value)} style={inp}>
@@ -396,8 +632,24 @@ function Library() {
               <option value="new">New</option><option value="current">Current</option><option value="previous">Previous</option>
             </select>
           ) : null}
-          <input value={upTitle} onChange={(e) => setUpTitle(e.target.value)} placeholder="Title (optional)" style={{ ...inp, flex: 1, minWidth: 160 }} />
-          <input value={upTags} onChange={(e) => setUpTags(e.target.value)} placeholder="tags, comma-sep" style={{ ...inp, width: 160 }} />
+          <input value={upTitle} onChange={(e) => setUpTitle(e.target.value)} placeholder="Title (optional)" style={{ ...inp, flex: 1, minWidth: 150 }} />
+          <input value={upTags} onChange={(e) => setUpTags(e.target.value)} placeholder="tags, comma-sep" style={{ ...inp, width: 150 }} />
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+          {showTaxonomy || upCat === "certificate" ? (
+            <input value={upAgency} onChange={(e) => setUpAgency(e.target.value)} placeholder="Agency (DEP, PANYNJ, NYCHA…)" style={{ ...inp, width: 210 }} />
+          ) : null}
+          {showTaxonomy ? (
+            <input value={upSector} onChange={(e) => setUpSector(e.target.value)} placeholder="Sector (water, transportation…)" style={{ ...inp, width: 210 }} />
+          ) : null}
+          {upCat === "resume" || upCat === "project" ? (
+            <input value={upDiscipline} onChange={(e) => setUpDiscipline(e.target.value)} placeholder="Discipline (civil, CPM…)" style={{ ...inp, width: 180 }} />
+          ) : null}
+          {showExpiry ? (
+            <label style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+              Expires <input type="date" value={upExpires} onChange={(e) => setUpExpires(e.target.value)} style={inp} />
+            </label>
+          ) : null}
           <button type="button" onClick={upload} disabled={!file || busy}
             style={{ border: "none", borderRadius: 8, padding: "9px 18px", fontWeight: 600, cursor: !file || busy ? "default" : "pointer", background: !file || busy ? "rgba(33,115,126,0.5)" : ACCENT, color: "#fff" }}>
             {busy ? "Uploading…" : "Upload"}
@@ -405,6 +657,34 @@ function Library() {
         </div>
         {msg ? <p style={{ marginTop: 8, fontSize: 12.5, color: ACCENT }}>{msg}</p> : null}
         <p className="aq-lite-muted" style={{ marginTop: 8, fontSize: 12 }}>Stored in your database (backed up nightly, survives deploys). 30 MB max per file.</p>
+      </section>
+
+      {expiring.length > 0 ? (
+        <section className="aq-lite-panel" style={{ borderLeft: "3px solid #d97706" }}>
+          <h3 style={{ margin: "0 0 6px" }}>Certifications needing attention <span style={{ opacity: 0.5, fontWeight: 400 }}>({expiring.length})</span></h3>
+          {expiring.map((d) => (
+            <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0", fontSize: 13 }}>
+              <span style={{ fontWeight: 600 }}>{d.title}</span>
+              {d.agency ? <span style={chip}>{d.agency}</span> : null}
+              {expiryBadge(d)}
+              <span style={{ opacity: 0.55, fontSize: 12 }}>{d.expires_on}</span>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
+      <section className="aq-lite-panel">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search title, tag, agency…" style={{ ...inp, flex: 1, minWidth: 200 }} />
+          <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} style={inp}>
+            <option value="">All categories</option>
+            {cats.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
+          <label style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={currentOnly} onChange={(e) => setCurrentOnly(e.target.checked)} /> Current only
+          </label>
+          <span style={{ opacity: 0.55, fontSize: 12.5, marginLeft: "auto" }}>{docs.length} document{docs.length === 1 ? "" : "s"}</span>
+        </div>
       </section>
 
       {cats.map((c) => {
@@ -420,8 +700,15 @@ function Library() {
                     <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {d.title}{d.status ? <span style={{ marginLeft: 8, fontSize: 11, textTransform: "uppercase", opacity: 0.6 }}>{d.status}</span> : null}
                     </div>
-                    <div style={{ fontSize: 12, opacity: 0.6 }}>
-                      {[d.filename, fmtSize(d.size_bytes), (d.created_at || "").slice(0, 10), d.tags.join(" · ")].filter(Boolean).join(" · ")}
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 3 }}>
+                      {d.agency ? <span style={chip}>{d.agency}</span> : null}
+                      {d.sector ? <span style={chip}>{d.sector}</span> : null}
+                      {d.discipline ? <span style={chip}>{d.discipline}</span> : null}
+                      {d.tags.map((t) => <span key={t} style={{ ...chip, opacity: 0.6 }}>{t}</span>)}
+                      {expiryBadge(d)}
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.55, marginTop: 3 }}>
+                      {[d.filename, fmtSize(d.size_bytes), (d.created_at || "").slice(0, 10)].filter(Boolean).join(" · ")}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 6, whiteSpace: "nowrap" }}>
@@ -434,7 +721,7 @@ function Library() {
           </section>
         );
       })}
-      {docs.length === 0 ? <section className="aq-lite-panel"><p className="aq-lite-muted">No documents yet — upload RFPs, resumes, past project sheets, certs, and financials to reuse in proposals.</p></section> : null}
+      {docs.length === 0 ? <section className="aq-lite-panel"><p className="aq-lite-muted">No documents match. Upload RFPs, resumes, past project sheets, capability statements, certs, and client references to reuse in proposals.</p></section> : null}
     </div>
   );
 }

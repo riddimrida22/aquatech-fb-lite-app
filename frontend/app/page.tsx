@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut } from "../lib/api";
 import { deriveUserCapabilities } from "../lib/permissions";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
@@ -156,6 +156,12 @@ type DashTab = (typeof DASH_TABS)[number]["key"];
 
 const BUILD_STAMP = "AqtPM rebuild live on Apr 17, 2026";
 
+// Tenant branding — overridable for demo/white-label builds; defaults keep prod (Aquatech) intact.
+const TENANT_NAME = process.env.NEXT_PUBLIC_TENANT_NAME || "Aquatech P.C.";
+const TENANT_TAGLINE = process.env.NEXT_PUBLIC_TENANT_TAGLINE || "FreshBooks-style operations, trimmed for Aquatech.";
+// Governance ("Settled decisions") panel is internal-only; hide it in white-label/demo builds.
+const SHOW_GOVERNANCE = process.env.NEXT_PUBLIC_HIDE_GOVERNANCE !== "true";
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -226,6 +232,15 @@ export default function AquatechPmHome() {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [timeTab, setTimeTab] = useState<TimeTab>("enter");
   const [dashTab, setDashTab] = useState<DashTab>("overview");
+  const dashTabsRef = useRef<HTMLDivElement>(null);
+  // Switching dashboard subtabs should bring the new view's top into view rather than
+  // leaving the reader scrolled halfway down the previous (often long) tab.
+  const selectDashTab = (key: DashTab) => {
+    setDashTab(key);
+    requestAnimationFrame(() => {
+      dashTabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
@@ -935,7 +950,7 @@ export default function AquatechPmHome() {
         <div className="aq-lite-auth-card">
           <img src="/Aqt_Logo.png" alt="Aquatech" className="aq-lite-auth-logo" />
           <p className="aq-lite-eyebrow">AqtPM</p>
-          <h1>FreshBooks-style operations, trimmed for Aquatech.</h1>
+          <h1>{TENANT_TAGLINE}</h1>
           <p className="aq-lite-auth-copy">
             This revamp keeps the business-critical workflows only: projects, time, timesheets, invoices, receivables,
             and reporting.
@@ -947,7 +962,7 @@ export default function AquatechPmHome() {
                 type="button"
                 onClick={async () => {
                   try {
-                    await apiPost("/auth/dev/login", { email: "bertrand.byrne@aquatechpc.com" });
+                    await apiPost("/auth/dev/login", { email: process.env.NEXT_PUBLIC_DEV_LOGIN_EMAIL || "bertrand.byrne@aquatechpc.com" });
                     window.location.reload();
                   } catch (err) {
                     setError(err instanceof Error ? err.message : "Unable to log in");
@@ -1013,42 +1028,11 @@ export default function AquatechPmHome() {
         <div className="aq-lite-brand">
           <img src="/Aqt_Logo.png" alt="Aquatech" className="aq-lite-brand-logo" />
           <div>
-            <p className="aq-lite-eyebrow">Aquatech P.C.</p>
+            <p className="aq-lite-eyebrow">{TENANT_NAME}</p>
             <strong>AqtPM</strong>
           </div>
         </div>
         <nav className="aq-lite-nav">
-          {(() => {
-            const pOpen = openGroups["payroll"] ?? true;
-            const link = (href: string, label: string, hint: string) => (
-              <a href={href} className={classNames("aq-lite-nav-item", "aq-lite-nav-child")} style={{ textDecoration: "none" }}>
-                <span>{label}</span>
-                <small>{hint}</small>
-              </a>
-            );
-            return (
-              <div className="aq-lite-nav-group">
-                <button
-                  type="button"
-                  className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head")}
-                  aria-expanded={pOpen}
-                  onClick={() => setOpenGroups((g) => ({ ...g, payroll: !pOpen }))}
-                >
-                  <span>Payroll</span>
-                  <small>{pOpen ? "▾" : "▸"} Run · pay · reconcile</small>
-                </button>
-                {pOpen ? (
-                  <>
-                    {capabilities.canViewFinancials ? link("/payroll", "Run payroll", "Preview · approve · pay · stubs") : null}
-                    {capabilities.canViewFinancials ? link("/payroll/reconcile", "Reconcile", "Parallel-run vs Paychex") : null}
-                    {capabilities.canViewFinancials ? link("/payroll/employees", "Employees", "Tax setup / W-4") : null}
-                    {capabilities.canViewFinancials ? link("/payroll/ytd", "YTD setup", "Mid-year cutover figures") : null}
-                    {link("/payroll/me", "My Pay Settings", "401(k) + W-4")}
-                  </>
-                ) : null}
-              </div>
-            );
-          })()}
           {(timeOnly ? NAV.filter((entry) => !isNavGroup(entry) && (entry as NavLeaf).key === "time") : NAV).map((entry) => {
             if (!isNavGroup(entry)) {
               if (entry.requires && !(capabilities as Record<string, boolean>)[entry.requires]) return null;
@@ -1096,6 +1080,37 @@ export default function AquatechPmHome() {
               </div>
             );
           })}
+          {(() => {
+            const pOpen = openGroups["payroll"] ?? false;
+            const link = (href: string, label: string, hint: string) => (
+              <a href={href} className={classNames("aq-lite-nav-item", "aq-lite-nav-child")} style={{ textDecoration: "none" }}>
+                <span>{label}</span>
+                <small>{hint}</small>
+              </a>
+            );
+            return (
+              <div className="aq-lite-nav-group">
+                <button
+                  type="button"
+                  className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head")}
+                  aria-expanded={pOpen}
+                  onClick={() => setOpenGroups((g) => ({ ...g, payroll: !pOpen }))}
+                >
+                  <span>Payroll</span>
+                  <small>{pOpen ? "▾" : "▸"} Run · pay · reconcile</small>
+                </button>
+                {pOpen ? (
+                  <>
+                    {capabilities.canViewFinancials ? link("/payroll", "Run payroll", "Preview · approve · pay · stubs") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/reconcile", "Reconcile", "Parallel-run vs Paychex") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/employees", "Employees", "Tax setup / W-4") : null}
+                    {capabilities.canViewFinancials ? link("/payroll/ytd", "YTD setup", "Mid-year cutover figures") : null}
+                    {link("/payroll/me", "My Pay Settings", "401(k) + W-4")}
+                  </>
+                ) : null}
+              </div>
+            );
+          })()}
         </nav>
         {timeOnly ? (
           forceTimeOnly && isBackOffice ? (
@@ -1163,7 +1178,7 @@ export default function AquatechPmHome() {
           <section className="aq-lite-stack">
             {capabilities.canViewFinancials ? <AskAqtPM /> : null}
             {capabilities.canManageUsers ? <DataGaps /> : null}
-            {capabilities.canManageUsers ? <DecisionsRegister /> : null}
+            {capabilities.canManageUsers && SHOW_GOVERNANCE ? <DecisionsRegister /> : null}
             {capabilities.canViewFinancials ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
                 <span style={{ opacity: 0.6, fontSize: "0.8em", marginRight: "0.2rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>Period</span>
@@ -1314,12 +1329,12 @@ export default function AquatechPmHome() {
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "6px 0 2px" }}>
+            <div ref={dashTabsRef} style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "6px 0 2px", scrollMarginTop: 12 }}>
               {DASH_TABS.map((t) => (
                 <button
                   key={t.key}
                   type="button"
-                  onClick={() => setDashTab(t.key)}
+                  onClick={() => selectDashTab(t.key)}
                   style={{
                     border: "none", cursor: "pointer", borderRadius: 999, padding: "7px 16px",
                     fontSize: 13, fontWeight: 600,

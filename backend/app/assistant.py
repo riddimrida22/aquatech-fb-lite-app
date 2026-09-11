@@ -156,8 +156,12 @@ def _run_readonly_sql(engine, query: str) -> dict:
     try:
         trans = conn.begin()
         try:
-            conn.execute(_text("SET TRANSACTION READ ONLY"))
-            conn.execute(_text("SET LOCAL statement_timeout = '8000'"))
+            # READ ONLY + statement_timeout are Postgres-only; SQLite rejects them and
+            # would abort the query. Safety on SQLite still holds: _is_safe_select blocks
+            # writes/DDL and the transaction is rolled back (never committed).
+            if engine.dialect.name == "postgresql":
+                conn.execute(_text("SET TRANSACTION READ ONLY"))
+                conn.execute(_text("SET LOCAL statement_timeout = '8000'"))
             res = conn.execute(_text(query))
             cols = list(res.keys())
             fetched = res.fetchmany(_MAX_ROWS + 1)
