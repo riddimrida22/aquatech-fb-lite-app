@@ -44,6 +44,27 @@ export default function PayrollPage() {
   const [editPeriod, setEditPeriod] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [hoursMsg, setHoursMsg] = useState<string | null>(null);
+  const [showPaychex, setShowPaychex] = useState(false);
+
+  // Prefill the Hours column from the app's own timesheets for the pay period, so
+  // the owner sees everyone's actual hours and can run payroll in-house (no Paychex).
+  async function loadHours(pStart: string, pEnd: string) {
+    if (!pStart || !pEnd) return;
+    try {
+      const r = await apiGet<{ rows: { employee_id: number; hours: number; linked: boolean }[] }>(
+        `/payroll/period-hours?period_start=${pStart}&period_end=${pEnd}`);
+      const next: Record<number, string> = {};
+      let linked = 0;
+      for (const row of r.rows) if (row.linked) { next[row.employee_id] = String(row.hours); linked++; }
+      setHours(next);
+      setHoursMsg(
+        linked > 0
+          ? `Hours prefilled from timesheets for ${linked} linked employee${linked === 1 ? "" : "s"} (${pStart} → ${pEnd}). Edit any value before running.`
+          : `No employees are linked to app users yet, so hours can't be prefilled. Link them under Employees (or import from Paychex), then refresh.`,
+      );
+    } catch (e: any) { setHoursMsg("Could not load timesheet hours: " + String(e.message || e)); }
+  }
 
   async function refresh() {
     try {
@@ -53,8 +74,9 @@ export default function PayrollPage() {
         apiGet<{ period_start: string; period_end: string; check_date: string }>("/payroll/next-period"),
       ]);
       setEmployees(emps); setRuns(rr);
-      // Auto-fill the next pay period so the owner only enters hours.
+      // Auto-fill the next pay period, then prefill hours from timesheets.
       setPeriodStart(np.period_start); setPeriodEnd(np.period_end); setCheckDate(np.check_date);
+      await loadHours(np.period_start, np.period_end);
     } catch (e: any) { setErr(String(e.message || e)); }
   }
   useEffect(() => { refresh(); }, []);
@@ -87,18 +109,12 @@ export default function PayrollPage() {
     <PayrollNav active="run" />
     <div style={{ maxWidth: 1040, margin: "0 auto", padding: 20, fontSize: 14 }}>
       <h1 style={{ marginBottom: 4 }}>Payroll</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>In-house payroll — preview, approve (dual-control), pay, and pay stubs. Owner-only.</p>
+      <p style={{ color: "#666", marginTop: 0 }}>
+        Run payroll in-house from your own timesheets — preview, approve (dual-control), pay, and pay stubs.
+        Reconciling against Paychex is <b>optional</b> (see the Reconcile tab). Owner-only.
+      </p>
       {msg && <div style={{ ...card, background: "#e8f5e9", borderColor: "#a5d6a7" }}>{msg}</div>}
       {err && <div style={{ ...card, background: "#ffebee", borderColor: "#ef9a9a", whiteSpace: "pre-wrap" }}>{err}</div>}
-
-      <div style={card}>
-        <h3 style={{ marginTop: 0 }}>Onboarding</h3>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button disabled={busy} onClick={doOnboardPreview}>Preview from Paychex</button>
-          <button disabled={busy} onClick={doOnboardImport}>Import from Paychex</button>
-          <span style={{ color: "#777", fontSize: 12 }}>Pulls names, work state, DOB, hire date & SSN (stored encrypted). 401(k)/W-4 are set by each employee in <b>My Pay Settings</b>.</span>
-        </div>
-      </div>
 
       {employees.length === 0 && (
         <div style={card}>
@@ -111,14 +127,19 @@ export default function PayrollPage() {
       {employees.length > 0 && (
         <div style={card}>
           <h3 style={{ marginTop: 0 }}>New run</h3>
-          <p style={{ marginTop: -6, color: "#777", fontSize: 12 }}>Period is auto-filled to your next pay period — just enter hours below and click Preview.</p>
+          <p style={{ marginTop: -6, color: "#777", fontSize: 12 }}>Period is auto-filled to your next pay period, and hours are pulled from your timesheets. Review/adjust the hours below, then Preview.</p>
+          {hoursMsg && (
+            <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#e3f2fd", border: "1px solid #90caf9", fontSize: 12, color: "#0d47a1" }}>
+              {hoursMsg}
+            </div>
+          )}
           <div style={{ marginBottom: 12, fontSize: 13 }}>
             {editPeriod ? (
               <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
                 <label>From <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
                 <label>To <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} /></label>
                 <label>Check <input type="date" value={checkDate} onChange={(e) => setCheckDate(e.target.value)} /></label>
-                <button onClick={() => setEditPeriod(false)}>Done</button>
+                <button onClick={() => { setEditPeriod(false); void loadHours(periodStart, periodEnd); }}>Done</button>
               </div>
             ) : (
               <span>
@@ -142,9 +163,10 @@ export default function PayrollPage() {
               ))}
             </tbody>
           </table>
-          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+          <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
             <button disabled={busy} onClick={doPreview}>Preview</button>
             <button disabled={busy || !preview} onClick={doCreate}>Create run (draft)</button>
+            <button disabled={busy} onClick={() => guard(() => loadHours(periodStart, periodEnd))} title="Reload hours from timesheets for this period">↻ Refresh hours from timesheets</button>
           </div>
         </div>
       )}
@@ -250,6 +272,24 @@ export default function PayrollPage() {
             <button disabled={busy} onClick={() => openRun(r.id)}>Open</button>
           </div>
         ))}
+      </div>
+
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Paychex (optional)</h3>
+          <button onClick={() => setShowPaychex((s) => !s)}>{showPaychex ? "Hide" : "Show"}</button>
+        </div>
+        <p style={{ color: "#777", fontSize: 12, marginBottom: showPaychex ? 12 : 0 }}>
+          Payroll runs entirely in-house from your timesheets. Use this only if you want to seed employees from a
+          Paychex export, or to reconcile a run against Paychex (Reconcile tab). Not required to run payroll.
+        </p>
+        {showPaychex && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button disabled={busy} onClick={doOnboardPreview}>Preview from Paychex</button>
+            <button disabled={busy} onClick={doOnboardImport}>Import from Paychex</button>
+            <span style={{ color: "#777", fontSize: 12 }}>Pulls names, work state, DOB, hire date &amp; SSN (encrypted) and links them to app users. 401(k)/W-4 are set by each employee in <b>My Pay Settings</b>.</span>
+          </div>
+        )}
       </div>
 
       {detail && (

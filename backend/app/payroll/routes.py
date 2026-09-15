@@ -14,12 +14,12 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import get_current_user, require_permission
 from ..db import get_db
-from ..models import User
+from ..models import TimeEntry, User
 from . import crypto, onboarding, service
 from .engine import EmployeeInput, EmployeeResult, cents
 from .models import PayrollEmployee, PayrollLine, PayrollRun, PayrollYtd
@@ -411,6 +411,31 @@ def next_period(db: Session = Depends(get_db), _: User = Depends(PERM)):
     check = end + timedelta(days=5)
     return {"period_start": str(start), "period_end": str(end), "check_date": str(check)}
 
+
+
+@router.get("/period-hours")
+def period_hours(period_start: date, period_end: date,
+                 db: Session = Depends(get_db), _: User = Depends(PERM)):
+    """Each active employee's timekeeping hours for the pay period, summed from the
+    app's own TimeEntry records (the linked user's approved/logged time). Lets the
+    run be prefilled from in-house timesheets — no Paychex/Gusto import required.
+    Hourly employees use these hours; salaried ones show them for reference only."""
+    rows = db.execute(
+        select(TimeEntry.user_id, func.coalesce(func.sum(TimeEntry.hours), 0.0))
+        .where(TimeEntry.work_date >= period_start, TimeEntry.work_date <= period_end)
+        .group_by(TimeEntry.user_id)
+    ).all()
+    hours_by_user = {int(uid): float(h or 0.0) for uid, h in rows}
+    emps = db.scalars(
+        select(PayrollEmployee).where(PayrollEmployee.is_active.is_(True))
+    ).all()
+    out = []
+    for e in emps:
+        h = hours_by_user.get(int(e.user_id), 0.0) if e.user_id else 0.0
+        out.append({"employee_id": e.id, "user_id": e.user_id,
+                    "hours": round(h, 2), "linked": e.user_id is not None,
+                    "is_salary": bool(e.is_salary)})
+    return {"period_start": str(period_start), "period_end": str(period_end), "rows": out}
 
 
 @router.post("/preview")
