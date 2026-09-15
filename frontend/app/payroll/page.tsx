@@ -100,34 +100,34 @@ export default function PayrollPage() {
   const doApprove = (id: number) => guard(async () => { await apiPost<any>(`/payroll/runs/${id}/approve`, {}); setMsg(`Run #${id} approved.`); await openRun(id); await refresh(); });
   const doPay = (id: number) => guard(async () => { await apiPost<any>(`/payroll/runs/${id}/pay`, {}); setMsg(`Run #${id} paid — journal posted.`); await openRun(id); await refresh(); });
 
-  const card: React.CSSProperties = { border: "1px solid rgba(0,0,0,0.12)", borderRadius: 10, padding: 16, marginBottom: 18, background: "var(--aq-card-bg, #fff)" };
-  const th: React.CSSProperties = { textAlign: "right", padding: "4px 8px", fontSize: 12, color: "#555", borderBottom: "1px solid #eee" };
-  const td: React.CSSProperties = { textAlign: "right", padding: "4px 8px", fontVariantNumeric: "tabular-nums" };
+  const card: React.CSSProperties = { border: "1px solid var(--aq-border)", borderRadius: 10, padding: 16, marginBottom: 18, background: "var(--aq-card)", color: "var(--aq-text)" };
+  const th: React.CSSProperties = { textAlign: "right", padding: "4px 8px", fontSize: 12, color: "var(--aq-muted)", borderBottom: "1px solid var(--aq-border)" };
+  const td: React.CSSProperties = { textAlign: "right", padding: "4px 8px", fontVariantNumeric: "tabular-nums", color: "var(--aq-text)" };
 
   return (
     <>
     <PayrollNav active="run" />
     <div style={{ maxWidth: 1040, margin: "0 auto", padding: 20, fontSize: 14 }}>
       <h1 style={{ marginBottom: 4 }}>Payroll</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>
+      <p style={{ color: "var(--aq-muted)", marginTop: 0 }}>
         Run payroll in-house from your own timesheets — preview, approve (dual-control), pay, and pay stubs.
         Reconciling against Paychex is <b>optional</b> (see the Reconcile tab). Owner-only.
       </p>
-      {msg && <div style={{ ...card, background: "#e8f5e9", borderColor: "#a5d6a7" }}>{msg}</div>}
-      {err && <div style={{ ...card, background: "#ffebee", borderColor: "#ef9a9a", whiteSpace: "pre-wrap" }}>{err}</div>}
+      {msg && <div style={{ ...card, background: "#e8f5e9", borderColor: "#a5d6a7", color: "#14532d" }}>{msg}</div>}
+      {err && <div style={{ ...card, background: "#ffebee", borderColor: "#ef9a9a", color: "#7f1d1d", whiteSpace: "pre-wrap" }}>{err}</div>}
 
       {employees.length === 0 && (
         <div style={card}>
           <b>No employees yet.</b>{" "}
           <button disabled={busy} onClick={doSeed}>Seed sample roster (6)</button>
-          <div style={{ color: "#777", fontSize: 12, marginTop: 6 }}>Loads names/rates/W-4; SSN &amp; bank added later via onboarding.</div>
+          <div style={{ color: "var(--aq-muted)", fontSize: 12, marginTop: 6 }}>Loads names/rates/W-4; SSN &amp; bank added later via onboarding.</div>
         </div>
       )}
 
       {employees.length > 0 && (
         <div style={card}>
           <h3 style={{ marginTop: 0 }}>New run</h3>
-          <p style={{ marginTop: -6, color: "#777", fontSize: 12 }}>Period is auto-filled to your next pay period, and hours are pulled from your timesheets. Review/adjust the hours below, then Preview.</p>
+          <p style={{ marginTop: -6, color: "var(--aq-muted)", fontSize: 12 }}>Period is auto-filled to your next pay period, and hours are pulled from your timesheets. Review/adjust the hours below, then Preview.</p>
           {hoursMsg && (
             <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#e3f2fd", border: "1px solid #90caf9", fontSize: 12, color: "#0d47a1" }}>
               {hoursMsg}
@@ -193,17 +193,17 @@ export default function PayrollPage() {
                 );
               })}
             </tbody>
-            <tfoot><tr style={{ borderTop: "2px solid #ccc" }}>
+            <tfoot><tr style={{ borderTop: "2px solid var(--aq-border)" }}>
               <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>Totals</td>
               <td style={{ ...td, fontWeight: 600 }}>{money(preview.totals.gross)}</td>
-              <td colSpan={3} style={{ ...td, color: "#666" }}>EE tax {money(preview.totals.ee_withholdings)} · ER tax {money(preview.totals.employer_taxes)}</td>
+              <td colSpan={3} style={{ ...td, color: "var(--aq-muted)" }}>EE tax {money(preview.totals.ee_withholdings)} · ER tax {money(preview.totals.employer_taxes)}</td>
               <td style={td}>{money(preview.totals.k401_ee)}</td>
               <td style={{ ...td, fontWeight: 700 }}>{money(preview.totals.net)}</td>
             </tr></tfoot>
           </table>
           <div style={{ marginTop: 12 }}>
             <b>Finance journal</b>{" "}
-            <span style={{ padding: "2px 8px", borderRadius: 10, background: preview.journal_balanced ? "#e8f5e9" : "#ffebee" }}>
+            <span style={{ padding: "2px 8px", borderRadius: 10, color: "#1e2d3f", background: preview.journal_balanced ? "#e8f5e9" : "#ffebee" }}>
               {preview.journal_balanced ? "balanced ✓" : "NOT balanced"}
             </span>
             <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 6 }}>
@@ -220,9 +220,9 @@ export default function PayrollPage() {
           </div>
 
           {preview.cash_requirements && (
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid #eee" }}>
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--aq-border)" }}>
               <b>Cash requirements</b>
-              <span style={{ color: "#777", fontSize: 12, marginLeft: 8 }}>
+              <span style={{ color: "var(--aq-muted)", fontSize: 12, marginLeft: 8 }}>
                 What you need to fund for this run, and by when.
               </span>
               <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 6 }}>
@@ -238,12 +238,12 @@ export default function PayrollPage() {
                       <td style={{ ...td, textAlign: "left" }}>{b.label}</td>
                       <td style={{ ...td, fontWeight: 600 }}>{money(b.amount)}</td>
                       <td style={{ ...td, textAlign: "left" }}>{b.due || "per carrier"}</td>
-                      <td style={{ ...td, textAlign: "left", color: "#666", fontSize: 12 }}>{b.how}</td>
+                      <td style={{ ...td, textAlign: "left", color: "var(--aq-muted)", fontSize: 12 }}>{b.how}</td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr style={{ borderTop: "2px solid #ccc" }}>
+                  <tr style={{ borderTop: "2px solid var(--aq-border)" }}>
                     <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>Total employer cost (gross + ER taxes + match)</td>
                     <td style={{ ...td, fontWeight: 700 }}>{money(preview.cash_requirements.total_cash_out)}</td>
                     <td colSpan={2} style={{ ...td }} />
@@ -251,7 +251,7 @@ export default function PayrollPage() {
                   <tr>
                     <td style={{ ...td, textAlign: "left", color: "#21737e", fontWeight: 600 }}>Cash needed on/around check date</td>
                     <td style={{ ...td, fontWeight: 700, color: "#21737e" }}>{money(preview.cash_requirements.immediate_cash_needed)}</td>
-                    <td colSpan={2} style={{ ...td, color: "#666", fontSize: 12 }}>Net pay + 401(k) + federal deposit</td>
+                    <td colSpan={2} style={{ ...td, color: "var(--aq-muted)", fontSize: 12 }}>Net pay + 401(k) + federal deposit</td>
                   </tr>
                 </tfoot>
               </table>
@@ -262,12 +262,12 @@ export default function PayrollPage() {
 
       <div style={card}>
         <h3 style={{ marginTop: 0 }}>Runs</h3>
-        {runs.length === 0 && <div style={{ color: "#777" }}>No runs yet.</div>}
+        {runs.length === 0 && <div style={{ color: "var(--aq-muted)" }}>No runs yet.</div>}
         {runs.map((r) => (
-          <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 0", borderBottom: "1px solid #f0f0f0" }}>
+          <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 0", borderBottom: "1px solid var(--aq-border)" }}>
             <span style={{ width: 40 }}>#{r.id}</span>
             <span style={{ flex: 1 }}>{r.period_start} → {r.period_end} · check {r.check_date}</span>
-            <span style={{ padding: "2px 8px", borderRadius: 10, background: r.status === "paid" ? "#e8f5e9" : r.status === "approved" ? "#fff8e1" : "#eee" }}>{r.status}</span>
+            <span style={{ padding: "2px 8px", borderRadius: 10, color: "#1e2d3f", background: r.status === "paid" ? "#e8f5e9" : r.status === "approved" ? "#fff8e1" : "#eee" }}>{r.status}</span>
             <span style={{ width: 100, textAlign: "right" }}>{money(r.net)}</span>
             <button disabled={busy} onClick={() => openRun(r.id)}>Open</button>
           </div>
@@ -279,7 +279,7 @@ export default function PayrollPage() {
           <h3 style={{ margin: 0, flex: 1 }}>Paychex (optional)</h3>
           <button onClick={() => setShowPaychex((s) => !s)}>{showPaychex ? "Hide" : "Show"}</button>
         </div>
-        <p style={{ color: "#777", fontSize: 12, marginBottom: showPaychex ? 12 : 0 }}>
+        <p style={{ color: "var(--aq-muted)", fontSize: 12, marginBottom: showPaychex ? 12 : 0 }}>
           Payroll runs entirely in-house from your timesheets. Use this only if you want to seed employees from a
           Paychex export, or to reconcile a run against Paychex (Reconcile tab). Not required to run payroll.
         </p>
@@ -287,7 +287,7 @@ export default function PayrollPage() {
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <button disabled={busy} onClick={doOnboardPreview}>Preview from Paychex</button>
             <button disabled={busy} onClick={doOnboardImport}>Import from Paychex</button>
-            <span style={{ color: "#777", fontSize: 12 }}>Pulls names, work state, DOB, hire date &amp; SSN (encrypted) and links them to app users. 401(k)/W-4 are set by each employee in <b>My Pay Settings</b>.</span>
+            <span style={{ color: "var(--aq-muted)", fontSize: 12 }}>Pulls names, work state, DOB, hire date &amp; SSN (encrypted) and links them to app users. 401(k)/W-4 are set by each employee in <b>My Pay Settings</b>.</span>
           </div>
         )}
       </div>
