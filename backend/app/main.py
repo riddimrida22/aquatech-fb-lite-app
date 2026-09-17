@@ -6790,9 +6790,18 @@ def accounting_balance_sheet(
     Loans the company OWES are liabilities; loans it lent out (shareholder
     receivables) are assets. Equity is the plug (assets − liabilities).
     """
+    # Cash = business DEPOSITORY accounts only. Credit-card accounts also carry a
+    # current_balance, but that is money OWED (a liability), not cash — summing all
+    # business accounts previously booked card debt as an asset and overstated cash.
     cash = float(db.scalar(
         select(func.coalesce(func.sum(BankAccount.current_balance), 0.0))
         .where(BankAccount.is_business.is_(True))
+        .where(func.lower(func.coalesce(BankAccount.type, "")) != "credit")
+    ) or 0.0)
+    credit_card_debt = float(db.scalar(
+        select(func.coalesce(func.sum(BankAccount.current_balance), 0.0))
+        .where(BankAccount.is_business.is_(True))
+        .where(func.lower(func.coalesce(BankAccount.type, "")) == "credit")
     ) or 0.0)
     ar = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.balance_due), 0.0))
@@ -6812,7 +6821,7 @@ def accounting_balance_sheet(
         else:
             loans_payable += bal
     total_assets = cash + ar + shareholder_receivable
-    total_liabilities = loans_payable
+    total_liabilities = loans_payable + credit_card_debt
     equity = total_assets - total_liabilities
     return {
         "as_of": date.today().isoformat(),
@@ -6823,14 +6832,15 @@ def accounting_balance_sheet(
             "total": total_assets,
         },
         "liabilities": {
+            "credit_cards": credit_card_debt,
             "loans_outstanding": loans_payable,
             "total": total_liabilities,
         },
         "equity": equity,
         "notes": [
-            "Cash from BankAccount.current_balance where set; many imported accounts may show 0.",
+            "Cash = business depository (checking/savings) balances only; credit-card balances are liabilities, not cash.",
             "AR = sum of unpaid invoice balances.",
-            "Liabilities = current loan principal balances. Add loans in the Loans tab to populate.",
+            "Liabilities = business credit-card balances + current loan principal balances. Add loans in the Loans tab to populate.",
             "Equity is computed as Assets − Liabilities (plug).",
         ],
     }
