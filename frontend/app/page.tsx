@@ -20,6 +20,7 @@ import AskAqtPM from "./components/AskAqtPM";
 import DataGaps from "./components/DataGaps";
 import DailyProfitabilityKPI from "./components/DailyProfitabilityKPI";
 import OwnerWealthKPI from "./components/OwnerWealthKPI";
+import UtilizationWorkspace from "./components/UtilizationWorkspace";
 import OverheadRatePanel from "./components/OverheadRatePanel";
 import DecisionsRegister from "./components/DecisionsRegister";
 import { BdWorkspace } from "./components/BdWorkspace";
@@ -80,6 +81,7 @@ type WorkspaceKey =
   | "payroll"
   | "accounting"
   | "bookkeeping"
+  | "utilization"
   | "reports"
   | "imports"
   | "settings";
@@ -127,6 +129,7 @@ const NAV: NavEntry[] = [
       { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables" },
       { key: "payables", label: "Payables & Owner", hint: "A/P + owner comp" },
       { key: "invoicegen", label: "Invoice Generator", hint: "Cost-plus + timesheets", requires: "canManageInvoicing" },
+      { key: "utilization", label: "Utilization", hint: "Billable % · realization" },
       { key: "reports", label: "Reports", hint: "Benchmarks" },
     ],
   },
@@ -2053,6 +2056,10 @@ export default function AquatechPmHome() {
 
         {workspace === "bookkeeping" ? (
           <BookkeepingWorkspace />
+        ) : null}
+
+        {workspace === "utilization" ? (
+          <UtilizationWorkspace />
         ) : null}
 
         {workspace === "reports" ? (
