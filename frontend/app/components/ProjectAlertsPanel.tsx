@@ -37,6 +37,7 @@ const FLAG_META: Record<string, { label: string; color: string }> = {
   over_budget: { label: "Over budget", color: RED },
   high_burn: { label: "High burn", color: GOLD },
   stale_wip: { label: "Stale WIP", color: GOLD },
+  strategic: { label: "Strategic / loss leader", color: GREEN },
 };
 
 function burnColor(pct: number | null): string {

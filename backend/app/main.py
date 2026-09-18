@@ -819,6 +819,7 @@ class ProjectOut(BaseModel):
     is_overhead: bool
     is_billable: bool
     is_active: bool
+    is_loss_leader: bool = False
     lifecycle_status: str = "active"
     completed_date: date | None = None
 
@@ -834,6 +835,7 @@ class ProjectUpdate(BaseModel):
     is_overhead: bool = False
     is_billable: bool = True
     is_active: bool = True
+    is_loss_leader: bool = False
 
 
 class ProjectStatusUpdate(BaseModel):
@@ -5307,7 +5309,7 @@ def accounting_project_alerts(
             )
             SELECT p.id, p.name, p.lifecycle_status, COALESCE(p.overall_budget_fee,0) AS budget,
                    COALESCE(wip.unbilled_wip,0), COALESCE(wip.stale_wip,0), wip.oldest_unbilled,
-                   COALESCE(inv.invoiced,0), inv.last_invoice
+                   COALESCE(inv.invoiced,0), inv.last_invoice, COALESCE(p.is_loss_leader, false)
             FROM projects p
             LEFT JOIN wip ON wip.project_id = p.id
             LEFT JOIN inv ON inv.project_id = p.id
@@ -5319,20 +5321,25 @@ def accounting_project_alerts(
     ).all()
     projects = []
     tot = {"unbilled_wip": 0.0, "stale_wip": 0.0}
-    for pid, name, life, budget, uwip, swip, oldest, invoiced, last_inv in rows:
+    for pid, name, life, budget, uwip, swip, oldest, invoiced, last_inv, loss_leader in rows:
         budget = float(budget or 0.0); uwip = float(uwip or 0.0); swip = float(swip or 0.0); invoiced = float(invoiced or 0.0)
+        loss_leader = bool(loss_leader)
         days_since_inv = (today - last_inv).days if last_inv else None
         oldest_age = (today - oldest).days if oldest else None
         burn_pct = round((invoiced + uwip) / budget * 100, 1) if budget > 0 else None
         flags = []
         if swip > 0:
             flags.append("stale_wip")
-        if burn_pct is not None and burn_pct >= 100:
+        if loss_leader:
+            # Strategic play — over/high burn is by design, so no loss alarm.
+            flags.append("strategic")
+        elif burn_pct is not None and burn_pct >= 100:
             flags.append("over_budget")
         elif burn_pct is not None and burn_pct >= burn_warn_pct:
             flags.append("high_burn")
         projects.append({
             "project_id": pid, "project": name, "lifecycle_status": life,
+            "is_loss_leader": loss_leader,
             "budget_fee": round(budget, 2), "invoiced": round(invoiced, 2),
             "unbilled_wip": round(uwip, 2), "stale_wip": round(swip, 2),
             "oldest_unbilled": oldest.isoformat() if oldest else None,
@@ -5347,7 +5354,8 @@ def accounting_project_alerts(
         "stale_days": stale_days,
         "burn_warn_pct": burn_warn_pct,
         "totals": {"unbilled_wip": round(tot["unbilled_wip"], 2), "stale_wip": round(tot["stale_wip"], 2),
-                   "flagged": len([p for p in projects if p["flags"]])},
+                   "flagged": len([p for p in projects
+                                   if any(f in ("over_budget", "high_burn", "stale_wip") for f in p["flags"])])},
         "projects": projects,
     }
 
@@ -8713,6 +8721,7 @@ def update_project(
     project.is_overhead = payload.is_overhead
     project.is_billable = payload.is_billable
     project.is_active = payload.is_active
+    project.is_loss_leader = payload.is_loss_leader
     _log_audit_event(
         db=db,
         entity_type="project",
@@ -13805,6 +13814,7 @@ def _to_project_out(project: Project) -> ProjectOut:
         is_overhead=project.is_overhead,
         is_billable=project.is_billable,
         is_active=project.is_active,
+        is_loss_leader=bool(getattr(project, "is_loss_leader", False)),
         lifecycle_status=getattr(project, "lifecycle_status", None) or "active",
         completed_date=getattr(project, "completed_date", None),
     )
