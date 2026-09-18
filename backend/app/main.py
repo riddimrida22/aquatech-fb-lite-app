@@ -3554,7 +3554,7 @@ def delete_loan_payment(
 _OPEX_BUCKET_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Owner / Ailsa business-development indirect labor cost (FreshBooks) -> BD line.
     ("Business Development", ("AQUATECH BUSINESS DEVELOPMENT", "BUSINESS DEVELOPMENT")),
-    ("Software & Subscriptions", ("MICROSOFT", "ADOBE", "GOOGLE", "GSUITE", "ZOOM", "SLACK", "DROPBOX",
+    ("Software & Subscriptions", ("MICROSOFT", "MSFT", "MSBILL", "ADOBE", "GOOGLE", "GSUITE", "ZOOM", "SLACK", "DROPBOX",
         "GITHUB", "AUTODESK", "BLUEBEAM", "ESRI", "INTUIT", "QUICKBOOKS", "DOCUSIGN", "NOTION", "ATLASSIAN",
         "OPENAI", "ANTHROPIC", "CANVA", "GODADDY", "SQUARESPACE", "WIX", "MAILCHIMP", "ZAPIER", "AWS",
         "AMAZON WEB", "DIGITALOCEAN", "HEROKU", "NETLIFY", "VERCEL", "SUBSCRIPTION", "APPLE.COM/BILL", "ICLOUD",
@@ -3576,7 +3576,9 @@ _OPEX_BUCKET_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Office Supplies & Postage", ("STAPLES", "OFFICE DEPOT", "OFFICEMAX", "AMAZON", "AMZN", "USPS", "FEDEX",
         "UPS ", "UPS STORE", "POSTAGE", "SHIPPING", "W.B. MASON", "WB MASON", "ULINE")),
     ("Professional Services", ("LEGAL", "ATTORNEY", "LAW ", "ACCOUNT", "CPA", "BOOKKEEP", "PAYROLL SERVICE",
-        "CONSULT", "ADP", "PAYCHEX", "GUSTO FEE", "NOTARY", "ENGINEER")),
+        "CONSULT", "ADP", "PAYCHEX", "GUSTO FEE", "NOTARY", "NOTARIZE", "PROOF.COM", "ENGINEER")),
+    ("Taxes And Licenses", ("NYS DTF", "DTF CT", "NYS DEPT TAX", "DEPT OF TAXATION", "FRANCHISE TAX",
+        "NYC DEPT OF FINANCE", "DEPARTMENT OF STATE FEE")),
     ("Dues, Licenses & Education", ("LICENSE", "PERMIT", "DUES", "MEMBERSHIP", "ASCE", "NSPE", "PE LICENSE",
         "STATE OF NY", "DEPT OF STATE", "COURSE", "TRAINING", "SEMINAR", "CONFERENCE", "UDEMY", "COURSERA")),
     ("Marketing & Advertising", ("ADVERTIS", "GOOGLE ADS", "FACEBOOK", "META PLATFORMS", "LINKEDIN", "MARKETING",
