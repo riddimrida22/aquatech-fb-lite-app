@@ -26,8 +26,11 @@ export default function HourEstimatesWorkspace() {
       .then((ps) => {
         setProjects(ps);
         if (ps.length && projectId == null) {
-          const nr = ps.find((p) => /north river/i.test(p.name)) || ps[0];
-          setProjectId(nr.id);
+          const pick =
+            ps.find((p) => /1539|stantec|north river/i.test(p.name)) ||
+            ps.find((p) => !/unassigned|no project|imported/i.test(p.name)) ||
+            ps[0];
+          setProjectId(pick.id);
         }
       })
       .catch((e) => setErr(e?.message || "Could not load projects"));
@@ -51,7 +54,7 @@ export default function HourEstimatesWorkspace() {
   useEffect(() => { load(); }, [load]);
 
   const subtasks = grid?.subtasks ?? [];
-  const users = grid?.users ?? [];
+  const users = (grid?.users ?? []).filter((u) => !/test employee|\(qa\)/i.test(u.name));
 
   const save = useCallback((subtaskId: number, userId: number, value: number) => {
     const key = `${subtaskId}:${userId}`;
