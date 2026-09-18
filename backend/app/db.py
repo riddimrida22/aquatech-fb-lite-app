@@ -48,6 +48,7 @@ def init_db() -> None:
     _ensure_contact_columns()
     _ensure_library_columns()
     _ensure_time_entry_columns()
+    _ensure_project_bill_rate_columns()
     _ensure_dedup_indexes()
 
 
@@ -120,6 +121,19 @@ def _ensure_user_columns() -> None:
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+
+
+def _ensure_project_bill_rate_columns() -> None:
+    """Add the task-scoped bill-rate column so two task orders under one project can
+    carry distinct bill rates (task_id NULL = the existing project-level rate)."""
+    insp = inspect(engine)
+    if not insp.has_table("project_bill_rates"):
+        return
+    cols = {c["name"] for c in insp.get_columns("project_bill_rates")}
+    if "task_id" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE project_bill_rates ADD COLUMN task_id INTEGER"))
 
 
 def _ensure_task_columns() -> None:

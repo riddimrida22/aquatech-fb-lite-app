@@ -811,21 +811,32 @@ def sync_projects(db: Session, account_id: str, business_id: str) -> dict[str, A
     }
 
 
-def _project_bill_rate(db: Session, project_id: int | None, user_id: int | None) -> float | None:
+def _project_bill_rate(
+    db: Session, project_id: int | None, user_id: int | None, task_id: int | None = None
+) -> float | None:
     """Per-project-per-employee bill rate from the project_bill_rates table.
-    Looks up (project, user) first, then the project's flat rate (user_id NULL).
-    Returns None if the project has no configured rate (caller falls back to UserRate).
+    Resolution order: (project, task, user) task-specific rate first — so two task
+    orders under one project keep distinct rates — then (project, user), then the
+    project's flat rate (user_id NULL). Returns None if none configured (caller
+    falls back to UserRate).
     """
     if not project_id:
         return None
     from sqlalchemy import text
-    row = db.execute(
-        text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND user_id=:u"),
-        {"p": project_id, "u": user_id},
-    ).first()
+    row = None
+    if task_id:
+        row = db.execute(
+            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND task_id=:t AND user_id=:u"),
+            {"p": project_id, "t": task_id, "u": user_id},
+        ).first()
     if row is None:
         row = db.execute(
-            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND user_id IS NULL"),
+            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND task_id IS NULL AND user_id=:u"),
+            {"p": project_id, "u": user_id},
+        ).first()
+    if row is None:
+        row = db.execute(
+            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND task_id IS NULL AND user_id IS NULL"),
             {"p": project_id},
         ).first()
     return float(row[0]) if row is not None else None
@@ -1039,7 +1050,7 @@ def sync_time_entries(
                 # project_bill_rates table (project+user, else project flat); only fall back
                 # to the per-user UserRate when no project rate exists. Cost rate stays
                 # per-employee (global). Keeps re-syncs from clobbering the per-project rates.
-                pr = _project_bill_rate(db, aqt_pid, aqt_uid)
+                pr = _project_bill_rate(db, aqt_pid, aqt_uid, task_id)
                 if pr is not None:
                     bill_rate = pr
 
