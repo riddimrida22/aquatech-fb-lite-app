@@ -9117,8 +9117,8 @@ def reapply_rates_to_entries(
             skipped_no_rate += 1
             continue
 
-        # Task-scoped bill override wins (multi-task-order projects); cost is companywide.
-        _tb = _task_bill_rate_override(db, entry.project_id, entry.task_id, entry.user_id)
+        # Project/task-order bill rate wins; cost is companywide (global UserRate).
+        _tb = _effective_bill_rate(db, entry.project_id, entry.task_id, entry.user_id)
         new_bill = _tb if _tb is not None else float(applicable.bill_rate)
         new_cost = float(applicable.cost_rate)
         if float(entry.bill_rate_applied) == new_bill and float(entry.cost_rate_applied) == new_cost:
@@ -9158,27 +9158,38 @@ def reapply_rates_to_entries(
     }
 
 
-def _task_bill_rate_override(
+def _effective_bill_rate(
     db: Session, project_id: int | None, task_id: int | None, user_id: int | None
 ) -> float | None:
-    """Task-scoped BILL-rate override for multi-task-order projects.
+    """Resolve the BILL rate BY PROJECT / TASK ORDER, most specific first:
+      1. task-specific   (project, task, user)   — lets two task orders under one
+         project bill at different rates without getting confused
+      2. project rate     (project, user)         — the project's per-employee rate
+      3. project flat      (project, no user)      — a single project-wide rate
 
-    Returns the bill rate pinned to a specific (project, task, user) row in
-    project_bill_rates (task_id NOT NULL) when one exists, else None so callers
-    keep their existing rate resolution. This lets two task orders that live under
-    one project carry different bill rates without the rates getting confused.
-    COST is never affected here — employee cost/salary rates are companywide.
+    Returns None only when the project has NO configured rate at all, so the caller
+    falls back to the employee's global rate. COST is never affected here —
+    employee cost/salary rates are companywide.
     """
-    if not project_id or not task_id or not user_id:
+    if not project_id:
         return None
     from sqlalchemy import text
-    row = db.execute(
-        text(
-            "SELECT bill_rate FROM project_bill_rates "
-            "WHERE project_id=:p AND task_id=:t AND user_id=:u"
-        ),
-        {"p": project_id, "t": task_id, "u": user_id},
-    ).first()
+    row = None
+    if task_id and user_id:
+        row = db.execute(
+            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND task_id=:t AND user_id=:u"),
+            {"p": project_id, "t": task_id, "u": user_id},
+        ).first()
+    if row is None and user_id:
+        row = db.execute(
+            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND task_id IS NULL AND user_id=:u"),
+            {"p": project_id, "u": user_id},
+        ).first()
+    if row is None:
+        row = db.execute(
+            text("SELECT bill_rate FROM project_bill_rates WHERE project_id=:p AND task_id IS NULL AND user_id IS NULL"),
+            {"p": project_id},
+        ).first()
     return float(row[0]) if row is not None else None
 
 
@@ -9268,7 +9279,7 @@ def create_time_entry(
     if not rate:
         raise HTTPException(status_code=400, detail="No rate configured for user")
 
-    task_bill = _task_bill_rate_override(db, payload.project_id, payload.task_id, current_user.id)
+    task_bill = _effective_bill_rate(db, payload.project_id, payload.task_id, current_user.id)
     entry = TimeEntry(
         user_id=current_user.id,
         project_id=payload.project_id,
@@ -9590,7 +9601,7 @@ def update_time_entry(
     entry.work_date = payload.work_date
     entry.hours = payload.hours
     entry.note = payload.note.strip()
-    _task_bill = _task_bill_rate_override(db, payload.project_id, payload.task_id, current_user.id)
+    _task_bill = _effective_bill_rate(db, payload.project_id, payload.task_id, current_user.id)
     entry.bill_rate_applied = _task_bill if _task_bill is not None else rate.bill_rate
     entry.cost_rate_applied = rate.cost_rate
 
