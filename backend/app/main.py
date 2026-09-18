@@ -5101,14 +5101,14 @@ def _compute_overhead_rate(db: Session, s: date, e: date) -> dict:
     nonlabor_opex = float(pl.get("opex", 0.0) or 0.0)
     needs_review = float(pl.get("needs_review_total", 0.0) or 0.0)
 
-    # Owner-directed overhead add-ons not fully captured in the transaction feed
-    # (e.g. annual software licenses, computer equipment). Stored as ANNUAL amounts
-    # in AppSetting and prorated to the window, so the rate generalizes to any period
-    # and stays a live, maintainable variable. Zero unless configured.
+    # Owner-directed overhead add-ons not captured in the transaction feed (e.g.
+    # software licenses, computer equipment). These are the ACTUAL add-on spend for
+    # the costing window (owner-maintained via AppSetting), applied in full — a live,
+    # maintainable variable. Zero unless configured.
     window_days = max(1, (e - s).days + 1)
-    adj_software = _get_float_setting(db, "oh_adjust_software_annual", 0.0)
-    adj_equipment = _get_float_setting(db, "oh_adjust_equipment_annual", 0.0)
-    opex_adjustment = round((adj_software + adj_equipment) * window_days / 365.0, 2)
+    adj_software = _get_float_setting(db, "oh_add_software", 0.0)
+    adj_equipment = _get_float_setting(db, "oh_add_equipment", 0.0)
+    opex_adjustment = round(adj_software + adj_equipment, 2)
     nonlabor_opex += opex_adjustment
 
     overhead_pool = indirect_labor + nonlabor_opex
@@ -5144,9 +5144,9 @@ def _compute_overhead_rate(db: Session, s: date, e: date) -> dict:
             "overhead_pool": round(overhead_pool, 2),
         },
         "opex_adjustments": {
-            "software_annual": round(adj_software, 2),
-            "equipment_annual": round(adj_equipment, 2),
-            "applied_to_window": opex_adjustment,
+            "software": round(adj_software, 2),
+            "equipment": round(adj_equipment, 2),
+            "applied": opex_adjustment,
             "window_days": window_days,
         },
         "needs_review_in_opex": round(needs_review, 2),
@@ -5174,6 +5174,87 @@ def accounting_overhead_rate(
         e = date(today.year, today.month, 1) - timedelta(days=1)  # last day of prior month
         s = _sub_months(today, months)
     return _compute_overhead_rate(db, s, e)
+
+
+def _refresh_loaded_cost_rates(db: Session, *, restamp: bool = True) -> dict[str, object]:
+    """Recompute each employee's fully-loaded cost from the overhead engine
+    (`_compute_overhead_rate`, the single source of truth) over the current YTD
+    window, write it into user_rates.cost_rate, and optionally re-stamp this year's
+    time entries (cost only). This is how the overhead engine wires into the
+    per-entry cost that create/update time-entry stamps."""
+    today = date.today()
+    s = date(today.year, 1, 1)
+    oh = _compute_overhead_rate(db, s, today)
+    loaded = {int(e["user_id"]): float(e["cost_rate_loaded"]) for e in oh["employees"]}
+    rows_updated = 0
+    for uid, lc in loaded.items():
+        for ur in db.scalars(select(UserRate).where(UserRate.user_id == uid)).all():
+            if round(float(ur.cost_rate or 0.0), 2) != round(lc, 2):
+                ur.cost_rate = lc
+                rows_updated += 1
+    restamped = 0
+    if restamp:
+        for te in db.scalars(
+            select(TimeEntry).where(TimeEntry.work_date >= s, TimeEntry.work_date <= date(today.year, 12, 31))
+        ).all():
+            lc = loaded.get(int(te.user_id))
+            if lc is not None and round(float(te.cost_rate_applied or 0.0), 2) != round(lc, 2):
+                te.cost_rate_applied = lc
+                restamped += 1
+    db.commit()
+    return {
+        "as_of": today.isoformat(),
+        "fringe_rate": oh["fringe_rate"],
+        "overhead_rate": oh["overhead_rate"],
+        "effective_multiplier": round((1 + oh["fringe_rate"]) * (1 + oh["overhead_rate"]), 4),
+        "opex_adjustments": oh["opex_adjustments"],
+        "loaded_cost_by_user": loaded,
+        "user_rate_rows_updated": rows_updated,
+        "entries_restamped": restamped,
+    }
+
+
+@app.post("/accounting/refresh-loaded-costs")
+def accounting_refresh_loaded_costs(
+    restamp: bool = True,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("MANAGE_RATES")),
+) -> dict[str, object]:
+    """Refresh employee loaded cost rates from the live overhead engine and re-stamp
+    the current year's time-entry costs. Idempotent — safe to run anytime."""
+    return _refresh_loaded_cost_rates(db, restamp=restamp)
+
+
+class OverheadAdjustmentsIn(BaseModel):
+    software: float = 0.0
+    equipment: float = 0.0
+
+
+@app.get("/accounting/overhead-adjustments")
+def get_overhead_adjustments(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """The owner-maintained OPEX add-ons folded into the overhead rate."""
+    return {
+        "software": _get_float_setting(db, "oh_add_software", 0.0),
+        "equipment": _get_float_setting(db, "oh_add_equipment", 0.0),
+    }
+
+
+@app.put("/accounting/overhead-adjustments")
+def set_overhead_adjustments(
+    payload: OverheadAdjustmentsIn,
+    restamp: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("MANAGE_RATES")),
+) -> dict[str, object]:
+    """Set the OPEX add-ons and immediately refresh loaded costs so the change flows
+    straight through to loaded cost + margins (closes the overhead → cost loop)."""
+    _set_float_setting(db, "oh_add_software", float(payload.software), current_user.id)
+    _set_float_setting(db, "oh_add_equipment", float(payload.equipment), current_user.id)
+    return {"ok": True, "software": payload.software, "equipment": payload.equipment,
+            "refresh": _refresh_loaded_cost_rates(db, restamp=restamp)}
 
 
 @app.get("/accounting/utilization")
@@ -9452,6 +9533,16 @@ def _get_float_setting(db: Session, key: str, default: float = 0.0) -> float:
         return float(str(row.value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def _set_float_setting(db: Session, key: str, value: float, user_id: int | None) -> None:
+    row = db.scalar(select(AppSetting).where(AppSetting.key == key))
+    if row is None:
+        row = AppSetting(key=key)
+        db.add(row)
+    row.value = str(float(value))
+    row.updated_by_user_id = user_id
+    db.commit()
 
 
 def _set_bool_setting(db: Session, key: str, value: bool, user_id: int | None) -> None:
