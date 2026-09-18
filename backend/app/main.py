@@ -5160,6 +5160,69 @@ def accounting_overhead_rate(
     return _compute_overhead_rate(db, s, e)
 
 
+@app.get("/accounting/utilization")
+def accounting_utilization(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Per-employee and firm-wide utilization & realization for a period.
+
+    - Utilization % = billable hours / total logged hours (the #1 services-firm lever).
+    - Billable value = Σ (billable hours × bill_rate_applied).
+    - Labor cost = Σ (hours × cost_rate_applied) — loaded cost.
+    - Contribution margin = billable value − labor cost.
+    - Billed vs unbilled billable value via the `billed` flag (unbilled = WIP).
+    Billable = entry.is_billable AND project.is_billable AND task.is_billable.
+    """
+    today = date.today()
+    s = datetime.strptime(start, "%Y-%m-%d").date() if start else date(today.year, 1, 1)
+    e = datetime.strptime(end, "%Y-%m-%d").date() if end else today
+    from sqlalchemy import text
+    sql = text(
+        """
+        SELECT te.user_id, u.full_name,
+          COALESCE(SUM(te.hours),0) AS total_hours,
+          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) THEN te.hours ELSE 0 END),0) AS billable_hours,
+          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billable_value,
+          COALESCE(SUM(te.hours*COALESCE(te.cost_rate_applied,0)),0) AS labor_cost,
+          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) AND te.billed THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billed_value
+        FROM time_entries te
+        JOIN users u ON u.id=te.user_id
+        LEFT JOIN projects p ON p.id=te.project_id
+        LEFT JOIN tasks t ON t.id=te.task_id
+        WHERE te.work_date >= :s AND te.work_date <= :e
+        GROUP BY te.user_id, u.full_name
+        ORDER BY billable_hours DESC
+        """
+    )
+    rows = db.execute(sql, {"s": s, "e": e}).all()
+    people: list[dict[str, object]] = []
+    agg = {"total_hours": 0.0, "billable_hours": 0.0, "billable_value": 0.0, "labor_cost": 0.0, "billed_value": 0.0}
+    for uid, name, th, bh, bv, lc, bd in rows:
+        th, bh, bv, lc, bd = float(th), float(bh), float(bv), float(lc), float(bd)
+        people.append({
+            "user_id": uid, "name": name,
+            "total_hours": round(th, 1), "billable_hours": round(bh, 1), "nonbillable_hours": round(th - bh, 1),
+            "utilization_pct": round(bh / th * 100, 1) if th > 0 else 0.0,
+            "billable_value": round(bv, 2), "labor_cost": round(lc, 2),
+            "margin": round(bv - lc, 2), "margin_pct": round((bv - lc) / bv * 100, 1) if bv > 0 else 0.0,
+            "billed_value": round(bd, 2), "unbilled_value": round(bv - bd, 2),
+        })
+        agg["total_hours"] += th; agg["billable_hours"] += bh; agg["billable_value"] += bv
+        agg["labor_cost"] += lc; agg["billed_value"] += bd
+    th, bh, bv, lc, bd = (agg["total_hours"], agg["billable_hours"], agg["billable_value"], agg["labor_cost"], agg["billed_value"])
+    totals = {
+        "total_hours": round(th, 1), "billable_hours": round(bh, 1), "nonbillable_hours": round(th - bh, 1),
+        "utilization_pct": round(bh / th * 100, 1) if th > 0 else 0.0,
+        "billable_value": round(bv, 2), "labor_cost": round(lc, 2),
+        "margin": round(bv - lc, 2), "margin_pct": round((bv - lc) / bv * 100, 1) if bv > 0 else 0.0,
+        "billed_value": round(bd, 2), "unbilled_value": round(bv - bd, 2),
+    }
+    return {"period": {"start": s.isoformat(), "end": e.isoformat()}, "rows": people, "totals": totals}
+
+
 @app.get("/accounting/daily-profitability")
 def accounting_daily_profitability(
     date: str | None = None,
