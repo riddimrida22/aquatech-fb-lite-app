@@ -121,6 +121,23 @@ class Subtask(Base):
     __table_args__ = (UniqueConstraint("task_id", "code", name="uq_subtask_task_code"),)
 
 
+class SubtaskHourEstimate(Base):
+    """Admin-only budgeted level-of-effort: estimated hours per employee per subtask.
+
+    Sourced from the task-order fee proposal. Visible only to finance/admin roles —
+    it is never returned on the employee-facing timesheet or project views.
+    """
+
+    __tablename__ = "subtask_hour_estimates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subtask_id: Mapped[int] = mapped_column(ForeignKey("subtasks.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    est_hours: Mapped[float] = mapped_column(Float, default=0.0)
+
+    __table_args__ = (UniqueConstraint("subtask_id", "user_id", name="uq_subtask_hour_estimate"),)
+
+
 class UserRate(Base):
     __tablename__ = "user_rates"
 

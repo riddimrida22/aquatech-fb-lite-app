@@ -58,6 +58,7 @@ from .models import (
     TeamingPartner,
     WinLossReview,
     Subtask,
+    SubtaskHourEstimate,
     Task,
     TimeEntry,
     Timesheet,
@@ -9116,7 +9117,9 @@ def reapply_rates_to_entries(
             skipped_no_rate += 1
             continue
 
-        new_bill = float(applicable.bill_rate)
+        # Task-scoped bill override wins (multi-task-order projects); cost is companywide.
+        _tb = _task_bill_rate_override(db, entry.project_id, entry.task_id, entry.user_id)
+        new_bill = _tb if _tb is not None else float(applicable.bill_rate)
         new_cost = float(applicable.cost_rate)
         if float(entry.bill_rate_applied) == new_bill and float(entry.cost_rate_applied) == new_cost:
             unchanged += 1
@@ -9155,6 +9158,95 @@ def reapply_rates_to_entries(
     }
 
 
+def _task_bill_rate_override(
+    db: Session, project_id: int | None, task_id: int | None, user_id: int | None
+) -> float | None:
+    """Task-scoped BILL-rate override for multi-task-order projects.
+
+    Returns the bill rate pinned to a specific (project, task, user) row in
+    project_bill_rates (task_id NOT NULL) when one exists, else None so callers
+    keep their existing rate resolution. This lets two task orders that live under
+    one project carry different bill rates without the rates getting confused.
+    COST is never affected here — employee cost/salary rates are companywide.
+    """
+    if not project_id or not task_id or not user_id:
+        return None
+    from sqlalchemy import text
+    row = db.execute(
+        text(
+            "SELECT bill_rate FROM project_bill_rates "
+            "WHERE project_id=:p AND task_id=:t AND user_id=:u"
+        ),
+        {"p": project_id, "t": task_id, "u": user_id},
+    ).first()
+    return float(row[0]) if row is not None else None
+
+
+@app.get("/admin/subtask-hour-estimates")
+def get_subtask_hour_estimates(
+    subtask_id: int | None = None,
+    project_id: int | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Admin-only budgeted level-of-effort (hours per employee per subtask).
+
+    Filter by subtask_id, or by project_id to get every subtask on a project.
+    Never exposed on employee-facing timesheet/project endpoints.
+    """
+    q = select(SubtaskHourEstimate)
+    if subtask_id is not None:
+        q = q.where(SubtaskHourEstimate.subtask_id == subtask_id)
+    elif project_id is not None:
+        sub_ids = [
+            s_id
+            for (s_id,) in db.execute(
+                select(Subtask.id).join(Task, Subtask.task_id == Task.id).where(Task.project_id == project_id)
+            ).all()
+        ]
+        q = q.where(SubtaskHourEstimate.subtask_id.in_(sub_ids or [-1]))
+    rows = db.scalars(q).all()
+    names = {u.id: u.full_name for u in db.scalars(select(User)).all()}
+    out = [
+        {
+            "id": r.id,
+            "subtask_id": r.subtask_id,
+            "user_id": r.user_id,
+            "user_name": names.get(r.user_id),
+            "est_hours": float(r.est_hours or 0.0),
+        }
+        for r in rows
+    ]
+    return {"count": len(out), "rows": out}
+
+
+@app.put("/admin/subtask-hour-estimates")
+def upsert_subtask_hour_estimate(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("MANAGE_RATES")),
+) -> dict[str, object]:
+    """Upsert one (subtask, user) hours estimate. Admin-only."""
+    subtask_id = int(payload.get("subtask_id"))
+    user_id = int(payload.get("user_id"))
+    est_hours = float(payload.get("est_hours") or 0.0)
+    if not db.get(Subtask, subtask_id) or not db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="Subtask or user not found")
+    row = db.scalar(
+        select(SubtaskHourEstimate).where(
+            and_(SubtaskHourEstimate.subtask_id == subtask_id, SubtaskHourEstimate.user_id == user_id)
+        )
+    )
+    if row is None:
+        row = SubtaskHourEstimate(subtask_id=subtask_id, user_id=user_id, est_hours=est_hours)
+        db.add(row)
+    else:
+        row.est_hours = est_hours
+    db.commit()
+    db.refresh(row)
+    return {"ok": True, "id": row.id, "subtask_id": subtask_id, "user_id": user_id, "est_hours": est_hours}
+
+
 @app.post("/time-entries", response_model=TimeEntryOut)
 def create_time_entry(
     payload: TimeEntryCreate,
@@ -9176,6 +9268,7 @@ def create_time_entry(
     if not rate:
         raise HTTPException(status_code=400, detail="No rate configured for user")
 
+    task_bill = _task_bill_rate_override(db, payload.project_id, payload.task_id, current_user.id)
     entry = TimeEntry(
         user_id=current_user.id,
         project_id=payload.project_id,
@@ -9184,7 +9277,7 @@ def create_time_entry(
         work_date=payload.work_date,
         hours=payload.hours,
         note=payload.note.strip(),
-        bill_rate_applied=rate.bill_rate,
+        bill_rate_applied=task_bill if task_bill is not None else rate.bill_rate,
         cost_rate_applied=rate.cost_rate,
     )
     db.add(entry)
@@ -9497,7 +9590,8 @@ def update_time_entry(
     entry.work_date = payload.work_date
     entry.hours = payload.hours
     entry.note = payload.note.strip()
-    entry.bill_rate_applied = rate.bill_rate
+    _task_bill = _task_bill_rate_override(db, payload.project_id, payload.task_id, current_user.id)
+    entry.bill_rate_applied = _task_bill if _task_bill is not None else rate.bill_rate
     entry.cost_rate_applied = rate.cost_rate
 
     db.flush()
