@@ -26,8 +26,11 @@ export function FreshnessBanner() {
     const id = setInterval(load, 300_000); // refresh every 5 min
     return () => clearInterval(id);
   }, []);
-  if (!f || !f.sources.length) return null;
-  const bad = f.overall !== "ok";
+  // FreshBooks was retired (2026-08-31) — the firm no longer subscribes, so don't
+  // surface a stale FreshBooks freshness dot that implies an active sync.
+  const sources = (f?.sources ?? []).filter((s) => s.key !== "freshbooks");
+  if (!f || !sources.length) return null;
+  const bad = sources.some((s) => s.status !== "ok" && s.status !== "connected");
   // Colors come from the `.aq-freshness` classes in globals.css, which set an
   // explicit, theme-aware background + text pair per light/dark mode. (The prior
   // approach used var(--aq-card)/var(--aq-text): the near-white card blended into
@@ -41,7 +44,7 @@ export function FreshnessBanner() {
       }}
     >
       <span className="aq-freshness-label">Data freshness</span>
-      {f.sources.map((s) => (
+      {sources.map((s) => (
         <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 5 }} title={s.detail || ""}>
           <span style={{ width: 8, height: 8, borderRadius: "50%", background: DOT[s.status] || "#9ca3af", flex: "none" }} />
           {s.label}: <strong>{ageLabel(s.age_hours)}</strong>
