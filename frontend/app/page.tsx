@@ -21,6 +21,7 @@ import DataGaps from "./components/DataGaps";
 import DailyProfitabilityKPI from "./components/DailyProfitabilityKPI";
 import OwnerWealthKPI from "./components/OwnerWealthKPI";
 import UtilizationWorkspace from "./components/UtilizationWorkspace";
+import ProjectAlertsPanel from "./components/ProjectAlertsPanel";
 import OverheadRatePanel from "./components/OverheadRatePanel";
 import DecisionsRegister from "./components/DecisionsRegister";
 import { BdWorkspace } from "./components/BdWorkspace";
@@ -2059,7 +2060,10 @@ export default function AquatechPmHome() {
         ) : null}
 
         {workspace === "utilization" ? (
-          <UtilizationWorkspace />
+          <>
+            <ProjectAlertsPanel />
+            <UtilizationWorkspace />
+          </>
         ) : null}
 
         {workspace === "reports" ? (
