@@ -5275,6 +5275,83 @@ def set_overhead_adjustments(
             "refresh": _refresh_loaded_cost_rates(db, restamp=restamp)}
 
 
+@app.get("/accounting/project-alerts")
+def accounting_project_alerts(
+    stale_days: int = 45,
+    burn_warn_pct: float = 80.0,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Profitability leak alerts per active billable project:
+    - Stale WIP: unbilled billable work older than `stale_days` (WIP is normal
+      BETWEEN invoices; stale = past the billing cadence = at risk of never billing).
+    - Budget burn: (invoiced + unbilled WIP) vs overall_budget_fee.
+    """
+    today = date.today()
+    cut = today - timedelta(days=stale_days)
+    from sqlalchemy import text
+    rows = db.execute(
+        text(
+            """
+            WITH wip AS (
+              SELECT te.project_id,
+                SUM(CASE WHEN NOT te.billed THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END) AS unbilled_wip,
+                SUM(CASE WHEN NOT te.billed AND te.work_date < :cut THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END) AS stale_wip,
+                MIN(CASE WHEN NOT te.billed AND te.hours*COALESCE(te.bill_rate_applied,0) > 0 THEN te.work_date END) AS oldest_unbilled
+              FROM time_entries te JOIN tasks t ON t.id=te.task_id
+              WHERE te.is_billable AND t.is_billable
+              GROUP BY te.project_id
+            ), inv AS (
+              SELECT project_id, SUM(subtotal_amount) AS invoiced, MAX(issue_date) AS last_invoice
+              FROM invoices WHERE status <> 'void' AND project_id IS NOT NULL GROUP BY project_id
+            )
+            SELECT p.id, p.name, p.lifecycle_status, COALESCE(p.overall_budget_fee,0) AS budget,
+                   COALESCE(wip.unbilled_wip,0), COALESCE(wip.stale_wip,0), wip.oldest_unbilled,
+                   COALESCE(inv.invoiced,0), inv.last_invoice
+            FROM projects p
+            LEFT JOIN wip ON wip.project_id = p.id
+            LEFT JOIN inv ON inv.project_id = p.id
+            WHERE p.is_active AND p.is_billable
+            ORDER BY COALESCE(wip.stale_wip,0) DESC, COALESCE(wip.unbilled_wip,0) DESC
+            """
+        ),
+        {"cut": cut},
+    ).all()
+    projects = []
+    tot = {"unbilled_wip": 0.0, "stale_wip": 0.0}
+    for pid, name, life, budget, uwip, swip, oldest, invoiced, last_inv in rows:
+        budget = float(budget or 0.0); uwip = float(uwip or 0.0); swip = float(swip or 0.0); invoiced = float(invoiced or 0.0)
+        days_since_inv = (today - last_inv).days if last_inv else None
+        oldest_age = (today - oldest).days if oldest else None
+        burn_pct = round((invoiced + uwip) / budget * 100, 1) if budget > 0 else None
+        flags = []
+        if swip > 0:
+            flags.append("stale_wip")
+        if burn_pct is not None and burn_pct >= 100:
+            flags.append("over_budget")
+        elif burn_pct is not None and burn_pct >= burn_warn_pct:
+            flags.append("high_burn")
+        projects.append({
+            "project_id": pid, "project": name, "lifecycle_status": life,
+            "budget_fee": round(budget, 2), "invoiced": round(invoiced, 2),
+            "unbilled_wip": round(uwip, 2), "stale_wip": round(swip, 2),
+            "oldest_unbilled": oldest.isoformat() if oldest else None,
+            "oldest_unbilled_age_days": oldest_age,
+            "last_invoice": last_inv.isoformat() if last_inv else None,
+            "days_since_last_invoice": days_since_inv,
+            "burn_pct": burn_pct, "flags": flags,
+        })
+        tot["unbilled_wip"] += uwip; tot["stale_wip"] += swip
+    return {
+        "as_of": today.isoformat(),
+        "stale_days": stale_days,
+        "burn_warn_pct": burn_warn_pct,
+        "totals": {"unbilled_wip": round(tot["unbilled_wip"], 2), "stale_wip": round(tot["stale_wip"], 2),
+                   "flagged": len([p for p in projects if p["flags"]])},
+        "projects": projects,
+    }
+
+
 @app.get("/accounting/utilization")
 def accounting_utilization(
     start: str | None = None,
