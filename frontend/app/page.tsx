@@ -588,7 +588,9 @@ export default function AquatechPmHome() {
   }, []);
 
   async function ensureWbs(projectId: number) {
-    if (wbsByProject[projectId]) return wbsByProject[projectId];
+    // Always re-fetch the WBS so tasks/subtasks added mid-session (e.g. a new task
+    // order) appear immediately without a hard refresh. This only runs when a
+    // project is selected in the time/invoice form, and the payload is small.
     const wbs = await apiGet<ProjectWbs>(`/projects/${projectId}/wbs`);
     setWbsByProject((current) => ({ ...current, [projectId]: wbs }));
     return wbs;
