@@ -54,6 +54,9 @@ class Project(Base):
     is_overhead: Mapped[bool] = mapped_column(Boolean, default=False)
     is_billable: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Strategic / loss-leader: priced at/below cost on purpose to win a client or
+    # open follow-on work. Excluded from budget-burn / margin loss alarms.
+    is_loss_leader: Mapped[bool] = mapped_column(Boolean, default=False)
     # Lifecycle stage. Source of truth — is_active is auto-derived from this.
     # Allowed values: planning | active | paused | completed | cancelled
     lifecycle_status: Mapped[str] = mapped_column(String(32), default="active", index=True)

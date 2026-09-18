@@ -74,6 +74,8 @@ def _ensure_project_columns() -> None:
         statements.append("ALTER TABLE projects ADD COLUMN end_date DATE")
     if "is_billable" not in cols:
         statements.append("ALTER TABLE projects ADD COLUMN is_billable BOOLEAN DEFAULT TRUE")
+    if "is_loss_leader" not in cols:
+        statements.append("ALTER TABLE projects ADD COLUMN is_loss_leader BOOLEAN DEFAULT FALSE")
     if not statements:
         return
     with engine.begin() as conn:
