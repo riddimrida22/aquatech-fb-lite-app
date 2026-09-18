@@ -155,11 +155,13 @@ const NAV: NavEntry[] = [
 ];
 
 // Sidebar importance ramp — deeper teal hue = more important menu.
+// Wide spread for strong tier-to-tier contrast: tier 1 reads as a near-solid deep
+// teal chip, tier 4 is barely tinted.
 const NAV_TIER_BG: Record<number, string> = {
-  1: "rgba(33, 115, 126, 0.42)",
-  2: "rgba(33, 115, 126, 0.24)",
-  3: "rgba(33, 115, 126, 0.12)",
-  4: "rgba(255, 255, 255, 0.045)",
+  1: "rgba(19, 98, 111, 0.78)",
+  2: "rgba(33, 115, 126, 0.38)",
+  3: "rgba(33, 115, 126, 0.14)",
+  4: "rgba(255, 255, 255, 0.028)",
 };
 const navTierBg = (tier?: number): string => NAV_TIER_BG[tier ?? 4] ?? NAV_TIER_BG[4];
 
