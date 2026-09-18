@@ -96,8 +96,9 @@ const DEV_AUTH_ENABLED = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true";
 // Shared cursor for drill-down (clickable dashboard figures → detail tab)
 const drillStyle = { cursor: "pointer" } as const;
 
-type NavLeaf = { key: WorkspaceKey; label: string; hint: string; requires?: string };
-type NavGroup = { groupKey: string; label: string; hint: string; children: NavLeaf[] };
+// tier drives the navigation color ramp: 1 = most important (deepest hue) → 4 = least.
+type NavLeaf = { key: WorkspaceKey; label: string; hint: string; requires?: string; tier?: number };
+type NavGroup = { groupKey: string; label: string; hint: string; children: NavLeaf[]; tier?: number };
 type NavEntry = NavLeaf | NavGroup;
 
 function isNavGroup(entry: NavEntry): entry is NavGroup {
@@ -106,47 +107,61 @@ function isNavGroup(entry: NavEntry): entry is NavGroup {
 
 // Consolidated IA: 6 top-level entries (Time merges enter+timesheets; Financial &
 // Settings are grouped with submenus) — down from 14 flat items.
+// Ordered most-important-first, and each item carries a `tier` (1 = core/daily,
+// 4 = occasional) that drives the sidebar color ramp — deeper teal = more important.
 const NAV: NavEntry[] = [
-  { key: "dashboard", label: "Dashboard", hint: "Snapshot" },
-  { key: "projects", label: "Projects", hint: "Pipeline + setup" },
+  { key: "dashboard", label: "Dashboard", hint: "Snapshot", tier: 1 },
+  {
+    groupKey: "financial",
+    label: "Financial",
+    hint: "Books · billing · profit",
+    tier: 1,
+    children: [
+      { key: "accounting", label: "Overview", hint: "P&L · Cash · Balance", tier: 1 },
+      { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables", tier: 1 },
+      { key: "utilization", label: "Utilization", hint: "Billable % · leaks", tier: 2 },
+      { key: "costs", label: "Costs & Expenses", hint: "Spend + tax", tier: 2 },
+      { key: "payables", label: "Payables & Owner", hint: "A/P + owner comp", tier: 3 },
+      { key: "payroll", label: "Labor Costs", hint: "Payroll → COGS", tier: 3 },
+      { key: "invoicegen", label: "Invoice Generator", hint: "Cost-plus + timesheets", requires: "canManageInvoicing", tier: 3 },
+      { key: "categorize", label: "Categorize", hint: "Sort transactions", tier: 4 },
+      { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log", tier: 4 },
+      { key: "hourestimates", label: "Hour Estimates", hint: "Budgeted LOE (admin)", tier: 4 },
+      { key: "reports", label: "Reports", hint: "Benchmarks", tier: 4 },
+    ],
+  },
+  { key: "time", label: "Time", hint: "Hours + timesheets", tier: 1 },
+  { key: "projects", label: "Projects", hint: "Pipeline + setup", tier: 2 },
   {
     groupKey: "bizdev",
     label: "Business Dev",
     hint: "Pursuits · clients",
+    tier: 3,
     children: [
-      { key: "bd", label: "Pipeline", hint: "Pursuits + go/no-go" },
-      { key: "clients", label: "Clients", hint: "Relationships" },
-    ],
-  },
-  { key: "time", label: "Time", hint: "Hours + timesheets" },
-  {
-    groupKey: "financial",
-    label: "Financial",
-    hint: "Books · payroll · billing",
-    children: [
-      { key: "accounting", label: "Overview", hint: "P&L · Cash Flow · Balance · Loans" },
-      { key: "payroll", label: "Labor Costs", hint: "Payroll → COGS" },
-      { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log" },
-      { key: "categorize", label: "Categorize", hint: "Sort transactions" },
-      { key: "costs", label: "Costs & Expenses", hint: "Spend + tax" },
-      { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables" },
-      { key: "payables", label: "Payables & Owner", hint: "A/P + owner comp" },
-      { key: "invoicegen", label: "Invoice Generator", hint: "Cost-plus + timesheets", requires: "canManageInvoicing" },
-      { key: "utilization", label: "Utilization", hint: "Billable % · realization" },
-      { key: "hourestimates", label: "Hour Estimates", hint: "Budgeted LOE (admin)" },
-      { key: "reports", label: "Reports", hint: "Benchmarks" },
+      { key: "bd", label: "Pipeline", hint: "Pursuits + go/no-go", tier: 3 },
+      { key: "clients", label: "Clients", hint: "Relationships", tier: 3 },
     ],
   },
   {
     groupKey: "admin",
     label: "Settings",
     hint: "Setup & data",
+    tier: 4,
     children: [
-      { key: "settings", label: "Preferences", hint: "Lean admin" },
-      { key: "imports", label: "Imports", hint: "FreshBooks transition" },
+      { key: "settings", label: "Preferences", hint: "Lean admin", tier: 4 },
+      { key: "imports", label: "Imports", hint: "Data import", tier: 4 },
     ],
   },
 ];
+
+// Sidebar importance ramp — deeper teal hue = more important menu.
+const NAV_TIER_BG: Record<number, string> = {
+  1: "rgba(33, 115, 126, 0.42)",
+  2: "rgba(33, 115, 126, 0.24)",
+  3: "rgba(33, 115, 126, 0.12)",
+  4: "rgba(255, 255, 255, 0.045)",
+};
+const navTierBg = (tier?: number): string => NAV_TIER_BG[tier ?? 4] ?? NAV_TIER_BG[4];
 
 const NAV_LEAVES: NavLeaf[] = NAV.flatMap((entry) => (isNavGroup(entry) ? entry.children : [entry]));
 const labelForWorkspace = (key: WorkspaceKey): string =>
@@ -1048,6 +1063,7 @@ export default function AquatechPmHome() {
                   key={entry.key}
                   type="button"
                   className={classNames("aq-lite-nav-item", workspace === entry.key && "active")}
+                  style={workspace === entry.key ? undefined : { background: navTierBg(entry.tier) }}
                   onClick={() => setWorkspace(entry.key)}
                 >
                   <span>{entry.label}</span>
@@ -1063,6 +1079,7 @@ export default function AquatechPmHome() {
                 <button
                   type="button"
                   className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head", containsActive && "active-parent")}
+                  style={{ background: navTierBg(entry.tier) }}
                   aria-expanded={open}
                   onClick={() => setOpenGroups((g) => ({ ...g, [entry.groupKey]: !open }))}
                 >
@@ -1077,6 +1094,7 @@ export default function AquatechPmHome() {
                         key={child.key}
                         type="button"
                         className={classNames("aq-lite-nav-item", "aq-lite-nav-child", workspace === child.key && "active")}
+                        style={workspace === child.key ? undefined : { background: navTierBg(child.tier) }}
                         onClick={() => setWorkspace(child.key)}
                       >
                         <span>{child.label}</span>
