@@ -5101,6 +5101,16 @@ def _compute_overhead_rate(db: Session, s: date, e: date) -> dict:
     nonlabor_opex = float(pl.get("opex", 0.0) or 0.0)
     needs_review = float(pl.get("needs_review_total", 0.0) or 0.0)
 
+    # Owner-directed overhead add-ons not fully captured in the transaction feed
+    # (e.g. annual software licenses, computer equipment). Stored as ANNUAL amounts
+    # in AppSetting and prorated to the window, so the rate generalizes to any period
+    # and stays a live, maintainable variable. Zero unless configured.
+    window_days = max(1, (e - s).days + 1)
+    adj_software = _get_float_setting(db, "oh_adjust_software_annual", 0.0)
+    adj_equipment = _get_float_setting(db, "oh_adjust_equipment_annual", 0.0)
+    opex_adjustment = round((adj_software + adj_equipment) * window_days / 365.0, 2)
+    nonlabor_opex += opex_adjustment
+
     overhead_pool = indirect_labor + nonlabor_opex
     overhead_rate = (overhead_pool / direct_labor) if direct_labor > 0 else 0.0
     profit_rate = BILLING_PROFIT_RATE
@@ -5132,6 +5142,12 @@ def _compute_overhead_rate(db: Session, s: date, e: date) -> dict:
             "indirect_labor": round(indirect_labor, 2),
             "nonlabor_opex": round(nonlabor_opex, 2),
             "overhead_pool": round(overhead_pool, 2),
+        },
+        "opex_adjustments": {
+            "software_annual": round(adj_software, 2),
+            "equipment_annual": round(adj_equipment, 2),
+            "applied_to_window": opex_adjustment,
+            "window_days": window_days,
         },
         "needs_review_in_opex": round(needs_review, 2),
         "employees": employees,
@@ -9426,6 +9442,16 @@ def _get_bool_setting(db: Session, key: str, default: bool = False) -> bool:
     if row is None:
         return default
     return str(row.value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _get_float_setting(db: Session, key: str, default: float = 0.0) -> float:
+    row = db.scalar(select(AppSetting).where(AppSetting.key == key))
+    if row is None:
+        return default
+    try:
+        return float(str(row.value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def _set_bool_setting(db: Session, key: str, value: bool, user_id: int | None) -> None:
