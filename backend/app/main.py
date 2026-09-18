@@ -9117,9 +9117,10 @@ def reapply_rates_to_entries(
             skipped_no_rate += 1
             continue
 
-        # Project/task-order bill rate wins; cost is companywide (global UserRate).
+        # Bill rate comes ONLY from the project/task-order card; no global fallback
+        # (missing rate -> 0, surfaced by /admin/missing-bill-rates). Cost is companywide.
         _tb = _effective_bill_rate(db, entry.project_id, entry.task_id, entry.user_id)
-        new_bill = _tb if _tb is not None else float(applicable.bill_rate)
+        new_bill = _tb if _tb is not None else 0.0
         new_cost = float(applicable.cost_rate)
         if float(entry.bill_rate_applied) == new_bill and float(entry.cost_rate_applied) == new_cost:
             unchanged += 1
@@ -9258,6 +9259,45 @@ def upsert_subtask_hour_estimate(
     return {"ok": True, "id": row.id, "subtask_id": subtask_id, "user_id": user_id, "est_hours": est_hours}
 
 
+@app.get("/admin/missing-bill-rates")
+def missing_bill_rates(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Flag billable time charged with NO project/task-order bill rate (stamped 0).
+
+    There is no global bill-rate fallback: every billable project/task must have a
+    rate in the project rate card. This report lists any billable hours that landed
+    with bill_rate_applied <= 0 so an admin can set the rate and re-apply.
+    """
+    rows = db.execute(
+        select(
+            TimeEntry.project_id, Project.name, TimeEntry.task_id, Task.name,
+            func.count(TimeEntry.id), func.coalesce(func.sum(TimeEntry.hours), 0.0),
+        )
+        .join(Project, Project.id == TimeEntry.project_id)
+        .join(Task, Task.id == TimeEntry.task_id)
+        .where(
+            or_(TimeEntry.bill_rate_applied.is_(None), TimeEntry.bill_rate_applied <= 0),
+            Project.is_billable.is_(True),
+            Task.is_billable.is_(True),
+        )
+        .group_by(TimeEntry.project_id, Project.name, TimeEntry.task_id, Task.name)
+        .order_by(func.coalesce(func.sum(TimeEntry.hours), 0.0).desc())
+    ).all()
+    out = [
+        {"project_id": pid, "project": pn, "task_id": tid, "task": tn,
+         "entries": int(cnt), "unpriced_hours": round(float(h or 0.0), 2)}
+        for pid, pn, tid, tn, cnt, h in rows
+    ]
+    return {
+        "count": len(out),
+        "total_unpriced_hours": round(sum(r["unpriced_hours"] for r in out), 2),
+        "note": "Set the missing rate in the project rate card, then POST /rates/reapply-to-entries.",
+        "rows": out,
+    }
+
+
 @app.post("/time-entries", response_model=TimeEntryOut)
 def create_time_entry(
     payload: TimeEntryCreate,
@@ -9279,7 +9319,19 @@ def create_time_entry(
     if not rate:
         raise HTTPException(status_code=400, detail="No rate configured for user")
 
-    task_bill = _effective_bill_rate(db, payload.project_id, payload.task_id, current_user.id)
+    # Bill rate comes ONLY from the project/task-order rate card — never a global rate.
+    # If a billable project/task has no configured rate, stamp 0 and flag it for admins.
+    eff_bill = _effective_bill_rate(db, payload.project_id, payload.task_id, current_user.id)
+    proj = db.get(Project, payload.project_id)
+    billable_ctx = bool(getattr(proj, "is_billable", True)) and bool(task.is_billable)
+    if eff_bill is None and billable_ctx:
+        _log_audit_event(
+            db=db, entity_type="time_entry", entity_id=0, action="missing_bill_rate",
+            actor_user_id=current_user.id,
+            payload={"project_id": payload.project_id, "task_id": payload.task_id,
+                     "user_id": current_user.id, "work_date": payload.work_date.isoformat(),
+                     "detail": "No project/task-order bill rate configured; stamped 0 (see /admin/missing-bill-rates)"},
+        )
     entry = TimeEntry(
         user_id=current_user.id,
         project_id=payload.project_id,
@@ -9288,7 +9340,7 @@ def create_time_entry(
         work_date=payload.work_date,
         hours=payload.hours,
         note=payload.note.strip(),
-        bill_rate_applied=task_bill if task_bill is not None else rate.bill_rate,
+        bill_rate_applied=eff_bill if eff_bill is not None else 0.0,
         cost_rate_applied=rate.cost_rate,
     )
     db.add(entry)
@@ -9601,8 +9653,17 @@ def update_time_entry(
     entry.work_date = payload.work_date
     entry.hours = payload.hours
     entry.note = payload.note.strip()
-    _task_bill = _effective_bill_rate(db, payload.project_id, payload.task_id, current_user.id)
-    entry.bill_rate_applied = _task_bill if _task_bill is not None else rate.bill_rate
+    _eff_bill = _effective_bill_rate(db, payload.project_id, payload.task_id, current_user.id)
+    _proj = db.get(Project, payload.project_id)
+    if _eff_bill is None and bool(getattr(_proj, "is_billable", True)) and bool(task.is_billable):
+        _log_audit_event(
+            db=db, entity_type="time_entry", entity_id=entry.id, action="missing_bill_rate",
+            actor_user_id=current_user.id,
+            payload={"project_id": payload.project_id, "task_id": payload.task_id,
+                     "user_id": current_user.id, "work_date": payload.work_date.isoformat(),
+                     "detail": "No project/task-order bill rate configured; stamped 0 (see /admin/missing-bill-rates)"},
+        )
+    entry.bill_rate_applied = _eff_bill if _eff_bill is not None else 0.0
     entry.cost_rate_applied = rate.cost_rate
 
     db.flush()
