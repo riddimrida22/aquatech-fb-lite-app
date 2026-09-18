@@ -1834,6 +1834,18 @@ def _start_fb_time_sync_worker() -> None:
             except Exception:
                 pass
 
+    def _nightly_loaded_cost_refresh() -> None:
+        """Recompute employee loaded cost rates from the overhead engine (single source
+        of truth) and re-stamp the current year's time-entry costs, so margins track
+        actual overhead. Idempotent — a no-op day changes nothing."""
+        try:
+            with SessionLocal() as db:
+                r = _refresh_loaded_cost_rates(db, restamp=True)
+                print(f"[loaded_cost] nightly refresh ok: mult={r['effective_multiplier']} "
+                      f"rows_updated={r['user_rate_rows_updated']} restamped={r['entries_restamped']}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
+            print(f"[loaded_cost] nightly refresh failed: {exc!r}", flush=True)
+
     sched = BackgroundScheduler(daemon=True)
     # Master FreshBooks kill-switch (flip to False at the 2026-08-31 cut-over). When off,
     # NO FB job is scheduled — the 10-min time-sync, the daily full sync, and the boot
@@ -1855,6 +1867,10 @@ def _start_fb_time_sync_worker() -> None:
     if _fb_sync_on and getattr(settings, "FRESHBOOKS_DAILY_SYNC_ENABLED", True):
         sched.add_job(_daily_fb_full_sync, "cron", hour=_hour, minute=15, timezone=_tz,
                       id="fb_daily_full_sync", coalesce=True, max_instances=1)
+    # Nightly loaded-cost refresh — after the bank/FB syncs so overhead uses fresh data.
+    if getattr(settings, "LOADED_COST_REFRESH_ENABLED", True):
+        sched.add_job(_nightly_loaded_cost_refresh, "cron", hour=_hour, minute=30, timezone=_tz,
+                      id="loaded_cost_refresh", coalesce=True, max_instances=1)
     # One-shot catch-up ~60-90s after boot, so a restart/deploy doesn't leave bank +
     # FreshBooks data stale until the next 6 AM cron.
     _boot = datetime.utcnow()
