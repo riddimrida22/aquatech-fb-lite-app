@@ -9493,7 +9493,26 @@ def get_subtask_hour_estimates(
         }
         for r in rows
     ]
-    return {"count": len(out), "rows": out}
+    result: dict[str, object] = {"count": len(out), "rows": out}
+    # When scoped to a project, also return the grid scaffold (subtasks + active
+    # roster) so an admin screen can render/edit the whole matrix in one call.
+    if project_id is not None:
+        subtasks = db.execute(
+            select(Subtask.id, Subtask.name, Subtask.code, Task.id, Task.name)
+            .join(Task, Subtask.task_id == Task.id)
+            .where(Task.project_id == project_id)
+            .order_by(Task.id.asc(), Subtask.id.asc())
+        ).all()
+        result["subtasks"] = [
+            {"subtask_id": sid, "subtask_name": sname, "code": code, "task_id": tid, "task_name": tname}
+            for sid, sname, code, tid, tname in subtasks
+            if (code or "").upper() != "NO-SUBTASK"
+        ]
+        result["users"] = [
+            {"user_id": u.id, "name": u.full_name}
+            for u in db.scalars(select(User).where(User.is_active.is_(True)).order_by(User.full_name.asc())).all()
+        ]
+    return result
 
 
 @app.put("/admin/subtask-hour-estimates")
