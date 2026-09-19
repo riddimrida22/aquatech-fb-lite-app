@@ -67,6 +67,14 @@ type EquityRollforward = {
   owner_contributions: number;
   distributions: number;
   distributions_net: number;
+  distributions_detail?: {
+    cash_to_personal_net: number;
+    owner_draw_spend: number;
+    brokerage_net: number;
+    gross_out: number;
+    returned_in: number;
+    net: number;
+  };
   ending_equity: number;
 };
 
@@ -397,6 +405,7 @@ function BalanceView() {
   const [b, setB] = useState<Balance | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [distOpen, setDistOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -457,10 +466,38 @@ function BalanceView() {
               <td>&nbsp;&nbsp;Add: Owner capital contributions</td>
               <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.owner_contributions)}</td>
             </tr>
-            <tr>
-              <td>&nbsp;&nbsp;Less: Shareholder distributions</td>
+            <tr
+              onClick={() => b.equity_rollforward?.distributions_detail && setDistOpen((v) => !v)}
+              style={{ cursor: b.equity_rollforward.distributions_detail ? "pointer" : "default" }}
+            >
+              <td>
+                {b.equity_rollforward.distributions_detail ? (
+                  <span style={{ display: "inline-block", width: 12, color: "var(--aq-muted)" }}>{distOpen ? "▾" : "▸"}</span>
+                ) : <span style={{ display: "inline-block", width: 12 }} />}
+                Less: Shareholder distributions
+              </td>
               <td style={{ textAlign: "right", color: "var(--aq-danger, #b42318)" }}>({formatCurrency(b.equity_rollforward.distributions)})</td>
             </tr>
+            {distOpen && b.equity_rollforward.distributions_detail ? (
+              <>
+                <tr>
+                  <td style={{ paddingLeft: 30, color: "var(--aq-muted)", fontSize: 12 }}>A · Cash transfers to personal account (net)</td>
+                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_detail.cash_to_personal_net)}</td>
+                </tr>
+                <tr>
+                  <td style={{ paddingLeft: 30, color: "var(--aq-muted)", fontSize: 12 }}>B · Personal costs paid by the business (Owner Draw)</td>
+                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_detail.owner_draw_spend)}</td>
+                </tr>
+                <tr>
+                  <td style={{ paddingLeft: 30, color: "var(--aq-muted)", fontSize: 12 }}>C · Transfers to personal brokerage (net)</td>
+                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_detail.brokerage_net)}</td>
+                </tr>
+                <tr>
+                  <td style={{ paddingLeft: 30, fontSize: 12 }}>Gross out · less contributions {formatCurrency(b.equity_rollforward.distributions_detail.returned_in)}</td>
+                  <td style={{ textAlign: "right", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_detail.gross_out)}</td>
+                </tr>
+              </>
+            ) : null}
             <tr style={{ background: "var(--aq-row-total-bg)", fontWeight: 800, color: "var(--aq-row-total-fg)" }}>
               <td>Ending equity</td>
               <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.ending_equity)}</td>
