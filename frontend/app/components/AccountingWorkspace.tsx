@@ -59,11 +59,23 @@ type Cashflow = {
   net_change_in_cash: number;
 };
 
+type EquityRollforward = {
+  period: { start: string; end: string };
+  beginning_equity: number;
+  beginning_is_derived: boolean;
+  net_income_accrual: number;
+  owner_contributions: number;
+  distributions: number;
+  distributions_net: number;
+  ending_equity: number;
+};
+
 type Balance = {
   as_of: string;
   assets: { cash: number; accounts_receivable: number; total: number };
   liabilities: { loans_outstanding: number; total: number };
   equity: number;
+  equity_rollforward?: EquityRollforward;
   notes: string[];
 };
 
@@ -424,6 +436,42 @@ function BalanceView() {
           <tr style={{ background: "var(--aq-row-total-bg)", fontWeight: 800, color: "var(--aq-row-total-fg)" }}><td>Equity = Assets − Liabilities</td><td style={{ textAlign: "right" }}>{formatCurrency(b.equity)}</td></tr>
         </tbody>
       </table>
+      {b.equity_rollforward ? (
+        <table className="aq-lite-table" style={{ marginTop: 12 }}>
+          <tbody>
+            <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}>
+              <td>Changes in shareholder equity</td>
+              <td style={{ textAlign: "right", fontWeight: 500, color: "var(--aq-muted)", fontSize: 12 }}>
+                YTD · {b.equity_rollforward.period.start} – {b.equity_rollforward.period.end}
+              </td>
+            </tr>
+            <tr>
+              <td>&nbsp;&nbsp;Beginning equity{b.equity_rollforward.beginning_is_derived ? " (implied)" : ""}</td>
+              <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.beginning_equity)}</td>
+            </tr>
+            <tr>
+              <td>&nbsp;&nbsp;Add: Net income, YTD (accrual)</td>
+              <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.net_income_accrual)}</td>
+            </tr>
+            <tr>
+              <td>&nbsp;&nbsp;Add: Owner capital contributions</td>
+              <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.owner_contributions)}</td>
+            </tr>
+            <tr>
+              <td>&nbsp;&nbsp;Less: Shareholder distributions</td>
+              <td style={{ textAlign: "right", color: "var(--aq-danger, #b42318)" }}>({formatCurrency(b.equity_rollforward.distributions)})</td>
+            </tr>
+            <tr style={{ background: "var(--aq-row-total-bg)", fontWeight: 800, color: "var(--aq-row-total-fg)" }}>
+              <td>Ending equity</td>
+              <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.ending_equity)}</td>
+            </tr>
+            <tr>
+              <td style={{ color: "var(--aq-muted)", fontSize: 12 }}>&nbsp;&nbsp;Net distributions (gross − contributions)</td>
+              <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_net)}</td>
+            </tr>
+          </tbody>
+        </table>
+      ) : null}
       <div style={{ marginTop: 10, padding: 10, background: "var(--aq-subtle)", border: "1px solid var(--aq-border)", borderRadius: 8 }}>
         <p className="aq-lite-eyebrow" style={{ marginBottom: 6 }}>Caveats</p>
         <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: "var(--aq-muted)", lineHeight: 1.6 }}>
