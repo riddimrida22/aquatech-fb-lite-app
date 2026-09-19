@@ -7043,6 +7043,76 @@ def _loan_is_receivable(loan: "Loan") -> bool:
     return loan.loan_type == "owner_loan" and "aquatech" in (loan.lender or "").lower()
 
 
+# Category labels (in category_json) that resolve to Owner Draw, and brokerage
+# merchant tokens — kept in sync with _OPEX_LABEL_SYNONYMS + PERSONAL_OVERRIDE_KEYWORDS.
+_OWNER_DRAW_CAT_LIKE = ("%owner draw%", "%personal travel%", "%personal meals%",
+                        "%personal medical%", "%government and non profit%",
+                        "%government_and_non_profit%")
+_BROKERAGE_NAME_LIKE = ("%ALPACADB%", "%MOOMOO FINANCIAL%", "%FUTUINC%", "%RH BROKERAGE%",
+                        "%RHS BROKERAGE%", "%ROBINHOOD%", "%INTERACTIVEBROKERS%",
+                        "%INTERACTIVE BROKER%", "%PUBLIC.COM%")
+
+
+def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
+    """Non-dividend distributions to the sole 100% shareholder for [s, e].
+
+    Three sources, matching the standalone Distribution Schedule:
+      A) cash transfers to the owner's personal account (...0273),
+      B) personal spend/obligations paid by the business (booked Owner Draw),
+      C) transfers funding personal brokerage accounts.
+    Returns gross out, owner contributions returned in, and net (gross - returned).
+    Excludes loan servicing and employee/contractor payments by construction.
+    """
+    superseded = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    a_out = a_in = b_out = c_out = c_in = 0.0
+    # A) cash transfers to the owner's personal checking (...0273)
+    for t in db.scalars(select(BankTransaction).where(
+        BankTransaction.posted_date.isnot(None),
+        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+        ~BankTransaction.source.in_(superseded),
+        BankTransaction.name.ilike("%transfer%0273%"),
+        ~BankTransaction.name.ilike("%wire%"),
+        BankTransaction.account_id != "Chase0273_Activity",
+    )).all():
+        amt = float(t.amount or 0)
+        if amt < 0:
+            a_out += -amt
+        elif amt > 0:
+            a_in += amt
+    # B) personal spend/obligations on business accounts booked to Owner Draw
+    for t in db.scalars(select(BankTransaction).where(
+        BankTransaction.posted_date.isnot(None),
+        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+        BankTransaction.is_business.is_(True), BankTransaction.amount < 0,
+        ~BankTransaction.source.in_(superseded),
+        or_(*[BankTransaction.category_json.ilike(p) for p in _OWNER_DRAW_CAT_LIKE]),
+    )).all():
+        b_out += -float(t.amount or 0)
+    # C) transfers funding personal brokerage accounts (net wash in practice)
+    for t in db.scalars(select(BankTransaction).where(
+        BankTransaction.posted_date.isnot(None),
+        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+        BankTransaction.is_business.is_(True),
+        ~BankTransaction.source.in_(superseded),
+        or_(*[func.upper(BankTransaction.name).like(p) for p in _BROKERAGE_NAME_LIKE]),
+    )).all():
+        amt = float(t.amount or 0)
+        if amt < 0:
+            c_out += -amt
+        elif amt > 0:
+            c_in += amt
+    gross_out = a_out + b_out + c_out
+    returned_in = a_in + c_in
+    return {
+        "cash_to_personal_net": round(a_out - a_in, 2),
+        "owner_draw_spend": round(b_out, 2),
+        "brokerage_net": round(c_out - c_in, 2),
+        "gross_out": round(gross_out, 2),
+        "returned_in": round(returned_in, 2),
+        "net": round(gross_out - returned_in, 2),
+    }
+
+
 @app.get("/accounting/balance-sheet")
 def accounting_balance_sheet(
     db: Session = Depends(get_db),
@@ -7087,6 +7157,32 @@ def accounting_balance_sheet(
     total_assets = cash + ar + shareholder_receivable
     total_liabilities = loans_payable + credit_card_debt
     equity = total_assets - total_liabilities
+
+    # Statement of changes in shareholder equity (roll-forward), year to date.
+    # Ties to the equity plug above: beginning is derived so
+    #   beginning + net income + contributions − distributions = ending equity.
+    roll_s, roll_e = date(date.today().year, 1, 1), date.today()
+    try:
+        _pl = accounting_pl(start=roll_s.isoformat(), end=roll_e.isoformat(), db=db, _=None)
+        net_income_accrual = float(_pl.get("net_income_accrual") or 0.0)
+    except Exception:
+        net_income_accrual = 0.0
+    _dist = _owner_distributions(db, roll_s, roll_e)
+    distributions = _dist["gross_out"]
+    contributions = _dist["returned_in"]
+    beginning_equity = equity - net_income_accrual - contributions + distributions
+    equity_rollforward = {
+        "period": {"start": roll_s.isoformat(), "end": roll_e.isoformat()},
+        "beginning_equity": round(beginning_equity, 2),
+        "beginning_is_derived": True,
+        "net_income_accrual": round(net_income_accrual, 2),
+        "owner_contributions": round(contributions, 2),
+        "distributions": round(distributions, 2),
+        "distributions_net": _dist["net"],
+        "distributions_detail": _dist,
+        "ending_equity": round(equity, 2),
+    }
+
     return {
         "as_of": date.today().isoformat(),
         "assets": {
@@ -7101,11 +7197,15 @@ def accounting_balance_sheet(
             "total": total_liabilities,
         },
         "equity": equity,
+        "equity_rollforward": equity_rollforward,
         "notes": [
             "Cash = business depository (checking/savings) balances only; credit-card balances are liabilities, not cash.",
             "AR = sum of unpaid invoice balances.",
             "Liabilities = business credit-card balances + current loan principal balances. Add loans in the Loans tab to populate.",
             "Equity is computed as Assets − Liabilities (plug).",
+            "Changes in equity (YTD): distributions are shown gross with the offsetting owner contributions "
+            "(net = gross − contributions; see the Distribution Schedule). Beginning equity is derived so the "
+            "roll-forward ties to the equity above — it is not the prior-year Schedule L / AAA balance.",
         ],
     }
 
