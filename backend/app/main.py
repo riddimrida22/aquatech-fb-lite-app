@@ -94,6 +94,7 @@ CC_TRANSFER_KEYWORDS = (
     # payments — these move money or pay a card, they are NOT operating expenses.
     # (Per user 2026-06-07: 2026 wires are all transfers, not vendor payments.)
     "WIRE TRANSFER", "DOMESTIC WIRE", "INTERNATIONAL WIRE", "AMERICAN EXPRESS ACH",
+    "ORIG CO NAME:AMERICAN EXPRESS",  # Amex Business Platinum 81005 autopay/ACH PMT from 6611 (card paydown, not expense),
 )
 
 PAYROLL_KEYWORDS = (
