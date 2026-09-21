@@ -22,7 +22,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import BankAccount, BankConnection, BankTransaction, IntegrationToken, User
+from .models import AppSetting, BankAccount, BankConnection, BankTransaction, IntegrationToken, User
 from .settings import get_settings
 
 PROVIDER = "plaid"
@@ -264,9 +264,18 @@ def _persist_transaction(db: Session, conn: BankConnection, t: dict[str, Any]) -
         row.is_business = bool(acct.is_business) if acct is not None and acct.is_business is not None else True
     row.category_json = json.dumps(cat_list)
     row.raw_json = json.dumps(t)[:8000]  # cap raw blob size
-    row.source = "plaid_api"
+    # Accounts that duplicate a canonical feed (e.g. a second Chase login re-exposing
+    # 6611/0434 already booked from the curated CSV / the original link) are tagged
+    # superseded so they never double-count in P&L, cash flow or distributions.
+    row.source = "plaid_api_superseded" if row.account_id in _superseded_account_ids(db) else "plaid_api"
     db.flush()
     return outcome
+
+
+def _superseded_account_ids(db: Session) -> set[str]:
+    """Plaid account_ids listed in app setting `superseded_bank_account_ids` (comma-separated)."""
+    s = db.scalar(select(AppSetting).where(AppSetting.key == "superseded_bank_account_ids"))
+    return {x.strip() for x in (s.value if s else "").split(",") if x.strip()}
 
 
 def sync_summary(db: Session) -> dict[str, Any]:

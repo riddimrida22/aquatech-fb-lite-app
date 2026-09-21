@@ -75,6 +75,11 @@ from . import plaid_integration
 # ---------- Reconciliation keyword constants ----------
 # Centralized so P&L, cashflow, full-report, and active-opex endpoints stay in sync.
 
+# Transaction sources archived by reconciliation (kept, never counted). plaid_api_superseded
+# = a Plaid account that duplicates a canonical feed (app setting superseded_bank_account_ids).
+SUPERSEDED_SOURCES = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card",
+                      "plaid_api_superseded")
+
 CC_TRANSFER_KEYWORDS = (
     "PAYMENT THANK YOU", "INTERNAL TRANSFER", "EQUITY TRANSFER", "INVESTMENT TRANSFER",
     "ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK",
@@ -3905,7 +3910,7 @@ def accounting_pl(
     # belong in COGS, not OPEX. Pull bank outflows matching those merchants.
     benefits_cogs = 0.0
     benefits_keywords_for_cogs = BENEFITS_TO_COGS_KEYWORDS
-    superseded_for_benefits = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    superseded_for_benefits = SUPERSEDED_SOURCES
     for tx in db.scalars(
         select(BankTransaction).where(
             BankTransaction.posted_date.isnot(None),
@@ -3927,7 +3932,7 @@ def accounting_pl(
     linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
     # Sources retagged as superseded (by reconciliation engine) are archived,
     # not live — exclude from P&L. API sources are canonical (per user directive).
-    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    superseded_sources = SUPERSEDED_SOURCES
     # Build name-keyword exclusions from active loans' description_match patterns.
     # This catches loan payments that aren't yet linked via LoanPayment.bank_transaction_id
     # (e.g. when LoanPayments are modeled as monthly aggregates while Plaid pulls dailies).
@@ -4407,7 +4412,7 @@ def accounting_cashflow(
     # Operating OUT — re-use PL helpers (call accounting_pl logic inline-light)
     # For simplicity: sum negative bank transactions in business accounts, excluding loan-mapped + transfers.
     linked_tx_ids = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
-    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    superseded_sources = SUPERSEDED_SOURCES
     # Loan keyword exclusions (in case some loan txs aren't yet linked via LoanPayment.bank_transaction_id)
     loan_keywords_cf: list[str] = []
     for ln in db.scalars(select(Loan)).all():  # include paid-off loans too (descriptions still match historical txs)
@@ -4583,7 +4588,7 @@ def _owner_0273_flows(db: Session, s: date, e: date) -> dict[str, float]:
     Money OUT = distribution, money IN = capital contribution. Deduped by the bank
     "transaction#: NNN" so the same transfer arriving from both Plaid and a Chase
     CSV (or a Plaid re-import) is counted once — otherwise the totals are inflated."""
-    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    superseded_sources = SUPERSEDED_SOURCES
     rows = db.scalars(
         select(BankTransaction).where(
             BankTransaction.posted_date.isnot(None),
@@ -7065,7 +7070,7 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     Returns gross out, owner contributions returned in, and net (gross - returned).
     Excludes loan servicing and employee/contractor payments by construction.
     """
-    superseded = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    superseded = SUPERSEDED_SOURCES
     a_out = a_in = b_out = c_out = c_in = 0.0
     # A) cash transfers to the owner's personal checking (...0273), business side only
     # (personal-account legs and duplicate feeds flagged non-business are excluded)
@@ -15215,7 +15220,7 @@ def reconcile_full_report(
     s, e = _accounting_period(start, end)
 
     # Build all the same exclusion sets the P&L code uses
-    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    superseded_sources = SUPERSEDED_SOURCES
     cc_transfers_keywords = CC_TRANSFER_KEYWORDS
     payroll_keywords = PAYROLL_KEYWORDS
     personal_overrides = PERSONAL_OVERRIDE_KEYWORDS
@@ -15421,7 +15426,7 @@ def reconcile_active_opex(
     s, e = _accounting_period(start, end)
 
     # Replicate the exclusion sets from the P&L code
-    superseded_sources = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
+    superseded_sources = SUPERSEDED_SOURCES
     cc_transfers_keywords = CC_TRANSFER_KEYWORDS
     payroll_keywords = PAYROLL_KEYWORDS
     personal_overrides = PERSONAL_OVERRIDE_KEYWORDS
