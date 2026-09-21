@@ -4522,6 +4522,16 @@ def accounting_cashflow(
     ).all()
     distributions_out = sum(-float(t.amount or 0) for t in owner_txns if float(t.amount or 0) < 0)
     contributions_in = sum(float(t.amount or 0) for t in owner_txns if float(t.amount or 0) > 0)
+    # Owner → company Zelle is also capital put back (no "0273" in the memo).
+    contributions_in += float(db.scalar(
+        select(func.coalesce(func.sum(BankTransaction.amount), 0.0)).where(
+            BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True), BankTransaction.amount > 0,
+            ~BankTransaction.source.in_(superseded_sources),
+            BankTransaction.name.ilike(OWNER_ZELLE_IN_PATTERN),
+        )
+    ) or 0.0)
     owner_net = contributions_in - distributions_out  # +ve = net cash in from owner
 
     operating_net = cash_in_invoices - cash_out_opex - cash_out_payroll
@@ -7109,6 +7119,9 @@ _BROKERAGE_NAME_LIKE = ("%ALPACADB%", "%MOOMOO FINANCIAL%", "%FUTUINC%", "%RH BR
                         "%INTERACTIVE BROKER%", "%PUBLIC.COM%")
 
 
+OWNER_ZELLE_IN_PATTERN = "%zelle%from%bertrand%"  # owner → company Zelle (capital contribution)
+
+
 def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     """Non-dividend distributions to the sole 100% shareholder for [s, e].
 
@@ -7137,6 +7150,19 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
             a_out += -amt
         elif amt > 0:
             a_in += amt
+    # A') owner cash put back by Zelle ("Zelle payment from BertrandAlbert Byrne") —
+    # a capital contribution that doesn't carry "0273"; omitting it overstated net
+    # distributions by $135,800 for 2026 (settled netting: $448,180 out − $320,537 in).
+    zelle_in = 0.0
+    for t in db.scalars(select(BankTransaction).where(
+        BankTransaction.posted_date.isnot(None),
+        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+        BankTransaction.is_business.is_(True), BankTransaction.amount > 0,
+        ~BankTransaction.source.in_(superseded),
+        BankTransaction.name.ilike(OWNER_ZELLE_IN_PATTERN),
+    )).all():
+        zelle_in += float(t.amount or 0)
+    a_in += zelle_in
     # B) personal spend/obligations on business accounts booked to Owner Draw
     for t in db.scalars(select(BankTransaction).where(
         BankTransaction.posted_date.isnot(None),
@@ -7163,6 +7189,7 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     returned_in = a_in + c_in
     return {
         "cash_to_personal_net": round(a_out - a_in, 2),
+        "owner_zelle_contributions": round(zelle_in, 2),
         "owner_draw_spend": round(b_out, 2),
         "brokerage_net": round(c_out - c_in, 2),
         "gross_out": round(gross_out, 2),
