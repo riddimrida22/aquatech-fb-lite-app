@@ -251,7 +251,17 @@ def _persist_transaction(db: Session, conn: BankConnection, t: dict[str, Any]) -
     row.amount = amount
     row.iso_currency_code = t.get("iso_currency_code") or row.iso_currency_code
     row.pending = bool(t.get("pending", False))
-    row.is_business = True
+    # Business/personal comes from the ACCOUNT's classification, set once at insert.
+    # Never force True (a newly linked login can carry personal accounts), and never
+    # overwrite an existing row's flag (preserves manual per-transaction reclassification).
+    if outcome == "inserted":
+        acct = db.scalar(
+            select(BankAccount).where(
+                BankAccount.connection_id == conn.id,
+                BankAccount.account_id == row.account_id,
+            )
+        )
+        row.is_business = bool(acct.is_business) if acct is not None and acct.is_business is not None else True
     row.category_json = json.dumps(cat_list)
     row.raw_json = json.dumps(t)[:8000]  # cap raw blob size
     row.source = "plaid_api"
