@@ -4494,6 +4494,7 @@ def accounting_cashflow(
         select(BankTransaction).where(
             BankTransaction.posted_date.isnot(None),
             BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True),  # business side only; excludes dup/personal feeds
             ~BankTransaction.source.in_(superseded_sources),
             BankTransaction.name.ilike("%transfer%0273%"),
             ~BankTransaction.name.ilike("%wire%"),
@@ -4588,6 +4589,7 @@ def _owner_0273_flows(db: Session, s: date, e: date) -> dict[str, float]:
             BankTransaction.posted_date.isnot(None),
             BankTransaction.posted_date >= s,
             BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True),  # business side only; excludes dup/personal feeds
             ~BankTransaction.source.in_(superseded_sources),
             # Account-transfer pattern only; exclude international wires (their refs
             # contain "0273") and rows recorded ON the 0273 account itself.
@@ -7065,10 +7067,12 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     """
     superseded = ("csv_chase_superseded", "csv_fb_expenses_superseded", "csv_chase_card")
     a_out = a_in = b_out = c_out = c_in = 0.0
-    # A) cash transfers to the owner's personal checking (...0273)
+    # A) cash transfers to the owner's personal checking (...0273), business side only
+    # (personal-account legs and duplicate feeds flagged non-business are excluded)
     for t in db.scalars(select(BankTransaction).where(
         BankTransaction.posted_date.isnot(None),
         BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+        BankTransaction.is_business.is_(True),
         ~BankTransaction.source.in_(superseded),
         BankTransaction.name.ilike("%transfer%0273%"),
         ~BankTransaction.name.ilike("%wire%"),
