@@ -65,6 +65,8 @@ type EquityRollforward = {
   beginning_is_derived: boolean;
   net_income_accrual: number;
   owner_contributions: number;
+  owner_paid_expenses?: number;
+  owner_contributions_total?: number;
   distributions: number;
   distributions_net: number;
   distributions_detail?: {
@@ -463,9 +465,15 @@ function BalanceView() {
               <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.net_income_accrual)}</td>
             </tr>
             <tr>
-              <td>&nbsp;&nbsp;Add: Owner capital contributions</td>
+              <td>&nbsp;&nbsp;Add: Owner capital contributions (cash)</td>
               <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.owner_contributions)}</td>
             </tr>
+            {b.equity_rollforward.owner_paid_expenses ? (
+              <tr>
+                <td>&nbsp;&nbsp;Add: Owner-paid business expenses (non-cash)</td>
+                <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.owner_paid_expenses)}</td>
+              </tr>
+            ) : null}
             <tr
               onClick={() => b.equity_rollforward?.distributions_detail && setDistOpen((v) => !v)}
               style={{ cursor: b.equity_rollforward.distributions_detail ? "pointer" : "default" }}
