@@ -1848,9 +1848,13 @@ def _start_fb_time_sync_worker() -> None:
         actual overhead. Idempotent — a no-op day changes nothing."""
         try:
             with SessionLocal() as db:
-                r = _refresh_loaded_cost_rates(db, restamp=True)
-                print(f"[loaded_cost] nightly refresh ok: mult={r['effective_multiplier']} "
-                      f"rows_updated={r['user_rate_rows_updated']} restamped={r['entries_restamped']}", flush=True)
+                r = _refresh_loaded_cost_rates(db, restamp=True, guard=True)
+                if r.get("skipped"):
+                    print(f"[loaded_cost] nightly refresh BLOCKED (rates unchanged): {r['reasons']} "
+                          f"proposed mult={r['proposed_multiplier']}", flush=True)
+                else:
+                    print(f"[loaded_cost] nightly refresh ok: mult={r['effective_multiplier']} "
+                          f"rows_updated={r['user_rate_rows_updated']} restamped={r['entries_restamped']}", flush=True)
         except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
             print(f"[loaded_cost] nightly refresh failed: {exc!r}", flush=True)
 
@@ -3964,6 +3968,10 @@ def accounting_pl(
     opex_tx_detail: list[dict] = []
     cogs_from_tx = 0.0
     cogs_tx_by_group: dict[str, float] = defaultdict(float)
+    # Business costs paid from the owner's PERSONAL accounts/cards (Pass 2 + Pass 3).
+    # No company cash left, so each is a non-cash owner capital contribution — surfaced
+    # so the equity roll-forward can book it (otherwise it hides in beginning equity).
+    owner_paid_expenses = 0.0
     interest_in_loans = 0.0
     cc_payments = 0.0
     # Internal-transfer + CC-payment keywords. These move money between user-owned
@@ -4089,6 +4097,8 @@ def accounting_pl(
                 pcats = []
             cat = _resolve_opex_category(tx, nm_upper, pcats)
             section, group = coa_section(cat)
+            if section != "OTHER":
+                owner_paid_expenses += amt
             if section == "COGS":
                 cogs_from_tx += amt
                 cogs_tx_by_group[group] += amt
@@ -4133,6 +4143,8 @@ def accounting_pl(
         if coa_section(fb_label)[1] == "⚠ Needs review (manual)":
             fb_label = _opex_category_bucket(nm_upper, raw_fb)
         section, group = coa_section(fb_label)
+        if section != "OTHER":
+            owner_paid_expenses += amt
         if section == "COGS":
             cogs_from_tx += amt
             cogs_tx_by_group[group] += amt
@@ -4289,6 +4301,7 @@ def accounting_pl(
         "fundbox_financing_cost": fundbox_financing_cost,
         "net_income_cash": net_income_cash,
         "net_income_accrual": net_income_accrual,
+        "owner_paid_expenses": round(owner_paid_expenses, 2),
         "net_margin_cash": _margin(net_income_cash, revenue),
         "net_margin_accrual": _margin(net_income_accrual, revenue_accrual),
         "notes": [
@@ -5204,16 +5217,48 @@ def accounting_overhead_rate(
     return _compute_overhead_rate(db, s, e)
 
 
-def _refresh_loaded_cost_rates(db: Session, *, restamp: bool = True) -> dict[str, object]:
+# Sanity guard for automatic loaded-cost refreshes. A bad data day (e.g. a newly linked
+# bank login booking personal spend as business, 2026-09-19) must not silently re-cost
+# every time entry: block when any employee's loaded cost jumps more than this fraction,
+# or when a large amount of un-reviewed spend is riding inside OPEX.
+LOADED_COST_MAX_DRIFT = 0.15
+LOADED_COST_MAX_NEEDS_REVIEW = 5000.0
+
+
+def _refresh_loaded_cost_rates(db: Session, *, restamp: bool = True, guard: bool = False) -> dict[str, object]:
     """Recompute each employee's fully-loaded cost from the overhead engine
     (`_compute_overhead_rate`, the single source of truth) over the current YTD
     window, write it into user_rates.cost_rate, and optionally re-stamp this year's
     time entries (cost only). This is how the overhead engine wires into the
-    per-entry cost that create/update time-entry stamps."""
+    per-entry cost that create/update time-entry stamps.
+
+    guard=True (nightly job, manual refresh unless forced): refuse to write anything
+    if a loaded cost would move more than LOADED_COST_MAX_DRIFT vs its current value,
+    or needs-review spend in OPEX exceeds LOADED_COST_MAX_NEEDS_REVIEW."""
     today = date.today()
     s = date(today.year, 1, 1)
     oh = _compute_overhead_rate(db, s, today)
     loaded = {int(e["user_id"]): float(e["cost_rate_loaded"]) for e in oh["employees"]}
+    multiplier = round((1 + oh["fringe_rate"]) * (1 + oh["overhead_rate"]), 4)
+    if guard:
+        reasons: list[str] = []
+        needs_review = float(oh.get("needs_review_in_opex") or 0.0)
+        if needs_review > LOADED_COST_MAX_NEEDS_REVIEW:
+            reasons.append(f"${needs_review:,.0f} of un-reviewed spend in OPEX (limit ${LOADED_COST_MAX_NEEDS_REVIEW:,.0f})")
+        for uid, lc in loaded.items():
+            cur = max((float(ur.cost_rate or 0.0) for ur in
+                       db.scalars(select(UserRate).where(UserRate.user_id == uid)).all()), default=0.0)
+            if cur > 0 and abs(lc - cur) / cur > LOADED_COST_MAX_DRIFT:
+                reasons.append(f"user {uid} loaded cost {cur:.2f} -> {lc:.2f} ({(lc - cur) / cur:+.0%})")
+        if reasons:
+            _log_audit_event(db=db, entity_type="loaded_cost_refresh", entity_id=0,
+                             action="loaded_cost_refresh_blocked", actor_user_id=None,
+                             payload={"reasons": reasons, "proposed_multiplier": multiplier,
+                                      "proposed_loaded_cost_by_user": loaded})
+            db.commit()
+            return {"as_of": today.isoformat(), "skipped": True, "reasons": reasons,
+                    "proposed_multiplier": multiplier, "proposed_loaded_cost_by_user": loaded,
+                    "user_rate_rows_updated": 0, "entries_restamped": 0}
     rows_updated = 0
     for uid, lc in loaded.items():
         for ur in db.scalars(select(UserRate).where(UserRate.user_id == uid)).all():
@@ -5234,7 +5279,8 @@ def _refresh_loaded_cost_rates(db: Session, *, restamp: bool = True) -> dict[str
         "as_of": today.isoformat(),
         "fringe_rate": oh["fringe_rate"],
         "overhead_rate": oh["overhead_rate"],
-        "effective_multiplier": round((1 + oh["fringe_rate"]) * (1 + oh["overhead_rate"]), 4),
+        "effective_multiplier": multiplier,
+        "skipped": False,
         "opex_adjustments": oh["opex_adjustments"],
         "loaded_cost_by_user": loaded,
         "user_rate_rows_updated": rows_updated,
@@ -5245,12 +5291,14 @@ def _refresh_loaded_cost_rates(db: Session, *, restamp: bool = True) -> dict[str
 @app.post("/accounting/refresh-loaded-costs")
 def accounting_refresh_loaded_costs(
     restamp: bool = True,
+    force: bool = False,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("MANAGE_RATES")),
 ) -> dict[str, object]:
     """Refresh employee loaded cost rates from the live overhead engine and re-stamp
-    the current year's time-entry costs. Idempotent — safe to run anytime."""
-    return _refresh_loaded_cost_rates(db, restamp=restamp)
+    the current year's time-entry costs. Idempotent — safe to run anytime.
+    Guarded (see LOADED_COST_MAX_DRIFT); pass force=true to apply a large, intended move."""
+    return _refresh_loaded_cost_rates(db, restamp=restamp, guard=not force)
 
 
 class OverheadAdjustmentsIn(BaseModel):
@@ -7175,18 +7223,24 @@ def accounting_balance_sheet(
     try:
         _pl = accounting_pl(start=roll_s.isoformat(), end=roll_e.isoformat(), db=db, _=None)
         net_income_accrual = float(_pl.get("net_income_accrual") or 0.0)
+        owner_paid_expenses = float(_pl.get("owner_paid_expenses") or 0.0)
     except Exception:
         net_income_accrual = 0.0
+        owner_paid_expenses = 0.0
     _dist = _owner_distributions(db, roll_s, roll_e)
     distributions = _dist["gross_out"]
-    contributions = _dist["returned_in"]
-    beginning_equity = equity - net_income_accrual - contributions + distributions
+    contributions = _dist["returned_in"]  # cash the owner moved back into the business
+    # Business expenses the owner paid personally are in net income as costs but no
+    # company cash left — book them as a non-cash capital contribution.
+    beginning_equity = equity - net_income_accrual - contributions - owner_paid_expenses + distributions
     equity_rollforward = {
         "period": {"start": roll_s.isoformat(), "end": roll_e.isoformat()},
         "beginning_equity": round(beginning_equity, 2),
         "beginning_is_derived": True,
         "net_income_accrual": round(net_income_accrual, 2),
         "owner_contributions": round(contributions, 2),
+        "owner_paid_expenses": round(owner_paid_expenses, 2),
+        "owner_contributions_total": round(contributions + owner_paid_expenses, 2),
         "distributions": round(distributions, 2),
         "distributions_net": _dist["net"],
         "distributions_detail": _dist,
@@ -7216,6 +7270,9 @@ def accounting_balance_sheet(
             "Changes in equity (YTD): distributions are shown gross with the offsetting owner contributions "
             "(net = gross − contributions; see the Distribution Schedule). Beginning equity is derived so the "
             "roll-forward ties to the equity above — it is not the prior-year Schedule L / AAA balance.",
+            "Owner-paid business expenses = business costs paid from the owner's personal accounts/cards "
+            "(counted in net income as expenses, but no company cash left) — booked as a non-cash capital "
+            "contribution. Keep receipts; the alternative treatment is an accountable-plan reimbursement.",
         ],
     }
 
