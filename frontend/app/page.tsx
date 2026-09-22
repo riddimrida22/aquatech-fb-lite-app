@@ -37,6 +37,7 @@ import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
 import { AccountingWorkspace, PLReport } from "./components/AccountingWorkspace";
 import { LoansPanel } from "./components/LoansPanel";
+import { CreditCardsPanel } from "./components/CreditCardsPanel";
 import { BookkeepingWorkspace } from "./components/BookkeepingWorkspace";
 import { CategorizationWorkspace } from "./components/CategorizationWorkspace";
 import { CloudConnectionsPanel } from "./components/CloudConnectionsPanel";
@@ -89,6 +90,7 @@ type WorkspaceKey =
   | "utilization"
   | "datahealth"
   | "loans"
+  | "creditcards"
   | "hourestimates"
   | "reports"
   | "imports"
@@ -125,6 +127,7 @@ const NAV: NavEntry[] = [
       { key: "accounting", label: "Overview", hint: "P&L · Cash · Balance", tier: 1 },
       { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables", tier: 1 },
       { key: "loans", label: "Loans", hint: "LOCs · BOC · payments", tier: 2 },
+      { key: "creditcards", label: "Credit Cards", hint: "Balances · spend · fees", tier: 2 },
       { key: "utilization", label: "Utilization", hint: "Billable % · leaks", tier: 2 },
       { key: "costs", label: "Costs & Expenses", hint: "Spend + tax", tier: 2 },
       { key: "payables", label: "Payables & Owner", hint: "A/P + owner comp", tier: 3 },
@@ -2102,6 +2105,8 @@ export default function AquatechPmHome() {
         {workspace === "datahealth" ? <DataHealthPanel /> : null}
 
         {workspace === "loans" ? <LoansPanel canManage={capabilities.canManageProjects} /> : null}
+
+        {workspace === "creditcards" ? <CreditCardsPanel /> : null}
 
         {workspace === "utilization" ? (
           <>
