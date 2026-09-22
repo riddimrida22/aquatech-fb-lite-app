@@ -1045,14 +1045,12 @@ def sync_time_entries(
                               if fb_pid else "[no FB project — link in Projects]")
                     note = ((note + " " + marker) if note else marker)[:65000]
 
-                bill_rate, cost_rate = _user_rate_for(db, aqt_uid, work_date)
-                # Bill rate is PER-PROJECT-per-employee (FB team_member_rate). Prefer the
-                # project_bill_rates table (project+user, else project flat); only fall back
-                # to the per-user UserRate when no project rate exists. Cost rate stays
-                # per-employee (global). Keeps re-syncs from clobbering the per-project rates.
+                _global_bill, cost_rate = _user_rate_for(db, aqt_uid, work_date)
+                # Bill rate is PER-PROJECT/TASK-per-employee from project_bill_rates. There is
+                # NO global bill rate (owner rule): with no rate card the entry stamps 0 and is
+                # surfaced by /admin/missing-bill-rates. Cost rate stays per-employee (loaded).
                 pr = _project_bill_rate(db, aqt_pid, aqt_uid, task_id)
-                if pr is not None:
-                    bill_rate = pr
+                bill_rate = pr if pr is not None else 0.0
 
                 is_billable = bool(e.get("billable"))
                 billed = bool(e.get("billed"))
