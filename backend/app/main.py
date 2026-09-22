@@ -4217,6 +4217,42 @@ def accounting_pl(
             if group == _review_group:
                 needs_review_count += 1
                 needs_review_items.append({"id": tx.id, "date": tx.posted_date, "amount": round(amt, 2), "name": tx.name, "category": cat})
+    # Pass 1b: vendor CREDITS on a business card (a refund of something we expensed) reduce
+    # that same expense line. Without this a refunded purchase stays in the P&L for ever -
+    # e.g. 2026 Autodesk $8,399 + the returned Apple laptop $1,515 were never backed out.
+    # Card PAYMENTS are money movement, not refunds, and personal-override merchants never
+    # entered OPEX in the first place, so neither is netted here.
+    card_account_ids = [a_.account_id for a_ in db.scalars(select(BankAccount).where(
+        BankAccount.type == "credit", BankAccount.is_business.is_(True))).all()]
+    refunds_netted = 0.0
+    if card_account_ids:
+        for tx in db.scalars(select(BankTransaction).where(
+                BankTransaction.account_id.in_(card_account_ids), BankTransaction.amount > 0,
+                BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+                BankTransaction.pending.is_(False), ~BankTransaction.source.in_(superseded_sources))).all():
+            nm_upper = (tx.name or "").upper()
+            if any(k in nm_upper for k in CARD_PAYMENT_WORDS) or any(k in nm_upper for k in cc_transfers_keywords):
+                continue  # paying the card down, not a refund
+            if any(k in nm_upper for k in personal_overrides) or any(k in nm_upper for k in payroll_keywords):
+                continue
+            try:
+                rcats = json.loads(tx.category_json or "[]")
+            except Exception:
+                rcats = []
+            amt = float(tx.amount or 0)
+            cat = _resolve_opex_category(tx, nm_upper, rcats)
+            section, group = coa_section(cat)
+            if section == "COGS":
+                cogs_from_tx -= amt
+                cogs_tx_by_group[group] -= amt
+            elif section != "OTHER":
+                opex -= amt
+                opex_by_cat[cat] -= amt
+                opex_by_group[group] -= amt
+                refunds_netted += amt
+                opex_tx_detail.append({"id": tx.id, "date": tx.posted_date, "amount": round(-amt, 2),
+                                       "name": f"REFUND: {tx.name}", "category": cat, "group": group})
+
     # Pass 2: hardware/travel purchases on personal account that are actually business
     for tx in personal_outflows:
         nm_upper = (tx.name or "").upper()
@@ -4438,6 +4474,7 @@ def accounting_pl(
         "needs_review_count": needs_review_count,
         "needs_review_items": sorted(needs_review_items, key=lambda r: -r["amount"]),
         "interest_expense": interest_expense,
+        "refunds_netted": round(refunds_netted, 2),  # vendor credits on business cards
         "interest_income": interest_income,  # on shareholder/owner loans the company made
         "fees_expense": fees_expense,
         "interest_detail": interest_detail,
