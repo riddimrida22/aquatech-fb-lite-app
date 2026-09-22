@@ -1546,6 +1546,7 @@ class InvoiceRenderContextOut(BaseModel):
 
 NOISE_WORDS = {"POS", "ONLINE", "PAYMENT", "DEBIT", "CREDIT", "CARD", "PURCHASE"}
 MONEY_MOVEMENT_CATEGORIES = (
+    "Payroll Disbursement",   # net pay paid out (wages already counted via the payroll journal)
     "Credit Card Payment",        # paying down a company card (card account side and bank side)
     "Internal Transfer",          # between the firm's own accounts
     "Loan Payment",               # principal + interest on a loan / LOC
@@ -1694,6 +1695,7 @@ CHART_OF_ACCOUNTS: dict[str, tuple[str, str]] = {
     "Owner Contribution": ("OTHER", "Owner Equity"),
     "Owner Distribution": ("OTHER", "Owner Draw"),
     "Refund / Credit": ("OTHER", "Refund"),
+    "Payroll Disbursement": ("OTHER", "Payroll"),
 }
 # Ordered display structure for the P&L / categorization UI.
 COA_INDIRECT_GROUPS = ["Admin / G&A", "Marketing", "Business Development"]
