@@ -2333,6 +2333,21 @@ def _recommend_bank_category(
     if has_transfer_marker and has_6611 and has_0273:
         return "Other", "Equity Transfer In/Out (...6611 / ...0273)", 0.995, "rule:aq_equity_transfer_6611_0273"
 
+    # DACA (...8462): a pledged collection account. Client remittances land here, BOC sweeps
+    # its loan repayments straight out of it, and the rest is swept to the operating account.
+    # Account-aware, so it must run before the keyword rules (which cannot see the account).
+    if (account_mask or "") == "8462":
+        amt_ = float(getattr(tx, "amount", 0) or 0)
+        internal = ("xfer from" in combined and ("3661" in combined or "6611" in combined)) or "internal transfer" in combined
+        if internal:
+            return "Other", "Internal Transfer", 0.97, "rule:daca_sweep"
+        if amt_ > 0:
+            return "Other", "Invoice Payment Received", 0.97, "rule:daca_inflow_is_client_payment"
+        if "boc capital" in combined or "cdfiloan" in combined:
+            return "Other", "Loan Payment", 0.96, "rule:daca_boc_sweep"
+        if "wire transfer fee" in combined or "service charge" in combined:
+            return "OH", "Bank Fees", 0.95, "rule:daca_bank_fee"
+
     rule_key = _merchant_rule_key(tx.merchant_name, tx.name)
     learned = merchant_rules.get(rule_key)
     if learned:
