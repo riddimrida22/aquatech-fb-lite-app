@@ -3763,9 +3763,13 @@ def _normalize_opex_label(raw: str | None) -> str:
 
 
 def _opex_category_bucket(name_upper: str, plaid_cat: str | None) -> str:
-    """Classify an OPEX transaction into a FreshBooks-style category for the P&L breakdown."""
+    """Classify an OPEX transaction into a FreshBooks-style category for the P&L breakdown.
+
+    Matching ignores punctuation and runs of spaces: banks write the same merchant as
+    "UBER *EATS", "UBER   *EATS" and "UBER * EATS", and a literal match misses two of them."""
+    squashed = re.sub(r"[^A-Z0-9]+", " ", name_upper or "")
     for label, kws in _OPEX_BUCKET_RULES:
-        if any(k in name_upper for k in kws):
+        if any(k in name_upper or re.sub(r"[^A-Z0-9]+", " ", k) in squashed for k in kws):
             return label
     return _normalize_opex_label(plaid_cat)
 
