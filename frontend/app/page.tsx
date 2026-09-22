@@ -1086,7 +1086,7 @@ export default function AquatechPmHome() {
             const containsActive = childKeys.includes(workspace);
             const open = entry.groupKey in openGroups ? openGroups[entry.groupKey] : containsActive;
             return (
-              <div key={entry.groupKey} className="aq-lite-nav-group">
+              <div key={entry.groupKey} className={classNames("aq-lite-nav-group", open && "is-open")}>
                 <button
                   type="button"
                   className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head", containsActive && "active-parent")}
@@ -1125,7 +1125,7 @@ export default function AquatechPmHome() {
               </a>
             );
             return (
-              <div className="aq-lite-nav-group">
+              <div className={classNames("aq-lite-nav-group", pOpen && "is-open")}>
                 <button
                   type="button"
                   className={classNames("aq-lite-nav-item", "aq-lite-nav-group-head")}
