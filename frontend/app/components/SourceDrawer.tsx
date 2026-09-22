@@ -105,7 +105,8 @@ export default function SourceDrawerHost() {
                     return (
                       <td key={c.key} style={{ textAlign: c.align === "right" ? "right" : "left",
                                               fontVariantNumeric: c.align === "right" ? "tabular-nums" : undefined,
-                                              whiteSpace: c.key === "note" || c.key === "description" ? "normal" : "nowrap" }}>
+                                              whiteSpace: c.key === "note" || c.key === "description" ? "normal" : "nowrap",
+                                              ...(c.key === "note" || c.key === "description" ? { minWidth: 280, maxWidth: 460 } : {}) }}>
                         {shown}
                       </td>
                     );
