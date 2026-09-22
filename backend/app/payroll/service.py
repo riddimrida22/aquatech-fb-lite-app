@@ -220,6 +220,22 @@ def approve_run(db, run, approver_id: int, require_separate_approver: bool = Fal
     db.flush()
 
 
+def employer_by_employee(run_result: RunResult) -> dict[str, dict[str, str]]:
+    """Exact employer cost per employee: every employer tax line (run-level extras shared by
+    gross), and the 401k match. Books cost in-app runs from this, not an estimate."""
+    total_gross = sum((r.gross for r in run_result.results), Decimal("0"))
+    extra = sum(run_result.employer_extra.values(), Decimal("0"))
+    out: dict[str, dict[str, str]] = {}
+    for r in run_result.results:
+        eid = getattr(r, "employee_id", 0) or 0
+        taxes = sum((v for k, v in (r.employer or {}).items() if k != "k401_er" and v is not None), Decimal("0"))
+        if extra and total_gross:
+            taxes += extra * r.gross / total_gross
+        match = (r.employer or {}).get("k401_er") or Decimal("0")
+        out[str(eid)] = {"taxes": str(round(taxes, 2)), "match": str(round(match, 2))}
+    return out
+
+
 def mark_paid(db, run, run_result: RunResult) -> list[JournalLine]:
     """Post the finance journal, snapshot totals, advance YTD, set status=paid."""
     if run.status != "approved":
@@ -235,6 +251,7 @@ def mark_paid(db, run, run_result: RunResult) -> list[JournalLine]:
         "employer_taxes": str(run_result.employer_taxes),
         "k401_ee": str(run_result.ee_401k), "k401_er": str(run_result.er_401k),
         "journal": [{"account": l.account, "debit": str(l.debit), "credit": str(l.credit)} for l in journal],
+        "employer_by_employee": employer_by_employee(run_result),
     })
     run.status = "paid"
     # advance YTD ledger (accumulate per employee + year), including per-line YTD for pay stubs

@@ -3193,6 +3193,29 @@ def _inbox_signature(inbox: Path) -> tuple:
     return tuple(sig)
 
 
+def _inapp_employer_map(db: Session) -> dict[tuple[int, int], tuple[float, float]]:
+    """(run_id, employee_id) -> exact (employer taxes, employer 401k match) snapshotted when an
+    in-app payroll run was marked paid."""
+    from .payroll.models import PayrollRun
+    out: dict[tuple[int, int], tuple[float, float]] = {}
+    for rid, tj in db.execute(select(PayrollRun.id, PayrollRun.totals_json).where(PayrollRun.status == "paid")).all():
+        try:
+            per = (json.loads(tj or "{}") or {}).get("employer_by_employee") or {}
+        except Exception:
+            per = {}
+        for eid, v in per.items():
+            out[(rid, int(eid))] = (float(v.get("taxes") or 0), float(v.get("match") or 0))
+    return out
+
+
+def _inapp_employer_cost(emap: dict, run_id: int, emp_id: int, g: float, d: dict) -> tuple[float, float]:
+    """Employer (taxes, 401k match) for one in-app payroll line: the exact snapshot when the run
+    has one, else the old estimate (employee SS/Medicare mirrored + ~1.2% UI/FUTA)."""
+    if (run_id, emp_id) in emap:
+        return emap[(run_id, emp_id)]
+    return (float(d.get("ss") or 0) + float(d.get("medicare") or 0) + g * 0.012, float(d.get("er_match") or 0))
+
+
 def _journal_period_end(period: dict) -> date | None:
     """End date of a journal pay period ("MM/DD/YYYY - MM/DD/YYYY"). An in-app run for the
     same period is superseded by the journal even when the journal's pay date differs
@@ -3959,8 +3982,9 @@ def accounting_pl(
         try:
             from .payroll.models import PayrollLine, PayrollRun
 
-            for gross, lj in db.execute(
-                select(PayrollLine.gross, PayrollLine.lines_json)
+            _emap = _inapp_employer_map(db)
+            for rid_, eid_, gross, lj in db.execute(
+                select(PayrollLine.run_id, PayrollLine.employee_id, PayrollLine.gross, PayrollLine.lines_json)
                 .join(PayrollRun, PayrollRun.id == PayrollLine.run_id)
                 .where(
                     PayrollRun.status == "paid",
@@ -3975,8 +3999,7 @@ def accounting_pl(
                     d = json.loads(lj or "{}")
                 except Exception:
                     d = {}
-                er_taxes = float(d.get("ss") or 0) + float(d.get("medicare") or 0) + g * 0.012
-                er_match = float(d.get("er_match") or 0)
+                er_taxes, er_match = _inapp_employer_cost(_emap, rid_, eid_, g, d)
                 payroll_breakdown["gross"] += g
                 payroll_breakdown["employer_taxes"] += er_taxes
                 payroll_breakdown["employer_401k"] += er_match
@@ -5010,8 +5033,10 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
 
             from .payroll.models import PayrollEmployee, PayrollLine, PayrollRun
 
+            _emap = _inapp_employer_map(db)
             run_rows = db.execute(
-                select(PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json)
+                select(PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json,
+                       PayrollLine.run_id, PayrollLine.employee_id)
                 .join(PayrollLine, PayrollLine.employee_id == PayrollEmployee.id)
                 .join(PayrollRun, PayrollRun.id == PayrollLine.run_id)
                 .where(
@@ -5022,17 +5047,15 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
                     PayrollRun.period_end.notin_(journal_period_ends),
                 )
             ).all()
-            for legal_name, gross, lj in run_rows:
+            for legal_name, gross, lj, rid_, eid_ in run_rows:
                 g = float(gross or 0)
                 try:
                     d = _json.loads(lj or "{}")
                 except Exception:
                     d = {}
-                # Employer cost = gross + employer SS/Medicare match + 401k match + ~UI/FUTA.
-                er_ss = float(d.get("ss") or 0)
-                er_med = float(d.get("medicare") or 0)
-                er_match = float(d.get("er_match") or 0)
-                paycost[(legal_name or "").strip()] += g + er_ss + er_med + er_match + g * 0.012
+                # Employer cost = gross + employer taxes + 401k match (exact when snapshotted).
+                er_taxes, er_match = _inapp_employer_cost(_emap, rid_, eid_, g, d)
+                paycost[(legal_name or "").strip()] += g + er_taxes + er_match
         except Exception:
             pass
 
@@ -5169,8 +5192,9 @@ def _payroll_fringe_rate(db: Session, s: date, e: date) -> tuple[float, dict]:
     # In-app payroll runs for pay dates the journals don't cover (same rule as P&L COGS).
     try:
         from .payroll.models import PayrollLine, PayrollRun
-        for g_, lj in db.execute(
-            select(PayrollLine.gross, PayrollLine.lines_json)
+        _emap = _inapp_employer_map(db)
+        for rid_, eid_, g_, lj in db.execute(
+            select(PayrollLine.run_id, PayrollLine.employee_id, PayrollLine.gross, PayrollLine.lines_json)
             .join(PayrollRun, PayrollRun.id == PayrollLine.run_id)
             .where(PayrollRun.status == "paid", PayrollRun.check_date >= s, PayrollRun.check_date <= e,
                    PayrollRun.check_date.notin_(journal_pay_dates),
@@ -5182,7 +5206,7 @@ def _payroll_fringe_rate(db: Session, s: date, e: date) -> tuple[float, dict]:
             except Exception:
                 d = {}
             gross += g
-            burden += float(d.get("ss") or 0) + float(d.get("medicare") or 0) + g * 0.012 + float(d.get("er_match") or 0)
+            burden += sum(_inapp_employer_cost(_emap, rid_, eid_, g, d))
     except Exception:
         pass
     # Employee benefits (workers' comp / disability / health) are fringe too — they were
@@ -7904,14 +7928,16 @@ def list_sources(
             if scope == "journal":  # the Payroll screen shows journal periods only
                 raise LookupError
             from .payroll.models import PayrollEmployee, PayrollLine, PayrollRun
-            rq = (select(PayrollRun.check_date, PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json)
+            _emap = _inapp_employer_map(db)
+            rq = (select(PayrollRun.check_date, PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json,
+                         PayrollLine.run_id, PayrollLine.employee_id)
                   .join(PayrollLine, PayrollLine.run_id == PayrollRun.id)
                   .join(PayrollEmployee, PayrollEmployee.id == PayrollLine.employee_id)
                   .where(PayrollRun.status == "paid", PayrollRun.check_date.notin_(journal_dates),
                          PayrollRun.period_end.notin_(journal_period_ends)))
             if s_d: rq = rq.where(PayrollRun.check_date >= s_d)
             if e_d: rq = rq.where(PayrollRun.check_date <= e_d)
-            for cd, name, g_, lj in db.execute(rq).all():
+            for cd, name, g_, lj, rid_, eid_ in db.execute(rq).all():
                 if who and who not in (name or "").lower():
                     continue
                 g = float(g_ or 0)
@@ -7919,8 +7945,7 @@ def list_sources(
                     d = json.loads(lj or "{}")
                 except Exception:
                     d = {}
-                taxes = float(d.get("ss") or 0) + float(d.get("medicare") or 0) + g * 0.012
-                match = float(d.get("er_match") or 0)
+                taxes, match = _inapp_employer_cost(_emap, rid_, eid_, g, d)
                 rows.append({"pay_date": cd.isoformat(), "period": "in-app run", "employee": name or "",
                              "hours": round(float(d.get("hours") or 0), 2), "gross": round(g, 2),
                              "employer_taxes": round(taxes, 2), "employer_401k": round(match, 2),
