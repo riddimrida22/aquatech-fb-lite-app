@@ -102,7 +102,9 @@ PAYROLL_KEYWORDS = (
     "GUSTO",            # all Gusto wires
     "PAYCHEX",          # Paychex payroll debits (net pay + taxes) — already in COGS via the journal
     "MATRIX TRUST",     # 401(k) custodian
-    "HUMAN INTEREST",   # 401(k) plan administrator
+    # "HUMAN INTEREST" (401(k) recordkeeper) deliberately NOT here: its monthly debit is the
+    # plan's admin fee, which no payroll journal carries — skipping it dropped ~$1.2k/yr of
+    # G&A from the P&L. It books as "Retirement Plan Admin Fees" (OPEX, Admin / G&A).
     "NU ERA", "NUERA",  # health insurance benefits
     "NYSIF",            # NY State Workers Comp + disability
 )
@@ -1565,6 +1567,7 @@ DEFAULT_EXPENSE_CATEGORY_MAP: dict[str, list[str]] = {
     ],
     "OH": [
         "Payroll Taxes And Processing",
+        "Retirement Plan Admin Fees",
         "Software And Subscriptions",
         "Office Supplies",
         "Insurance",
@@ -1588,6 +1591,10 @@ DEFAULT_EXPENSE_CATEGORY_MAP: dict[str, list[str]] = {
     "Money Movement": list(MONEY_MOVEMENT_CATEGORIES),
 }
 BANK_CATEGORY_KEYWORD_RULES: list[tuple[list[str], tuple[str, str, float]]] = [
+    # Specific merchants first: "Human Interest" would otherwise hit "interest" (Interest
+    # Expense, below the line) and "Uber Eats" would hit "uber" (Travel).
+    (["human interest"], ("OH", "Retirement Plan Admin Fees", 0.97)),
+    (["uber eats", "ubereats"], ("OH", "Meals", 0.9)),
     (["adobe", "microsoft", "google workspace", "quickbooks", "xero", "dropbox", "github", "notion", "slack", "zoom", "atlassian"], ("OH", "Software And Subscriptions", 0.94)),
     (["insurance", "liability", "workers comp", "umbrella policy"], ("OH", "Insurance", 0.93)),
     (["hotel", "airbnb", "delta", "united", "american airlines", "uber", "lyft", "hertz", "enterprise"], ("OH", "Travel", 0.9)),
@@ -1642,6 +1649,7 @@ CHART_OF_ACCOUNTS: dict[str, tuple[str, str]] = {
     "Office & Postage": ("INDIRECT", "Admin / G&A"),
     "Professional Services": ("INDIRECT", "Admin / G&A"),
     "Bank Fees": ("INDIRECT", "Admin / G&A"),
+    "Retirement Plan Admin Fees": ("INDIRECT", "Admin / G&A"),
     "Bank & Merchant Fees": ("INDIRECT", "Admin / G&A"),
     "Dues, Licenses & Education": ("INDIRECT", "Admin / G&A"),
     "Computer Hardware & Equipment": ("INDIRECT", "Admin / G&A"),
@@ -3653,6 +3661,7 @@ _OPEX_BUCKET_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "OPTIMUM", "RCN", "EARTHLINK", "GOOGLE FIBER", "INTERNET")),
     ("Rent & Utilities", ("RENT", "WEWORK", "REGUS", "CON ED", "CONED", "CONSOLIDATED EDISON", "NATIONAL GRID",
         "PSEG", "UTILITY", "LANDLORD", "PROPERTY MGMT", "MANAGEMENT OFFICE")),
+    ("Meals & Entertainment", ("UBER EATS", "UBER *EATS", "UBER * EATS", "UBEREATS")),  # before Travel's "UBER"
     ("Travel & Transport", ("AIRLINE", "AIR LINE", "DELTA AIR", "UNITED AIR", "AMERICAN AIR", "JETBLUE",
         "SOUTHWEST", "AMTRAK", "UBER", "LYFT", "TAXI", "MTA", "METROCARD", "HOTEL", "MARRIOTT", "HILTON",
         "HYATT", "AIRBNB", "EXPEDIA", "AVIS", "HERTZ", "ENTERPRISE RENT", "PARKING", "TOLL", "E-ZPASS", "EZPASS")),
