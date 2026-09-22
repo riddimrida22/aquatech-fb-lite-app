@@ -3193,6 +3193,22 @@ def _inbox_signature(inbox: Path) -> tuple:
     return tuple(sig)
 
 
+def _journal_period_end(period: dict) -> date | None:
+    """End date of a journal pay period ("MM/DD/YYYY - MM/DD/YYYY"). An in-app run for the
+    same period is superseded by the journal even when the journal's pay date differs
+    (e.g. the in-app run was booked for the scheduled check date and Paychex ran later)."""
+    per = (period.get("period") or "").strip()
+    if " - " not in per:
+        return None
+    end = per.split(" - ")[-1].strip()
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+        try:
+            return datetime.strptime(end, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _deduped_payroll_periods(inbox: Path) -> list[dict]:
     """Every pay period across all payroll files in the inbox, de-duplicated by
     pay-period identity (:func:`_norm_period_key`). Each period is the source dict
@@ -3887,6 +3903,7 @@ def accounting_pl(
     cogs_incomplete = False
     payroll_breakdown = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0}
     journal_pay_dates: set[date] = set()  # every pay date an external journal covers (any window)
+    journal_period_ends: set[date] = set()  # ...and every pay period it covers
     try:
         inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
         if inbox.exists():
@@ -3894,6 +3911,9 @@ def accounting_pl(
             # inbox are counted once (see _deduped_payroll_periods), so COGS can't
             # be inflated by a stale/duplicate PDF left behind.
             for period in _deduped_payroll_periods(inbox):
+                _pe = _journal_period_end(period)
+                if _pe is not None:
+                    journal_period_ends.add(_pe)
                 # Try pay_day first (preferred), fall back to period-end date
                 pd_str = (period.get("pay_day") or "").strip()
                 pd: date | None = None
@@ -3947,6 +3967,7 @@ def accounting_pl(
                     PayrollRun.check_date >= s,
                     PayrollRun.check_date <= e,
                     PayrollRun.check_date.notin_(journal_pay_dates),
+                    PayrollRun.period_end.notin_(journal_period_ends),
                 )
             ).all():
                 g = float(gross or 0)
@@ -4959,8 +4980,12 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
     inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
     paycost: dict[str, float] = defaultdict(float)
     journal_pay_dates: set[date] = set()
+    journal_period_ends: set[date] = set()
     if inbox.exists():
         for period in _deduped_payroll_periods(inbox):
+            _pe = _journal_period_end(period)
+            if _pe is not None:
+                journal_period_ends.add(_pe)
             pd_str = (period.get("pay_day") or "").strip()
             pd: date | None = None
             for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
@@ -4994,6 +5019,7 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
                     PayrollRun.check_date >= s,
                     PayrollRun.check_date <= e,
                     PayrollRun.check_date.notin_(journal_pay_dates),
+                    PayrollRun.period_end.notin_(journal_period_ends),
                 )
             ).all()
             for legal_name, gross, lj in run_rows:
@@ -5119,8 +5145,12 @@ def _payroll_fringe_rate(db: Session, s: date, e: date) -> tuple[float, dict]:
     inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
     gross = burden = 0.0
     journal_pay_dates: set[date] = set()
+    journal_period_ends: set[date] = set()
     if inbox.exists():
         for period in _deduped_payroll_periods(inbox):
+            _pe = _journal_period_end(period)
+            if _pe is not None:
+                journal_period_ends.add(_pe)
             pd_str = (period.get("pay_day") or "").strip()
             pd: date | None = None
             for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
@@ -5143,7 +5173,8 @@ def _payroll_fringe_rate(db: Session, s: date, e: date) -> tuple[float, dict]:
             select(PayrollLine.gross, PayrollLine.lines_json)
             .join(PayrollRun, PayrollRun.id == PayrollLine.run_id)
             .where(PayrollRun.status == "paid", PayrollRun.check_date >= s, PayrollRun.check_date <= e,
-                   PayrollRun.check_date.notin_(journal_pay_dates))
+                   PayrollRun.check_date.notin_(journal_pay_dates),
+                   PayrollRun.period_end.notin_(journal_period_ends))
         ).all():
             g = float(g_ or 0)
             try:
@@ -7840,6 +7871,7 @@ def list_sources(
         who = (q or "").strip().lower()
         rows = []
         journal_dates: set[date] = set()
+        journal_period_ends: set[date] = set()
 
         def _pd(v: str) -> date | None:
             for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
@@ -7853,6 +7885,9 @@ def list_sources(
                 pdt = _pd(period.get("pay_day") or "")
                 if pdt is not None:
                     journal_dates.add(pdt)
+                _pe = _journal_period_end(period)
+                if _pe is not None:
+                    journal_period_ends.add(_pe)
                 if pdt is None or (s_d and pdt < s_d) or (e_d and pdt > e_d):
                     continue
                 for r in period.get("rows", []) or []:
@@ -7872,7 +7907,8 @@ def list_sources(
             rq = (select(PayrollRun.check_date, PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json)
                   .join(PayrollLine, PayrollLine.run_id == PayrollRun.id)
                   .join(PayrollEmployee, PayrollEmployee.id == PayrollLine.employee_id)
-                  .where(PayrollRun.status == "paid", PayrollRun.check_date.notin_(journal_dates)))
+                  .where(PayrollRun.status == "paid", PayrollRun.check_date.notin_(journal_dates),
+                         PayrollRun.period_end.notin_(journal_period_ends)))
             if s_d: rq = rq.where(PayrollRun.check_date >= s_d)
             if e_d: rq = rq.where(PayrollRun.check_date <= e_d)
             for cd, name, g_, lj in db.execute(rq).all():
