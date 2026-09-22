@@ -7871,6 +7871,34 @@ def _run_data_health_audit(db: Session, trigger: str = "nightly") -> dict[str, o
         return "ok", "Every closed billing period has an invoice.", 0
     _health_check(checks, "billing_periods", "Freshness", "Client billing periods invoiced", billing_periods)
 
+    def unposted_pay():
+        """Net pay handed to someone outside payroll (category 'Payroll Disbursement') must
+        match a payroll run's net for that person, or the wages, withholding and W-2 are
+        short. Matches on amount within a 21-day window around the pay date."""
+        rows = db.execute(_t(
+            "SELECT posted_date, amount, name FROM bank_transactions "
+            "WHERE category_json = :cat AND is_business AND NOT pending "
+            "AND posted_date >= :y0 AND source NOT LIKE '%superseded%' ORDER BY posted_date"),
+            {"cat": '["Payroll Disbursement"]', "y0": y0}).all()
+        if not rows:
+            return "ok", "No pay issued outside payroll this year.", 0
+        from .payroll.models import PayrollLine, PayrollRun
+        nets = [(r[0], float(r[1] or 0)) for r in db.execute(
+            select(PayrollRun.check_date, PayrollLine.net).join(PayrollLine, PayrollLine.run_id == PayrollRun.id)
+            .where(PayrollRun.status == "paid")).all()]
+        jr = list_sources(kind="payroll", start=f"{today.year}-01-01", end=f"{today.year}-12-31", scope="journal", db=db, _=None)
+        nets += [(date.fromisoformat(r["pay_date"]), float(r["net_pay"] or 0)) for r in jr.get("rows", [])]
+        unmatched = []
+        for pdt, amt, nm in rows:
+            paid = round(-float(amt or 0), 2)
+            if not any(abs(n - paid) < 0.01 and abs((cd - pdt).days) <= 21 for cd, n in nets):
+                unmatched.append(f"{pdt} ${paid:,.2f} ({str(nm)[:34]})")
+        if unmatched:
+            return "warn", ("Pay issued outside payroll with no matching payroll run - wages/withholding "
+                            "not reported: " + "; ".join(unmatched)), len(unmatched)
+        return "ok", f"All {len(rows)} payments made outside payroll match a payroll run.", 0
+    _health_check(checks, "unposted_pay", "Accuracy", "Pay issued outside payroll is on a run", unposted_pay)
+
     def cost_refresh():
         blocked = db.scalar(select(func.count()).select_from(AuditEvent).where(
             AuditEvent.action == "loaded_cost_refresh_blocked",
