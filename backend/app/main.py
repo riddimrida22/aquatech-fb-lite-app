@@ -5437,7 +5437,11 @@ def accounting_utilization(
 
     - Utilization % = billable hours / total logged hours (the #1 services-firm lever).
     - Billable value = Σ (billable hours × bill_rate_applied).
-    - Labor cost = Σ (hours × cost_rate_applied) — loaded cost.
+    - Labor cost = Σ (client-project hours × cost_rate_applied) — loaded cost. Hours on
+      overhead projects (Project.is_overhead, e.g. Aquatech Operations) are NOT charged
+      again: their cost is already in the overhead pool that builds the loaded rate
+      (_compute_overhead_rate), so charging them here double-counted overhead.
+      Unbilled hours on client projects ARE charged (real direct cost, no revenue).
     - Contribution margin = billable value − labor cost.
     - Billed vs unbilled billable value via the `billed` flag (unbilled = WIP).
     Billable = entry.is_billable AND project.is_billable AND task.is_billable.
@@ -5452,8 +5456,9 @@ def accounting_utilization(
           COALESCE(SUM(te.hours),0) AS total_hours,
           COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) THEN te.hours ELSE 0 END),0) AS billable_hours,
           COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billable_value,
-          COALESCE(SUM(te.hours*COALESCE(te.cost_rate_applied,0)),0) AS labor_cost,
-          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) AND te.billed THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billed_value
+          COALESCE(SUM(CASE WHEN NOT COALESCE(p.is_overhead,false) THEN te.hours*COALESCE(te.cost_rate_applied,0) ELSE 0 END),0) AS labor_cost,
+          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) AND te.billed THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billed_value,
+          COALESCE(SUM(CASE WHEN COALESCE(p.is_overhead,false) THEN te.hours ELSE 0 END),0) AS overhead_hours
         FROM time_entries te
         JOIN users u ON u.id=te.user_id
         LEFT JOIN projects p ON p.id=te.project_id
@@ -5465,12 +5470,15 @@ def accounting_utilization(
     )
     rows = db.execute(sql, {"s": s, "e": e}).all()
     people: list[dict[str, object]] = []
-    agg = {"total_hours": 0.0, "billable_hours": 0.0, "billable_value": 0.0, "labor_cost": 0.0, "billed_value": 0.0}
-    for uid, name, th, bh, bv, lc, bd in rows:
-        th, bh, bv, lc, bd = float(th), float(bh), float(bv), float(lc), float(bd)
+    agg = {"total_hours": 0.0, "billable_hours": 0.0, "billable_value": 0.0, "labor_cost": 0.0, "billed_value": 0.0,
+           "overhead_hours": 0.0}
+    for uid, name, th, bh, bv, lc, bd, oh in rows:
+        th, bh, bv, lc, bd, oh = float(th), float(bh), float(bv), float(lc), float(bd), float(oh)
+        agg["overhead_hours"] += oh
         people.append({
             "user_id": uid, "name": name,
             "total_hours": round(th, 1), "billable_hours": round(bh, 1), "nonbillable_hours": round(th - bh, 1),
+            "overhead_hours": round(oh, 1),
             "utilization_pct": round(bh / th * 100, 1) if th > 0 else 0.0,
             "billable_value": round(bv, 2), "labor_cost": round(lc, 2),
             "margin": round(bv - lc, 2), "margin_pct": round((bv - lc) / bv * 100, 1) if bv > 0 else 0.0,
@@ -5481,12 +5489,14 @@ def accounting_utilization(
     th, bh, bv, lc, bd = (agg["total_hours"], agg["billable_hours"], agg["billable_value"], agg["labor_cost"], agg["billed_value"])
     totals = {
         "total_hours": round(th, 1), "billable_hours": round(bh, 1), "nonbillable_hours": round(th - bh, 1),
+        "overhead_hours": round(agg["overhead_hours"], 1),
         "utilization_pct": round(bh / th * 100, 1) if th > 0 else 0.0,
         "billable_value": round(bv, 2), "labor_cost": round(lc, 2),
         "margin": round(bv - lc, 2), "margin_pct": round((bv - lc) / bv * 100, 1) if bv > 0 else 0.0,
         "billed_value": round(bd, 2), "unbilled_value": round(bv - bd, 2),
     }
-    return {"period": {"start": s.isoformat(), "end": e.isoformat()}, "rows": people, "totals": totals}
+    return {"period": {"start": s.isoformat(), "end": e.isoformat()}, "rows": people, "totals": totals,
+            "cost_basis": "Loaded cost on client-project hours; overhead-project hours are already inside the loaded rate and not charged twice."}
 
 
 @app.get("/accounting/daily-profitability")
@@ -10720,9 +10730,16 @@ def project_margin(
         project_ref = project_by_id.get(te.project_id)
         task_ref = task_by_id.get(te.task_id)
         is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False)
-        row = actual_by_project.setdefault(te.project_id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0, "unbilled_wip": 0.0})
+        row = actual_by_project.setdefault(te.project_id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0, "unbilled_wip": 0.0,
+                                                           "absorbed_overhead_cost": 0.0})
         row["actual_hours"] += float(te.hours)
-        row["actual_cost"] += float(te.hours * te.cost_rate_applied)
+        if project_ref is not None and bool(getattr(project_ref, "is_overhead", False)):
+            # Overhead-project time (e.g. Aquatech Operations) is already in the overhead
+            # pool behind every loaded cost rate — it's recovered through the client
+            # projects, so charging it here as a project loss double-counted it.
+            row["absorbed_overhead_cost"] += float(te.hours * te.cost_rate_applied)
+        else:
+            row["actual_cost"] += float(te.hours * te.cost_rate_applied)
         # Unbilled WIP: billable, not yet billed → value at current rate. Source-agnostic:
         # the app is the system of record now (FreshBooks retired 2026-08-31), so manual
         # hours are real WIP too. `billed` (set by the generator at "invoice sent") keeps
@@ -10735,12 +10752,12 @@ def project_margin(
     # projects with invoices but no time entries in range
     for pid, amt in billed_by_project.items():
         if pid not in actual_by_project:
-            actual_by_project[pid] = {"actual_hours": 0.0, "actual_revenue": amt, "actual_cost": 0.0, "unbilled_wip": 0.0}
+            actual_by_project[pid] = {"actual_hours": 0.0, "actual_revenue": amt, "actual_cost": 0.0, "unbilled_wip": 0.0, "absorbed_overhead_cost": 0.0}
 
     rows = []
     for p in projects:
         budget = budget_by_project.get(p.id, {"budget_hours": 0.0, "budget_fee": 0.0})
-        actual = actual_by_project.get(p.id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0})
+        actual = actual_by_project.get(p.id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0, "absorbed_overhead_cost": 0.0})
         margin = actual["actual_revenue"] - actual["actual_cost"]
         rows.append(
             {
@@ -12972,7 +12989,10 @@ def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[
         task_ref = tasks_by_id.get(te.task_id)
         is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False)
         revenue = float(te.hours * te.bill_rate_applied) if is_billable else 0.0
-        cost = float(te.hours * te.cost_rate_applied)
+        # Overhead-project time is already inside the loaded rate charged on client
+        # hours; costing it again here double-counted overhead (same rule as the daily KPI).
+        cost = 0.0 if (project_ref is not None and bool(getattr(project_ref, "is_overhead", False))) \
+            else float(te.hours * te.cost_rate_applied)
         profit = revenue - cost
 
         project["actual_hours"] = float(project["actual_hours"]) + float(te.hours)

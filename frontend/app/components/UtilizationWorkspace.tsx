@@ -150,7 +150,7 @@ export default function UtilizationWorkspace() {
             </table>
           </div>
           <p className="aq-lite-muted" style={{ fontSize: 11.5, marginTop: 10 }}>
-            Overhead roles (COO, admin) will show low utilization and negative billable margin by design — their cost sits in the overhead pool. Target billable utilization ≈ {UTIL_TARGET}%. Period: {data!.period.start} → {data!.period.end}.
+            Labor cost = loaded rate × client-project hours. Internal time (admin, business development) is not charged again here: its cost is already built into the loaded rate on every client hour. Overhead roles will still show low utilization. Target billable utilization ≈ {UTIL_TARGET}%. Period: {data!.period.start} → {data!.period.end}.
           </p>
         </>
       ) : null}
