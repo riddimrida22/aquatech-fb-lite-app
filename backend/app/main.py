@@ -7790,6 +7790,28 @@ def _run_data_health_audit(db: Session, trigger: str = "nightly") -> dict[str, o
             f"...{r['mask']} {r['bank_balance']:,.2f}" for r in rows), 0
     _health_check(checks, "statement_tie", "Accuracy", "Books tie to bank statements", statement_tie)
 
+    def billing_periods():
+        """Each client's billing calendar (finance.billing_periods, from the client's own
+        schedule): once a period closes, an invoice covering it should exist."""
+        rows = db.execute(_t(
+            "SELECT DISTINCT ON (client) client, period_no, period_begin, period_end "
+            "FROM finance.billing_periods WHERE period_end <= :today "
+            "ORDER BY client, period_end DESC"), {"today": today}).all()
+        if not rows:
+            return "ok", "No closed billing periods on file.", 0
+        due = []
+        for client, no, p_begin, p_end in rows:
+            has = db.scalar(select(func.count()).select_from(Invoice).where(
+                Invoice.client_name.ilike(f"%{client}%"), Invoice.end_date == p_end,
+                Invoice.status.notin_(["void"])))
+            if not has:
+                days = (today - p_end).days
+                due.append(f"{client} period {no or ''} {p_begin}..{p_end} closed {days}d ago - no invoice")
+        if due:
+            return "warn", "Billing period closed, invoice not raised: " + "; ".join(due), len(due)
+        return "ok", "Every closed billing period has an invoice.", 0
+    _health_check(checks, "billing_periods", "Freshness", "Client billing periods invoiced", billing_periods)
+
     def cost_refresh():
         blocked = db.scalar(select(func.count()).select_from(AuditEvent).where(
             AuditEvent.action == "loaded_cost_refresh_blocked",
