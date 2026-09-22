@@ -34,6 +34,7 @@ from .db import SessionLocal, get_db, init_db
 from .models import (
     Activity,
     AppSetting,
+    DataHealthRun,
     AssistantQuery,
     AuditEvent,
     BankAccount,
@@ -1858,6 +1859,15 @@ def _start_fb_time_sync_worker() -> None:
         except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
             print(f"[loaded_cost] nightly refresh failed: {exc!r}", flush=True)
 
+    def _nightly_data_health() -> None:
+        """Nightly freshness + accuracy audit (after the bank sync and cost refresh)."""
+        try:
+            with SessionLocal() as db:
+                r = _run_data_health_audit(db, trigger="nightly")
+                print(f"[data_health] {r['status'].upper()}: {r['summary']}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - scheduler thread must not die
+            print(f"[data_health] audit failed: {exc!r}", flush=True)
+
     sched = BackgroundScheduler(daemon=True)
     # Master FreshBooks kill-switch (flip to False at the 2026-08-31 cut-over). When off,
     # NO FB job is scheduled — the 10-min time-sync, the daily full sync, and the boot
@@ -1883,6 +1893,10 @@ def _start_fb_time_sync_worker() -> None:
     if getattr(settings, "LOADED_COST_REFRESH_ENABLED", True):
         sched.add_job(_nightly_loaded_cost_refresh, "cron", hour=_hour, minute=30, timezone=_tz,
                       id="loaded_cost_refresh", coalesce=True, max_instances=1)
+    # Nightly data-health audit - last, so it checks the freshly synced + re-costed data.
+    if getattr(settings, "DATA_HEALTH_AUDIT_ENABLED", True):
+        sched.add_job(_nightly_data_health, "cron", hour=_hour, minute=45, timezone=_tz,
+                      id="data_health_audit", coalesce=True, max_instances=1)
     # One-shot catch-up ~60-90s after boot, so a restart/deploy doesn't leave bank +
     # FreshBooks data stale until the next 6 AM cron.
     _boot = datetime.utcnow()
@@ -7372,6 +7386,247 @@ def accounting_balance_sheet(
             "contribution. Keep receipts; the alternative treatment is an accountable-plan reimbursement.",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Data-health audit - nightly freshness + calculation cross-checks
+# ---------------------------------------------------------------------------
+# Every check returns {key, group, label, status: ok|warn|fail, detail, value}. Checks are
+# isolated: an exception becomes a "fail" row instead of aborting the run. Runs nightly
+# after the bank sync + cost refresh, and on demand from the Data Health screen.
+
+_HEALTH_RANK = {"ok": 0, "warn": 1, "fail": 2}
+
+
+def _health_check(out: list, key: str, group: str, label: str, fn) -> None:
+    try:
+        status, detail, value = fn()
+    except Exception as exc:  # noqa: BLE001 - a broken check must not hide the others
+        status, detail, value = "fail", f"Check errored: {exc!r}"[:300], None
+    out.append({"key": key, "group": group, "label": label, "status": status,
+                "detail": detail, "value": value})
+
+
+def _run_data_health_audit(db: Session, trigger: str = "nightly") -> dict[str, object]:
+    from sqlalchemy import bindparam as _bp
+    from sqlalchemy import text as _t
+    today = date.today()
+    y0 = date(today.year, 1, 1)
+    now = datetime.utcnow()
+    checks: list[dict] = []
+
+    # ---------------- Freshness ----------------
+    def bank_links():
+        stale = []
+        for c in db.scalars(select(BankConnection).where(BankConnection.provider == "plaid")).all():
+            age_h = (now - c.last_synced_at).total_seconds() / 3600 if c.last_synced_at else None
+            if (c.status or "") != "connected" or age_h is None or age_h > 36:
+                when = f"{c.last_synced_at:%Y-%m-%d %H:%M} UTC" if c.last_synced_at else "never"
+                stale.append(f"{c.institution_name} (status {c.status}, last sync {when})")
+        if stale:
+            return "fail", "Stale or broken bank links: " + "; ".join(stale), len(stale)
+        return "ok", "All Plaid bank links synced within 36 hours.", 0
+    _health_check(checks, "bank_links", "Freshness", "Bank links syncing", bank_links)
+
+    def csv_feeds():
+        rows = db.execute(_t("SELECT account_id, MAX(posted_date) FROM bank_transactions "
+                             "WHERE source = 'csv' AND is_business GROUP BY account_id")).all()
+        stale = [f"{a} last transaction {d}" for a, d in rows if d and (today - d).days > 7]
+        if stale:
+            return "warn", "Curated CSV feeds need a refresh: " + "; ".join(stale), len(stale)
+        return "ok", "Curated CSV bank feeds refreshed within 7 days.", 0
+    _health_check(checks, "csv_feeds", "Freshness", "Chase CSV (Expense_CAT) refresh", csv_feeds)
+
+    def manual_cards():
+        due = []
+        for a in db.scalars(select(BankAccount).join(BankConnection, BankConnection.id == BankAccount.connection_id)
+                            .where(BankConnection.provider == "manual_statement")).all():
+            if a.last_synced_at and (now - a.last_synced_at).days > 35:
+                due.append(f"{a.name} (last statement {a.last_synced_at:%Y-%m-%d})")
+        if due:
+            return "warn", "Statement import overdue: " + "; ".join(due), len(due)
+        return "ok", "Manually imported card statements are current.", 0
+    _health_check(checks, "manual_cards", "Freshness", "Manual card statements (Amex)", manual_cards)
+
+    def payroll_current():
+        from .payroll.models import PayrollRun
+        drafts = db.scalars(select(PayrollRun).where(PayrollRun.status != "paid",
+                                                      PayrollRun.check_date < today,
+                                                      PayrollRun.check_date >= y0)).all()
+        last_paid = db.scalar(select(func.max(PayrollRun.check_date)).where(PayrollRun.status == "paid"))
+        if drafts:
+            runs = ", ".join(f"{r.check_date} ({r.status})" for r in drafts)
+            return "warn", ("Payroll runs past their pay date but not marked paid "
+                            f"(excluded from COGS): {runs}"), len(drafts)
+        return "ok", f"No overdue payroll runs. Last paid in-app run {last_paid}.", 0
+    _health_check(checks, "payroll", "Freshness", "Payroll recorded", payroll_current)
+
+    def cost_refresh():
+        blocked = db.scalar(select(func.count()).select_from(AuditEvent).where(
+            AuditEvent.action == "loaded_cost_refresh_blocked",
+            AuditEvent.created_at >= now - timedelta(hours=36)))
+        if blocked:
+            return "fail", f"Nightly cost refresh was BLOCKED {blocked}x in 36h; check the guard reasons.", blocked
+        return "ok", "Nightly loaded-cost refresh ran without being blocked.", 0
+    _health_check(checks, "cost_refresh", "Freshness", "Loaded-cost refresh", cost_refresh)
+
+    # ---------------- Accuracy ----------------
+    pl = accounting_pl(start=y0.isoformat(), end=today.isoformat(), db=db, _=None)
+
+    def pl_monthly():
+        months = accounting_pl_monthly(start=y0.isoformat(), end=today.isoformat(), db=db, _=None)["months"]
+        diffs = []
+        for k in ("revenue_cash", "revenue_accrual", "opex", "net_income_cash", "net_income_accrual"):
+            a, b = float(pl.get(k) or 0), sum(float(m.get(k) or 0) for m in months)
+            if abs(a - b) >= 1:
+                diffs.append(f"{k}: YTD {a:,.2f} vs months {b:,.2f}")
+        if diffs:
+            return "fail", "Monthly P&L does not sum to YTD: " + "; ".join(diffs), len(diffs)
+        return "ok", "Monthly P&L sums to the YTD P&L (revenue, OPEX, net income).", 0
+    _health_check(checks, "pl_monthly", "Accuracy", "Monthly P&L ties to YTD", pl_monthly)
+
+    def invoice_math():
+        bad = db.execute(_t("SELECT invoice_number FROM invoices WHERE status NOT IN ('void','draft') "
+                            "AND abs(COALESCE(subtotal_amount,0)-COALESCE(amount_paid,0)-COALESCE(balance_due,0)) > 0.01"
+                            )).scalars().all()
+        nodate = db.execute(_t("SELECT invoice_number FROM invoices WHERE amount_paid > 0 AND paid_date IS NULL "
+                               "AND status <> 'void'")).scalars().all()
+        problems = []
+        if bad:
+            problems.append("subtotal - paid != balance: " + ", ".join(bad))
+        if nodate:
+            problems.append("payment with no paid date (missing from cash revenue): " + ", ".join(nodate))
+        if problems:
+            return "fail", "; ".join(problems), len(bad) + len(nodate)
+        return "ok", "Invoice arithmetic ties; every payment is dated.", 0
+    _health_check(checks, "invoice_math", "Accuracy", "Invoices & payments", invoice_math)
+
+    def pricing():
+        unpriced = db.execute(_t(
+            "SELECT COUNT(*), COALESCE(SUM(te.hours),0) FROM time_entries te "
+            "JOIN projects p ON p.id=te.project_id JOIN tasks t ON t.id=te.task_id "
+            "WHERE te.work_date >= :y AND te.is_billable AND p.is_billable AND t.is_billable "
+            "AND NOT p.is_overhead AND COALESCE(te.bill_rate_applied,0) <= 0"), {"y": y0}).one()
+        placeholder = db.execute(_t(
+            "SELECT COUNT(*) FROM time_entries te WHERE te.work_date >= :y "
+            "AND abs(COALESCE(te.bill_rate_applied,0)-125) < 0.01 "
+            "AND NOT EXISTS (SELECT 1 FROM project_bill_rates r WHERE r.project_id = te.project_id "
+            "AND abs(r.bill_rate-125) < 0.01)"), {"y": y0}).scalar()
+        if placeholder:
+            return "fail", f"{placeholder} entries still priced at the $125 placeholder.", placeholder
+        if unpriced[0]:
+            return "warn", (f"{unpriced[0]} billable entries ({float(unpriced[1]):.1f} h) have no rate card; "
+                            "add rates (see /admin/missing-bill-rates)."), unpriced[0]
+        return "ok", "Every billable hour this year is priced from a rate card.", 0
+    _health_check(checks, "pricing", "Accuracy", "Billable hours priced", pricing)
+
+    def cost_stamps():
+        drift = db.execute(_t(
+            "SELECT COUNT(*) FROM time_entries te "
+            "JOIN (SELECT user_id, MAX(cost_rate) cr FROM user_rates GROUP BY 1) r ON r.user_id = te.user_id "
+            "WHERE te.work_date >= :y AND abs(COALESCE(te.cost_rate_applied,0) - r.cr) > 0.01"), {"y": y0}).scalar()
+        if drift:
+            return "warn", f"{drift} entries carry an out-of-date loaded cost (next refresh re-stamps them).", drift
+        return "ok", "All entries this year carry the current loaded cost rate.", 0
+    _health_check(checks, "cost_stamps", "Accuracy", "Cost stamps current", cost_stamps)
+
+    def needs_review():
+        amt, n = float(pl.get("needs_review_total") or 0), int(pl.get("needs_review_count") or 0)
+        if n:
+            return "warn", f"{n} expenses (${amt:,.2f}) need a category; they sit in OPEX uncategorised.", n
+        return "ok", "No uncategorised expenses.", 0
+    _health_check(checks, "needs_review", "Accuracy", "Expenses categorised", needs_review)
+
+    def bank_flags():
+        mis = db.execute(_t(
+            "SELECT a.mask, COUNT(*) FROM bank_transactions t "
+            "JOIN bank_accounts a ON a.account_id = t.account_id AND a.connection_id = t.connection_id "
+            "WHERE t.is_business AND NOT a.is_business AND t.source NOT IN :sup GROUP BY 1"
+        ).bindparams(_bp("sup", expanding=True)), {"sup": list(SUPERSEDED_SOURCES)}).all()
+        dups = db.execute(_t("SELECT mask, COUNT(*) FROM bank_accounts WHERE is_business AND mask IS NOT NULL "
+                             "GROUP BY mask, type HAVING COUNT(*) > 1")).all()
+        problems = []
+        if mis:
+            problems.append("business transactions on personal accounts: " + ", ".join(f"{m} x{n}" for m, n in mis))
+        if dups:
+            problems.append("same account linked twice as business: " + ", ".join(f"{m} x{n}" for m, n in dups))
+        if problems:
+            return "fail", "; ".join(problems), len(mis) + len(dups)
+        return "ok", "No personal-account rows booked as business; no duplicate business accounts.", 0
+    _health_check(checks, "bank_flags", "Accuracy", "Bank feeds classified", bank_flags)
+
+    def ar_ties():
+        bs_ar = float(db.scalar(select(func.coalesce(func.sum(Invoice.balance_due), 0.0)).where(
+            Invoice.balance_due > 0, Invoice.status.notin_(["void", "draft", "written_off"]))) or 0.0)
+        try:
+            fin = float(db.execute(_t("SELECT gross_total FROM finance.v_summary")).scalar() or 0)
+        except Exception:
+            db.rollback()
+            return "ok", f"AR ${bs_ar:,.2f} (finance ledger view not available to compare).", 0
+        if abs(bs_ar - fin) > 1:
+            return "fail", f"AR differs: balance sheet ${bs_ar:,.2f} vs finance ledger ${fin:,.2f}.", round(bs_ar - fin, 2)
+        return "ok", f"Receivables agree across sources (${bs_ar:,.2f}).", 0
+    _health_check(checks, "ar_ties", "Accuracy", "Receivables agree", ar_ties)
+
+    def overhead_identity():
+        u = accounting_utilization(start=y0.isoformat(), end=today.isoformat(), db=db, _=None)["totals"]
+        oh = _compute_overhead_rate(db, y0, today)
+        eng = oh["pools"]["direct_labor"] + oh["pools"]["overhead_pool"]
+        gap = (u["labor_cost"] - eng) / eng if eng else 0.0
+        if abs(gap) > 0.01:
+            return "warn", (f"Client-hour cost ${u['labor_cost']:,.0f} vs engine ${eng:,.0f} ({gap:+.1%}); "
+                            "overhead may be double- or under-counted."), round(gap, 4)
+        return "ok", f"Overhead counted exactly once (client-hour cost ${u['labor_cost']:,.0f} vs engine ${eng:,.0f}).", round(gap, 4)
+    _health_check(checks, "overhead_identity", "Accuracy", "Overhead counted once", overhead_identity)
+
+    def distributions_agree():
+        d = _owner_distributions(db, y0, today)
+        cf = accounting_cashflow(start=y0.isoformat(), end=today.isoformat(), db=db, _=None)["owner"]
+        if abs(d["net"] + cf["net"]) > 0.01:
+            return "fail", f"Distribution figures disagree: schedule {d['net']:,.2f} vs cash flow {-cf['net']:,.2f}.", None
+        return "ok", f"Owner distributions agree everywhere (net ${d['net']:,.2f}).", d["net"]
+    _health_check(checks, "distributions", "Accuracy", "Distributions consistent", distributions_agree)
+
+    worst = max((c["status"] for c in checks), key=lambda st: _HEALTH_RANK[st], default="ok")
+    n_fail = sum(1 for c in checks if c["status"] == "fail")
+    n_warn = sum(1 for c in checks if c["status"] == "warn")
+    summary = (f"{len(checks)} checks: {n_fail} fail, {n_warn} warn" if (n_fail or n_warn)
+               else f"All {len(checks)} checks passed")
+    run = DataHealthRun(run_at=now, trigger=trigger, status=worst, summary=summary,
+                        results_json=json.dumps(checks, default=str))
+    db.add(run)
+    db.commit()
+    return {"id": run.id, "run_at": now.isoformat(), "trigger": trigger, "status": worst,
+            "summary": summary, "checks": checks}
+
+
+def _health_run_out(r: DataHealthRun) -> dict[str, object]:
+    return {"id": r.id, "run_at": r.run_at.isoformat() if r.run_at else None, "trigger": r.trigger,
+            "status": r.status, "summary": r.summary, "checks": json.loads(r.results_json or "[]")}
+
+
+@app.get("/admin/data-health")
+def get_data_health(
+    history: int = 14,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Latest data-health audit plus a short history of prior runs (status + summary)."""
+    runs = db.scalars(select(DataHealthRun).order_by(DataHealthRun.run_at.desc()).limit(max(1, history))).all()
+    return {
+        "latest": _health_run_out(runs[0]) if runs else None,
+        "history": [{"id": r.id, "run_at": r.run_at.isoformat() if r.run_at else None, "trigger": r.trigger,
+                     "status": r.status, "summary": r.summary} for r in runs],
+    }
+
+
+@app.post("/admin/data-health/run")
+def run_data_health(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Run the data-health audit now (the same checks the nightly job runs)."""
+    return _run_data_health_audit(db, trigger="manual")
 
 
 @app.get("/payroll/journal/summary")

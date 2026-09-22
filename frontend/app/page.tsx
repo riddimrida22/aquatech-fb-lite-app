@@ -21,6 +21,7 @@ import DataGaps from "./components/DataGaps";
 import DailyProfitabilityKPI from "./components/DailyProfitabilityKPI";
 import OwnerWealthKPI from "./components/OwnerWealthKPI";
 import UtilizationWorkspace from "./components/UtilizationWorkspace";
+import DataHealthPanel, { DataHealthBanner } from "./components/DataHealthPanel";
 import ProjectAlertsPanel from "./components/ProjectAlertsPanel";
 import HourEstimatesWorkspace from "./components/HourEstimatesWorkspace";
 import OverheadRatePanel from "./components/OverheadRatePanel";
@@ -84,6 +85,7 @@ type WorkspaceKey =
   | "accounting"
   | "bookkeeping"
   | "utilization"
+  | "datahealth"
   | "hourestimates"
   | "reports"
   | "imports"
@@ -128,6 +130,7 @@ const NAV: NavEntry[] = [
       { key: "bookkeeping", label: "Bookkeeping", hint: "Tax-remediation log", tier: 4 },
       { key: "hourestimates", label: "Hour Estimates", hint: "Budgeted LOE (admin)", tier: 4 },
       { key: "reports", label: "Reports", hint: "Benchmarks", tier: 4 },
+      { key: "datahealth", label: "Data Health", hint: "Nightly accuracy audit", tier: 3 },
     ],
   },
   { key: "time", label: "Time", hint: "Hours + timesheets", tier: 1 },
@@ -1378,6 +1381,7 @@ export default function AquatechPmHome() {
 
             {dashTab === "financials" ? (
               <>
+                <DataHealthBanner onOpen={() => setWorkspace("datahealth")} />
                 <DailyProfitabilityKPI />
                 <OwnerWealthKPI />
                 <OverheadRatePanel />
@@ -2083,6 +2087,8 @@ export default function AquatechPmHome() {
         {workspace === "bookkeeping" ? (
           <BookkeepingWorkspace />
         ) : null}
+
+        {workspace === "datahealth" ? <DataHealthPanel /> : null}
 
         {workspace === "utilization" ? (
           <>
