@@ -14752,6 +14752,7 @@ def _sync_invoice_billed_flags(db: Session, inv: "Invoice") -> None:
     flag = st != "void"
     for te in db.scalars(select(TimeEntry).where(TimeEntry.id.in_(ids))).all():
         te.billed = flag
+        te.invoice_id = inv.id if flag else None
 
 
 def _invoice_preview_rows(

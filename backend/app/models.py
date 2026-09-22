@@ -167,6 +167,10 @@ class TimeEntry(Base):
     # BD time attributed to a specific pursuit (business-development hours), so the true
     # cost of chasing each job rolls up. Null for normal project / overhead time.
     pursuit_id: Mapped[int | None] = mapped_column(ForeignKey("pursuits.id"), nullable=True, index=True)
+    # Which in-app invoice billed this hour. Set by the system when an invoice is issued
+    # (never entered by staff); cleared when that invoice is voided. `billed` stays the flag
+    # the app reads; this records WHICH invoice, so a re-dated entry can still be traced.
+    invoice_id: Mapped[int | None] = mapped_column(ForeignKey("invoices.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     # Provenance + external-id (FreshBooks time-entry id). Used by sync_time_entries to upsert.
     # Values: manual | freshbooks_api
