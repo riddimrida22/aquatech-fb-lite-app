@@ -7866,6 +7866,8 @@ def list_sources(
                                  "employer_cost": round(float(r.get("employer_cost") or 0), 2),
                                  "net_pay": round(float(r.get("net_pay") or 0), 2), "source": "journal"})
         try:
+            if scope == "journal":  # the Payroll screen shows journal periods only
+                raise LookupError
             from .payroll.models import PayrollEmployee, PayrollLine, PayrollRun
             rq = (select(PayrollRun.check_date, PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json)
                   .join(PayrollLine, PayrollLine.run_id == PayrollRun.id)
