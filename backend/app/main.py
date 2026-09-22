@@ -7518,14 +7518,23 @@ def accounting_balance_sheet(
     # the receivable omitted from assets).
     loans_payable = 0.0
     shareholder_receivable = 0.0
+    accrued_interest_payable = 0.0
+    accrued_interest_receivable = 0.0
     for loan in db.scalars(select(Loan).where(Loan.is_active.is_(True))).all():
         bal = float(loan.principal_current or 0.0)
+        # Interest ACCRUED but not paid: an accrual row carries interest with no cash
+        # (total_amount = 0). A real payment (total > 0) is already out of the balance.
+        accrued = float(db.scalar(
+            select(func.coalesce(func.sum(LoanPayment.interest_amount), 0.0)).where(
+                LoanPayment.loan_id == loan.id, LoanPayment.total_amount == 0.0)) or 0.0)
         if _loan_is_receivable(loan):
             shareholder_receivable += bal
+            accrued_interest_receivable += accrued
         else:
             loans_payable += bal
-    total_assets = cash + ar + shareholder_receivable
-    total_liabilities = loans_payable + credit_card_debt
+            accrued_interest_payable += accrued
+    total_assets = cash + ar + shareholder_receivable + accrued_interest_receivable
+    total_liabilities = loans_payable + credit_card_debt + accrued_interest_payable
     equity = total_assets - total_liabilities
 
     # Statement of changes in shareholder equity (roll-forward), year to date.
@@ -7565,11 +7574,13 @@ def accounting_balance_sheet(
             "cash": cash,
             "accounts_receivable": ar,
             "shareholder_receivable": shareholder_receivable,
+            "accrued_interest_receivable": accrued_interest_receivable,
             "total": total_assets,
         },
         "liabilities": {
             "credit_cards": credit_card_debt,
             "loans_outstanding": loans_payable,
+            "accrued_interest_payable": accrued_interest_payable,
             "total": total_liabilities,
         },
         "equity": equity,
