@@ -24,7 +24,7 @@ import httpx
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import and_, case, delete, exists, false, func, or_, select
+from sqlalchemy import and_, case, delete, exists, false, func, or_, select, true
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
@@ -7374,6 +7374,99 @@ def _owner_distributions(db: Session, s: date, e: date, collect: list | None = N
     }
 
 
+def _latest_balance_accounts(db: Session) -> dict[tuple, "BankAccount"]:
+    """One balance per real business account, keyed (mask, type): the most recently synced
+    of the business account and any duplicate-feed copy of it (never a personal account)."""
+    from .plaid_integration import _superseded_account_ids
+    _sup = _superseded_account_ids(db)
+    _key = lambda a: (a.mask or a.account_id, (a.type or "").lower())  # noqa: E731
+    _biz = [a for a in db.scalars(select(BankAccount).where(BankAccount.is_business.is_(True))).all()]
+    _biz_keys = {_key(a) for a in _biz}
+    _dups = [a for a in db.scalars(select(BankAccount).where(BankAccount.account_id.in_(_sup))).all()
+             if _key(a) in _biz_keys] if _sup else []
+    _latest: dict[tuple, BankAccount] = {}
+    for acct in [*_biz, *_dups]:
+        if acct.current_balance is None:
+            continue
+        key = _key(acct)
+        prev = _latest.get(key)
+        if prev is None or (acct.last_synced_at or datetime.min) > (prev.last_synced_at or datetime.min):
+            _latest[key] = acct
+    return _latest
+
+
+CARD_PAYMENT_WORDS = ("PAYMENT THANK YOU", "AUTOMATIC PAYMENT", "AUTOPAY", "PAYMENT RECEIVED", "ONLINE PAYMENT")
+
+
+@app.get("/accounting/credit-cards")
+def accounting_credit_cards(
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Business credit cards: what is owed now (same balances as the balance sheet) and, for the
+    period, charges, payments, refunds, interest and fees from each card's own transactions.
+    Every figure is reproducible from /sources?kind=bank_transactions&account_id=..."""
+    s, e = _accounting_period(start, end)
+    latest = _latest_balance_accounts(db)
+    conns = {c.id: c for c in db.scalars(select(BankConnection)).all()}
+    cards = []
+    for (mask, typ), bal_acct in latest.items():
+        if typ != "credit":
+            continue
+        # Transactions live on the business account for this mask (the balance may come from
+        # a duplicate-feed copy whose transactions are superseded).
+        txn_accts = [a.account_id for a in db.scalars(select(BankAccount).where(
+            BankAccount.is_business.is_(True), BankAccount.type == "credit",
+            or_(BankAccount.mask == mask, BankAccount.account_id == mask))).all()]
+        rows = db.scalars(select(BankTransaction).where(
+            BankTransaction.account_id.in_(txn_accts),
+            ~BankTransaction.source.in_(SUPERSEDED_SOURCES),
+            BankTransaction.pending.is_(False),
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e)).all()
+        charges = payments = refunds = interest = fees = 0.0
+        monthly: dict[str, float] = defaultdict(float)
+        for t in rows:
+            amt = float(t.amount or 0)
+            nm = (t.name or "").upper()
+            if amt < 0:
+                if "INTEREST" in nm:
+                    interest += -amt
+                elif "FEE" in nm:
+                    fees += -amt
+                else:
+                    charges += -amt
+                    monthly[t.posted_date.strftime("%Y-%m")] += -amt
+            elif amt > 0:
+                if any(w in nm for w in CARD_PAYMENT_WORDS):
+                    payments += amt
+                else:
+                    refunds += amt
+        conn = conns.get(bal_acct.connection_id)
+        manual = bool(conn and (conn.provider or "") == "manual_statement")
+        limit = (float(bal_acct.current_balance or 0) + float(bal_acct.available_balance)) if bal_acct.available_balance is not None else None
+        cards.append({
+            "name": (conn.institution_name if manual and conn else None) or bal_acct.name or "Card",
+            "institution": conn.institution_name if conn else "",
+            "mask": mask,
+            "account_ids": txn_accts,
+            "balance": round(float(bal_acct.current_balance or 0), 2),
+            "credit_limit": round(limit, 2) if limit is not None else None,
+            "available": round(float(bal_acct.available_balance), 2) if bal_acct.available_balance is not None else None,
+            "utilization_pct": round(100 * float(bal_acct.current_balance or 0) / limit, 1) if limit else None,
+            "feed": "statement import" if manual else "live bank feed",
+            "balance_as_of": (bal_acct.last_synced_at.date().isoformat() if bal_acct.last_synced_at else None),
+            "charges": round(charges, 2), "payments": round(payments, 2), "refunds": round(refunds, 2),
+            "interest": round(interest, 2), "fees": round(fees, 2),
+            "transactions": len(rows),
+            "monthly_charges": [{"month": k, "amount": round(v, 2)} for k, v in sorted(monthly.items())],
+        })
+    cards.sort(key=lambda c: -c["balance"])
+    tot = {k: round(sum(c[k] for c in cards), 2) for k in ("balance", "charges", "payments", "refunds", "interest", "fees")}
+    return {"period": {"start": s.isoformat(), "end": e.isoformat()}, "cards": cards, "totals": tot}
+
+
 @app.get("/accounting/balance-sheet")
 def accounting_balance_sheet(
     db: Session = Depends(get_db),
@@ -7395,21 +7488,7 @@ def accounting_balance_sheet(
     # A duplicate-feed account (registered superseded for TRANSACTIONS) may still carry the
     # freshest BALANCE for the same real account, so it competes on recency — but only when
     # it matches a business account's mask + type (never a personal account like 0273).
-    from .plaid_integration import _superseded_account_ids
-    _sup = _superseded_account_ids(db)
-    _key = lambda a: (a.mask or a.account_id, (a.type or "").lower())  # noqa: E731
-    _biz = [a for a in db.scalars(select(BankAccount).where(BankAccount.is_business.is_(True))).all()]
-    _biz_keys = {_key(a) for a in _biz}
-    _dups = [a for a in db.scalars(select(BankAccount).where(BankAccount.account_id.in_(_sup))).all()
-             if _key(a) in _biz_keys] if _sup else []
-    _latest: dict[tuple, BankAccount] = {}
-    for acct in [*_biz, *_dups]:
-        if acct.current_balance is None:
-            continue
-        key = _key(acct)
-        prev = _latest.get(key)
-        if prev is None or (acct.last_synced_at or datetime.min) > (prev.last_synced_at or datetime.min):
-            _latest[key] = acct
+    _latest = _latest_balance_accounts(db)
     cash = sum(float(a.current_balance or 0.0) for (_m, t), a in _latest.items() if t == "depository")
     credit_card_debt = sum(float(a.current_balance or 0.0) for (_m, t), a in _latest.items() if t == "credit")
     ar = float(db.scalar(
@@ -7852,7 +7931,19 @@ def list_sources(
             q_ = q_.where(BankTransaction.id.in_([int(x) for x in ids.split(",") if x.strip().isdigit()]))
         if s_d: q_ = q_.where(BankTransaction.posted_date >= s_d)
         if e_d: q_ = q_.where(BankTransaction.posted_date <= e_d)
-        if account_id: q_ = q_.where(BankTransaction.account_id == account_id)
+        if account_id:  # comma-separated = any of these accounts
+            q_ = q_.where(BankTransaction.account_id.in_([x.strip() for x in account_id.split(",") if x.strip()]))
+        if bucket:  # credit-card buckets, same rules as /accounting/credit-cards
+            _nm = func.upper(BankTransaction.name)
+            _int, _fee = _nm.like("%INTEREST%"), _nm.like("%FEE%")
+            _pay = or_(*[_nm.like(f"%{w}%") for w in CARD_PAYMENT_WORDS])
+            q_ = q_.where({
+                "interest": and_(BankTransaction.amount < 0, _int),
+                "fees": and_(BankTransaction.amount < 0, ~_int, _fee),
+                "charges": and_(BankTransaction.amount < 0, ~_int, ~_fee),
+                "payments": and_(BankTransaction.amount > 0, _pay),
+                "refunds": and_(BankTransaction.amount > 0, ~_pay),
+            }.get(bucket, true()))
         if category:  # comma-separated = match ANY
             q_ = q_.where(or_(*[BankTransaction.category_json.ilike(f"%{c.strip()}%") for c in category.split(",") if c.strip()]))
         if q: q_ = q_.where(BankTransaction.name.ilike(f"%{q}%"))
