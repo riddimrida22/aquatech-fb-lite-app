@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../../lib/api";
+import { SourceLink } from "./SourceDrawer";
 
 export type ProjectMemberOut = {
   id: number;
@@ -203,7 +204,7 @@ export function TeamPanel({ projectId, canManage, staffOptions, onChange }: Team
             {members.map((m) => (
               <tr key={m.id}>
                 <td>
-                  <strong>{m.user_name}</strong>
+                  <strong><SourceLink title={`${m.user_name} · time on this project`} query={{ kind: "time_entries", project_id: m.project_id, user_id: m.user_id }}>{m.user_name}</SourceLink></strong>
                   <div style={{ fontSize: 10, color: "var(--aq-muted)" }}>{m.user_email}</div>
                 </td>
                 <td>

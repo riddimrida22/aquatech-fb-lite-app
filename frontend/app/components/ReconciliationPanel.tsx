@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { apiGet, apiPost } from "../../lib/api";
+import { SourceLink } from "./SourceDrawer";
 
 type SourceCount = { source: string; count: number };
 type DupCandidate = {
@@ -62,6 +63,19 @@ type ActiveOpex = {
   count: number;
   total: number;
   items: ActiveOpexItem[];
+};
+
+// Description substrings the backend full-report uses to bucket each inflow (first match wins there).
+// "other" is a catch-all with no single filter, so it is not linked.
+const INFLOW_NAME_MATCH: Record<string, string> = {
+  boc_factoring: "BOC CAPITAL",
+  owner_contrib_transfer: "ONLINE TRANSFER FROM CHK",
+  owner_contrib_zelle: "ZELLE PAYMENT FROM BERTRAND",
+  cc_payment_thank_you: "PAYMENT THANK YOU",
+  client_rtp: "REAL TIME PAYMENT",
+  client_wire: "FEDWIRE",
+  fundbox_draw: "FUNDBOX",
+  stripe: "STRIPE",
 };
 
 const fmt$ = (n: number) =>
@@ -286,7 +300,11 @@ export function ReconciliationPanel() {
                 {bt.duplicate_candidates_sample.map((d) => (
                   <tr key={d.csv_id} style={{ borderBottom: "1px solid var(--aq-border)" }}>
                     <td style={{ padding: 4 }}>{d.date}</td>
-                    <td style={{ padding: 4, textAlign: "right" }}>{fmt$(d.amount)}</td>
+                    <td style={{ padding: 4, textAlign: "right" }}>
+                      <SourceLink title={`Duplicate candidate pair · ${d.date}`} query={{ kind: "bank_transactions", ids: `${d.csv_id},${d.plaid_id}` }}>
+                        {fmt$(d.amount)}
+                      </SourceLink>
+                    </td>
                     <td style={{ padding: 4 }}>{d.csv_name}</td>
                     <td style={{ padding: 4 }}>{d.plaid_name}</td>
                   </tr>
@@ -404,7 +422,11 @@ function FullReportSection({
                 {activeOpex.items.map((item) => (
                   <tr key={item.id} style={{ borderBottom: "1px solid var(--aq-border)" }}>
                     <td style={{ padding: 4 }}>{item.date}</td>
-                    <td style={{ padding: 4, textAlign: "right", fontWeight: 600 }}>{fmt$(item.amount)}</td>
+                    <td style={{ padding: 4, textAlign: "right", fontWeight: 600 }}>
+                      <SourceLink title={`Active OPEX transaction · ${item.date}`} query={{ kind: "bank_transactions", ids: String(item.id) }}>
+                        {fmt$(item.amount)}
+                      </SourceLink>
+                    </td>
                     <td style={{ padding: 4, fontSize: 10 }}>
                       <code>{item.source}</code>
                       {item.promoted_from_personal ? (
@@ -434,7 +456,16 @@ function FullReportSection({
               .map(([k, v]) => (
                 <tr key={k} style={{ borderBottom: "1px solid var(--aq-border)" }}>
                   <td style={{ padding: 4 }}>{inflowLabels[k] || k}</td>
-                  <td style={{ padding: 4, textAlign: "right" }}>{fmt$(v)}</td>
+                  <td style={{ padding: 4, textAlign: "right" }}>
+                    {INFLOW_NAME_MATCH[k] ? (
+                      <SourceLink
+                        title={`${inflowLabels[k] || k} · ${report.period.start} -> ${report.period.end}`}
+                        query={{ kind: "bank_transactions", start: report.period.start, end: report.period.end, q: INFLOW_NAME_MATCH[k], direction: "in" }}
+                      >
+                        {fmt$(v)}
+                      </SourceLink>
+                    ) : fmt$(v)}
+                  </td>
                 </tr>
               ))}
           </tbody>

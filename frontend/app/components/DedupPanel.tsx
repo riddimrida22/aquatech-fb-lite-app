@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
 import { GroupedList } from "./GroupedList";
+import { SourceLink } from "./SourceDrawer";
 
 type MatchedRow = {
   fb_id: number;
@@ -172,7 +173,11 @@ export function DedupPanel() {
               <span style={{ fontSize: 10 }}>
                 <span className="aq-lite-badge aq-lite-badge-warn">{r.category || "—"}</span>
               </span>
-              <span style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(r.amount_abs)}</span>
+              <span style={{ textAlign: "right", fontWeight: 600 }}>
+                <SourceLink title={`Unmatched FB expense · ${r.posted_date}`} query={{ kind: "bank_transactions", ids: String(r.fb_id) }}>
+                  {formatCurrency(r.amount_abs)}
+                </SourceLink>
+              </span>
             </div>
           )}
           initiallyOpen="first"
@@ -205,7 +210,11 @@ export function DedupPanel() {
                 {data.matched_sample.map((r, i) => (
                   <tr key={`${r.fb_id}-${r.chase_id}-${i}`}>
                     <td>{r.fb_date}</td>
-                    <td style={{ textAlign: "right" }}>{formatCurrency(r.amount_abs)}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <SourceLink title={`FB / Chase duplicate pair · ${r.fb_date}`} query={{ kind: "bank_transactions", ids: `${r.fb_id},${r.chase_id}` }}>
+                        {formatCurrency(r.amount_abs)}
+                      </SourceLink>
+                    </td>
                     <td style={{ fontSize: 11, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {r.fb_description}
                     </td>

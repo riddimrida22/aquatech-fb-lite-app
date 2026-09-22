@@ -5,7 +5,12 @@ import { useEffect, useRef } from "react";
 type SortDirection = "asc" | "desc";
 type SortState = { columnIndex: number; direction: SortDirection };
 
-const TABLE_SELECTOR = ".aq-main-pane table:not([data-disable-table-sort='true'])";
+// The main content pane is `.aq-lite-main` (it was `.aq-main-pane` before the redesign;
+// the old selector matched nothing, so no table sorted). Also covers tables inside
+// slide-out drawers (role=dialog), e.g. the source-records drawer.
+const TABLE_SELECTOR = [".aq-lite-main", ".aq-main-pane", "[role='dialog']"]
+  .map((root) => `${root} table:not([data-disable-table-sort='true'])`)
+  .join(", ");
 const DISABLED_HEADER_ATTR = "data-disable-sort";
 
 function parseCellValue(raw: string): { kind: "number" | "date" | "text"; value: number | string } {

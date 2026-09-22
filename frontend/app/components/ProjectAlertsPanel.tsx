@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
+import { SourceLink } from "./SourceDrawer";
 
 type Proj = {
   project_id: number;
@@ -47,6 +48,15 @@ function burnColor(pct: number | null): string {
   return GREEN;
 }
 
+// Last work date counted as stale: backend uses work_date < (as_of - stale_days); /sources end is inclusive.
+function staleEnd(asOf: string | undefined, staleDays: number): string | undefined {
+  if (!asOf) return undefined;
+  const d = new Date(`${asOf.slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return undefined;
+  d.setUTCDate(d.getUTCDate() - staleDays - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function ProjectAlertsPanel() {
   const [data, setData] = useState<AlertsResp | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,6 +72,7 @@ export default function ProjectAlertsPanel() {
   useEffect(() => { load(); }, [load]);
 
   const t = data?.totals;
+  const staleTo = staleEnd(data?.as_of, data?.stale_days ?? 45);
   const flagged = data?.projects.filter((p) => p.flags.length) ?? [];
 
   return (
@@ -103,7 +114,7 @@ export default function ProjectAlertsPanel() {
               <tbody>
                 {data!.projects.map((p) => (
                   <tr key={p.project_id}>
-                    <td>{p.project}</td>
+                    <td><SourceLink title={`${p.project} · all time`} query={{ kind: "time_entries", project_id: p.project_id }}>{p.project}</SourceLink></td>
                     <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(p.budget_fee)}</td>
                     <td>
                       {p.burn_pct == null ? <span className="aq-lite-muted">—</span> : (
@@ -115,10 +126,10 @@ export default function ProjectAlertsPanel() {
                         </div>
                       )}
                     </td>
-                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(p.unbilled_wip)}</td>
-                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: p.stale_wip > 0 ? RED : "inherit" }}>{p.stale_wip > 0 ? money(p.stale_wip) : "—"}</td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`${p.project} · unbilled WIP`} query={{ kind: "time_entries", project_id: p.project_id, unbilled: true }}>{money(p.unbilled_wip)}</SourceLink></td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: p.stale_wip > 0 ? RED : "inherit" }}>{p.stale_wip > 0 ? <SourceLink title={`${p.project} · stale WIP · through ${staleTo ?? "-"}`} query={{ kind: "time_entries", project_id: p.project_id, unbilled: true, end: staleTo }}>{money(p.stale_wip)}</SourceLink> : "—"}</td>
                     <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }} className="aq-lite-muted">
-                      {p.days_since_last_invoice == null ? "never" : `${p.days_since_last_invoice}d ago`}
+                      {p.days_since_last_invoice == null ? "never" : <SourceLink title={`${p.project} · invoices`} query={{ kind: "invoices", project_id: p.project_id }}>{`${p.days_since_last_invoice}d ago`}</SourceLink>}
                     </td>
                     <td>
                       {p.flags.length === 0 ? <span className="aq-lite-muted">—</span> : p.flags.map((f) => {

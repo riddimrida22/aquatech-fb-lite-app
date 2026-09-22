@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency, formatNumber } from "./workspaceShared";
+import { SourceLink } from "./SourceDrawer";
 
 type AccrualRow = {
   user_id: number;
@@ -58,6 +59,10 @@ export function SalaryAccrualPanel() {
 
   const total = data.totals.accrued_balance;
   const num = (n: number) => formatCurrency(n);
+  const yStart = `${data.year}-01-01`;
+  const yEnd = `${data.year}-12-31`;
+  const span = `${yStart} -> ${yEnd}`;
+  const tq = (userId: number) => ({ kind: "time_entries" as const, user_id: userId, start: yStart, end: yEnd });
 
   return (
     <section className="aq-lite-panel">
@@ -95,7 +100,7 @@ export function SalaryAccrualPanel() {
               return (
                 <tr key={r.user_id} style={{ borderTop: "1px solid rgba(128,128,128,0.14)" }}>
                   <td style={{ textAlign: "left", padding: "7px 4px", fontWeight: 600 }}>
-                    {r.name}
+                    <SourceLink title={`${r.name} · time · ${span}`} query={tq(r.user_id)}>{r.name}</SourceLink>
                     {flag ? (
                       <span
                         title={[!r.rate_known ? "no pay rate on file" : "", !r.payroll_matched ? "no payroll match found" : ""].filter(Boolean).join("; ")}
@@ -106,8 +111,8 @@ export function SalaryAccrualPanel() {
                   <td style={{ textAlign: "right", padding: "7px 4px", color: "var(--aq-muted)" }}>
                     {r.rate_known ? `$${formatNumber(r.hourly_rate, 2)}` : "—"}
                   </td>
-                  <td style={{ textAlign: "right", padding: "7px 4px" }}>{formatNumber(r.hours, 1)}</td>
-                  <td style={{ textAlign: "right", padding: "7px 4px" }}>{num(r.earned)}</td>
+                  <td style={{ textAlign: "right", padding: "7px 4px" }}><SourceLink title={`${r.name} · hours logged · ${span}`} query={tq(r.user_id)}>{formatNumber(r.hours, 1)}</SourceLink></td>
+                  <td style={{ textAlign: "right", padding: "7px 4px" }}><SourceLink title={`${r.name} · hours behind earned (x pay rate) · ${span}`} query={tq(r.user_id)}>{num(r.earned)}</SourceLink></td>
                   <td
                     style={{ textAlign: "right", padding: "7px 4px", color: "var(--aq-muted)" }}
                     title={r.adjustments > 0.01 ? `${num(r.paid_gross)} payroll + ${num(r.adjustments)} non-payroll comp` : undefined}

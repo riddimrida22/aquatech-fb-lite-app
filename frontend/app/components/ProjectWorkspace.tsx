@@ -16,6 +16,7 @@ import { StatusBadge } from "./StatusBadge";
 import { DetailDrawer } from "./DetailDrawer";
 import { GroupedList } from "./GroupedList";
 import { TeamPanel, StaffOption } from "./TeamPanel";
+import { SourceLink } from "./SourceDrawer";
 import { apiPatch } from "../../lib/api";
 
 const LIFECYCLE_OPTIONS: { value: ProjectLifecycleStatus; label: string }[] = [
@@ -217,16 +218,16 @@ export function ProjectWorkspace({
                     title="Click to open project detail"
                   >
                     <td>
-                      <strong>{project.name}</strong>
+                      <strong><SourceLink title={`${project.name} · time entries`} query={{ kind: "time_entries", project_id: project.id }}>{project.name}</SourceLink></strong>
                     </td>
-                    <td>{project.client_name || "—"}</td>
+                    <td>{project.client_name ? <SourceLink title={`${project.client_name} · invoices`} query={{ kind: "invoices", client: project.client_name }}>{project.client_name}</SourceLink> : "—"}</td>
                     <td>
                       <StatusBadge status={statusLabel(project)} />
                     </td>
-                    <td style={{ textAlign: "right" }}>{formatNumber(hours, 1)}</td>
-                    <td style={{ textAlign: "right" }}>{formatCurrency(revenue)}</td>
+                    <td style={{ textAlign: "right" }}><SourceLink title={`${project.name} · hours`} query={{ kind: "time_entries", project_id: project.id }}>{formatNumber(hours, 1)}</SourceLink></td>
+                    <td style={{ textAlign: "right" }}><SourceLink title={`${project.name} · invoices`} query={{ kind: "invoices", project_id: project.id }}>{formatCurrency(revenue)}</SourceLink></td>
                     <td style={{ textAlign: "right", color: cost > 0 ? "var(--aq-muted)" : undefined }}>
-                      {formatCurrency(cost)}
+                      <SourceLink title={`${project.name} · labor cost (time entries)`} query={{ kind: "time_entries", project_id: project.id }}>{formatCurrency(cost)}</SourceLink>
                     </td>
                     <td
                       style={{
@@ -243,7 +244,7 @@ export function ProjectWorkspace({
                       {revenue > 0 ? formatPercent(margin) : "—"}
                     </td>
                     <td style={{ textAlign: "right", color: inv.outstanding > 0 ? "var(--aq-red)" : undefined }}>
-                      {inv.outstanding > 0 ? formatCurrency(inv.outstanding) : inv.count > 0 ? "—" : ""}
+                      {inv.outstanding > 0 ? <SourceLink title={`${project.name} · open A/R`} query={{ kind: "invoices", project_id: project.id, open_only: true }}>{formatCurrency(inv.outstanding)}</SourceLink> : inv.count > 0 ? "—" : ""}
                     </td>
                   </tr>
                 );

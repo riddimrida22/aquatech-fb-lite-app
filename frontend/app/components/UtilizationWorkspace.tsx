@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
+import { SourceLink } from "./SourceDrawer";
 
 type UtilRow = {
   user_id: number;
@@ -65,6 +66,10 @@ export default function UtilizationWorkspace() {
   useEffect(() => { load(); }, [load]);
 
   const t = data?.totals;
+  const ps = data?.period.start ?? start;
+  const pe = data?.period.end ?? end;
+  const span = `${ps} -> ${pe}`;
+  const tq = (extra: Record<string, string | number | boolean> = {}) => ({ kind: "time_entries" as const, start: ps, end: pe, ...extra });
 
   return (
     <section className="aq-lite-panel" style={{ borderLeft: `3px solid ${GOLD}` }}>
@@ -119,7 +124,7 @@ export default function UtilizationWorkspace() {
               <tbody>
                 {data!.rows.map((r) => (
                   <tr key={r.user_id}>
-                    <td>{r.name}</td>
+                    <td><SourceLink title={`${r.name} · time · ${span}`} query={tq({ user_id: r.user_id })}>{r.name}</SourceLink></td>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <div style={{ flex: 1, height: 8, background: "rgba(128,128,128,0.2)", borderRadius: 4, overflow: "hidden", minWidth: 70 }}>
@@ -128,11 +133,11 @@ export default function UtilizationWorkspace() {
                         <span style={{ fontVariantNumeric: "tabular-nums", color: utilColor(r.utilization_pct), fontWeight: 600, minWidth: 46, textAlign: "right" }}>{pct(r.utilization_pct)}</span>
                       </div>
                     </td>
-                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{r.billable_hours.toLocaleString()} / {r.total_hours.toLocaleString()}</td>
-                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(r.billable_value)}</td>
-                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(r.labor_cost)}</td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`${r.name} · billable hours · ${span}`} query={tq({ user_id: r.user_id, billable: true })}>{r.billable_hours.toLocaleString()}</SourceLink> / <SourceLink title={`${r.name} · all hours · ${span}`} query={tq({ user_id: r.user_id })}>{r.total_hours.toLocaleString()}</SourceLink></td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`${r.name} · billable time · ${span}`} query={tq({ user_id: r.user_id, billable: true })}>{money(r.billable_value)}</SourceLink></td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`${r.name} · loaded cost (client time) · ${span}`} query={tq({ user_id: r.user_id, overhead: false })}>{money(r.labor_cost)}</SourceLink></td>
                     <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: r.margin >= 0 ? GREEN : RED }}>{money(r.margin)} <span className="aq-lite-muted">({pct(r.margin_pct)})</span></td>
-                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(r.unbilled_value)}</td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`${r.name} · unbilled time · ${span}`} query={tq({ user_id: r.user_id, unbilled: true })}>{money(r.unbilled_value)}</SourceLink></td>
                   </tr>
                 ))}
               </tbody>
@@ -140,11 +145,11 @@ export default function UtilizationWorkspace() {
                 <tr style={{ fontWeight: 700, borderTop: "2px solid rgba(128,128,128,0.4)" }}>
                   <td>Firm total</td>
                   <td style={{ color: utilColor(t.utilization_pct) }}>{pct(t.utilization_pct)}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{t.billable_hours.toLocaleString()} / {t.total_hours.toLocaleString()}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(t.billable_value)}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(t.labor_cost)}</td>
+                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`Firm · billable hours · ${span}`} query={tq({ billable: true })}>{t.billable_hours.toLocaleString()}</SourceLink> / <SourceLink title={`Firm · all hours · ${span}`} query={tq()}>{t.total_hours.toLocaleString()}</SourceLink></td>
+                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`Firm · billable time · ${span}`} query={tq({ billable: true })}>{money(t.billable_value)}</SourceLink></td>
+                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`Firm · loaded cost (client time) · ${span}`} query={tq({ overhead: false })}>{money(t.labor_cost)}</SourceLink></td>
                   <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: t.margin >= 0 ? GREEN : RED }}>{money(t.margin)}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{money(t.unbilled_value)}</td>
+                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}><SourceLink title={`Firm · unbilled time · ${span}`} query={tq({ unbilled: true })}>{money(t.unbilled_value)}</SourceLink></td>
                 </tr>
               </tfoot>
             </table>

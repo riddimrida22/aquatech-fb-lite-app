@@ -5,6 +5,8 @@ import { apiGet } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
 import { LoansPanel } from "./LoansPanel";
 import { DetailDrawer } from "./DetailDrawer";
+import { SourceLink } from "./SourceDrawer";
+
 
 type PL = {
   period: { start: string; end: string };
@@ -193,7 +195,7 @@ function PLView({ start, end }: { start: string; end: string }) {
         </div>
       </div>
 
-      <table className="aq-lite-table">
+      <table className="aq-lite-table" data-disable-table-sort="true">
         <tbody>
           <tr style={{ cursor: "pointer" }} onClick={() => setDrill({ kind: "revenue", value: "Revenue — paid invoices" })}
               title="Click to see the invoices behind this">
@@ -368,26 +370,26 @@ function CashflowView({ start, end }: { start: string; end: string }) {
           <h3>{cf.period.start} → {cf.period.end}</h3>
         </div>
       </div>
-      <table className="aq-lite-table">
+      <table className="aq-lite-table" data-disable-table-sort="true">
         <tbody>
           <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}>
             <td>Operating activities</td>
             <td></td><td></td>
           </tr>
-          <tr><td>&nbsp;&nbsp;Cash in — invoices paid</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.operating.cash_in_invoices)}</td><td></td></tr>
+          <tr><td>&nbsp;&nbsp;Cash in — invoices paid</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}><SourceLink title={`Invoices paid · ${cf.period.start} -> ${cf.period.end}`} query={{ kind: "invoices", date_field: "paid", start: cf.period.start, end: cf.period.end }}>{formatCurrency(cf.operating.cash_in_invoices)}</SourceLink></td><td></td></tr>
           <tr><td>&nbsp;&nbsp;Cash out — OPEX + payroll cash</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.operating.cash_out_opex_and_payroll)})</td><td></td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Net operating cash flow</td><td style={{ textAlign: "right", color: cf.operating.net >= 0 ? "var(--aq-green)" : "var(--aq-red)" }}>{formatCurrency(cf.operating.net)}</td><td></td></tr>
           <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td>Investing activities</td><td></td><td></td></tr>
           <tr><td>&nbsp;&nbsp;Capex</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.investing.capex)})</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>{cf.investing.note}</td></tr>
           <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td>Financing activities</td><td></td><td></td></tr>
           {cf.financing.loan_proceeds_boc !== undefined && cf.financing.loan_proceeds_boc > 0 ? (
-            <tr><td>&nbsp;&nbsp;Cash in — BOC factoring proceeds</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.financing.loan_proceeds_boc)}</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Working capital advances on factored invoices</td></tr>
+            <tr><td>&nbsp;&nbsp;Cash in — BOC factoring proceeds</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}><SourceLink title={`BOC Capital inflows · ${cf.period.start} -> ${cf.period.end}`} query={{ kind: "bank_transactions", start: cf.period.start, end: cf.period.end, q: "BOC CAPITAL", direction: "in" }}>{formatCurrency(cf.financing.loan_proceeds_boc)}</SourceLink></td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Working capital advances on factored invoices</td></tr>
           ) : null}
           {cf.financing.loan_proceeds_fundbox !== undefined && cf.financing.loan_proceeds_fundbox > 0 ? (
-            <tr><td>&nbsp;&nbsp;Cash in — FundBox draws</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.financing.loan_proceeds_fundbox)}</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>LOC draws</td></tr>
+            <tr><td>&nbsp;&nbsp;Cash in — FundBox draws</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}><SourceLink title={`FundBox inflows · ${cf.period.start} -> ${cf.period.end}`} query={{ kind: "bank_transactions", start: cf.period.start, end: cf.period.end, q: "FUNDBOX", direction: "in" }}>{formatCurrency(cf.financing.loan_proceeds_fundbox)}</SourceLink></td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>LOC draws</td></tr>
           ) : null}
           {cf.financing.owner_contributions !== undefined && cf.financing.owner_contributions > 0 ? (
-            <tr><td>&nbsp;&nbsp;Cash in — Owner contributions</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(cf.financing.owner_contributions)}</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Online transfers from 0273 + Zelle from BertrandAlbert</td></tr>
+            <tr><td>&nbsp;&nbsp;Cash in — Owner contributions</td><td style={{ textAlign: "right", color: "var(--aq-green)" }}><SourceLink title={`Owner contributions · ${cf.period.start} -> ${cf.period.end}`} query={{ kind: "owner_distributions", start: cf.period.start, end: cf.period.end, direction: "in" }}>{formatCurrency(cf.financing.owner_contributions)}</SourceLink></td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Transfers from 0273 + Zelle from BertrandAlbert</td></tr>
           ) : null}
           <tr><td>&nbsp;&nbsp;Cash out — Loan payments</td><td style={{ textAlign: "right" }}>({formatCurrency(cf.financing.loan_payments_total)})</td><td style={{ fontSize: 11, color: "var(--aq-muted)" }}>Principal + interest + fees</td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Net financing cash flow</td><td style={{ textAlign: "right", color: cf.financing.net >= 0 ? "var(--aq-green)" : "var(--aq-red)" }}>{formatCurrency(cf.financing.net)}</td><td></td></tr>
@@ -435,11 +437,11 @@ function BalanceView() {
         <article className="aq-lite-kpi"><span>Total liabilities</span><strong>{formatCurrency(b.liabilities.total)}</strong></article>
         <article className="aq-lite-kpi"><span>Equity (plug)</span><strong>{formatCurrency(b.equity)}</strong></article>
       </div>
-      <table className="aq-lite-table" style={{ marginTop: 12 }}>
+      <table className="aq-lite-table" style={{ marginTop: 12 }} data-disable-table-sort="true">
         <tbody>
           <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td colSpan={2}>Assets</td></tr>
           <tr><td>&nbsp;&nbsp;Cash</td><td style={{ textAlign: "right" }}>{formatCurrency(b.assets.cash)}</td></tr>
-          <tr><td>&nbsp;&nbsp;Accounts receivable</td><td style={{ textAlign: "right" }}>{formatCurrency(b.assets.accounts_receivable)}</td></tr>
+          <tr><td>&nbsp;&nbsp;Accounts receivable</td><td style={{ textAlign: "right" }}><SourceLink title={`Open invoices (A/R) · as of ${b.as_of}`} query={{ kind: "invoices", open_only: true }}>{formatCurrency(b.assets.accounts_receivable)}</SourceLink></td></tr>
           <tr style={{ fontWeight: 700 }}><td>&nbsp;&nbsp;Total assets</td><td style={{ textAlign: "right" }}>{formatCurrency(b.assets.total)}</td></tr>
           <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}><td colSpan={2}>Liabilities</td></tr>
           <tr><td>&nbsp;&nbsp;Loans outstanding</td><td style={{ textAlign: "right" }}>{formatCurrency(b.liabilities.loans_outstanding)}</td></tr>
@@ -448,7 +450,7 @@ function BalanceView() {
         </tbody>
       </table>
       {b.equity_rollforward ? (
-        <table className="aq-lite-table" style={{ marginTop: 12 }}>
+        <table className="aq-lite-table" style={{ marginTop: 12 }} data-disable-table-sort="true">
           <tbody>
             <tr style={{ background: "var(--aq-row-head)", fontWeight: 700 }}>
               <td>Changes in shareholder equity</td>
@@ -465,8 +467,10 @@ function BalanceView() {
               <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.net_income_accrual)}</td>
             </tr>
             <tr>
-              <td>&nbsp;&nbsp;Add: Owner capital contributions (cash)</td>
-              <td style={{ textAlign: "right" }}>{formatCurrency(b.equity_rollforward.owner_contributions)}</td>
+              <td>&nbsp;&nbsp;Add: Owner capital contributions (cash: 0273 transfers + Zelle)</td>
+              <td style={{ textAlign: "right" }}>
+                <SourceLink title={`Owner contributions · ${b.equity_rollforward.period.start} -> ${b.equity_rollforward.period.end}`} query={{ kind: "owner_distributions", start: b.equity_rollforward.period.start, end: b.equity_rollforward.period.end, direction: "in" }}>{formatCurrency(b.equity_rollforward.owner_contributions)}</SourceLink>
+              </td>
             </tr>
             {b.equity_rollforward.owner_paid_expenses ? (
               <tr>
@@ -484,21 +488,21 @@ function BalanceView() {
                 ) : <span style={{ display: "inline-block", width: 12 }} />}
                 Less: Shareholder distributions
               </td>
-              <td style={{ textAlign: "right", color: "var(--aq-danger, #b42318)" }}>({formatCurrency(b.equity_rollforward.distributions)})</td>
+              <td style={{ textAlign: "right", color: "var(--aq-danger, #b42318)" }}>(<SourceLink title={`Shareholder distributions (gross out) · ${b.equity_rollforward.period.start} -> ${b.equity_rollforward.period.end}`} query={{ kind: "owner_distributions", start: b.equity_rollforward.period.start, end: b.equity_rollforward.period.end, direction: "out" }}>{formatCurrency(b.equity_rollforward.distributions)}</SourceLink>)</td>
             </tr>
             {distOpen && b.equity_rollforward.distributions_detail ? (
               <>
                 <tr>
                   <td style={{ paddingLeft: 30, color: "var(--aq-muted)", fontSize: 12 }}>A · Cash transfers to personal account (net)</td>
-                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_detail.cash_to_personal_net)}</td>
+                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}><SourceLink title={`Cash transfers with 0273 · ${b.equity_rollforward.period.start} -> ${b.equity_rollforward.period.end}`} query={{ kind: "owner_distributions", start: b.equity_rollforward.period.start, end: b.equity_rollforward.period.end, bucket: "A:" }}>{formatCurrency(b.equity_rollforward.distributions_detail.cash_to_personal_net)}</SourceLink></td>
                 </tr>
                 <tr>
                   <td style={{ paddingLeft: 30, color: "var(--aq-muted)", fontSize: 12 }}>B · Personal costs paid by the business (Owner Draw)</td>
-                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_detail.owner_draw_spend)}</td>
+                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}><SourceLink title={`Owner Draw spend · ${b.equity_rollforward.period.start} -> ${b.equity_rollforward.period.end}`} query={{ kind: "owner_distributions", start: b.equity_rollforward.period.start, end: b.equity_rollforward.period.end, bucket: "B:" }}>{formatCurrency(b.equity_rollforward.distributions_detail.owner_draw_spend)}</SourceLink></td>
                 </tr>
                 <tr>
                   <td style={{ paddingLeft: 30, color: "var(--aq-muted)", fontSize: 12 }}>C · Transfers to personal brokerage (net)</td>
-                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}>{formatCurrency(b.equity_rollforward.distributions_detail.brokerage_net)}</td>
+                  <td style={{ textAlign: "right", color: "var(--aq-muted)", fontSize: 12 }}><SourceLink title={`Brokerage transfers · ${b.equity_rollforward.period.start} -> ${b.equity_rollforward.period.end}`} query={{ kind: "owner_distributions", start: b.equity_rollforward.period.start, end: b.equity_rollforward.period.end, bucket: "C:" }}>{formatCurrency(b.equity_rollforward.distributions_detail.brokerage_net)}</SourceLink></td>
                 </tr>
                 <tr>
                   <td style={{ paddingLeft: 30, fontSize: 12 }}>Gross out · less contributions {formatCurrency(b.equity_rollforward.distributions_detail.returned_in)}</td>

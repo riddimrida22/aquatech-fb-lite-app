@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency, formatNumber } from "./workspaceShared";
 import { GroupedList } from "./GroupedList";
+import { SourceLink } from "./SourceDrawer";
 
 type RollforwardRow = {
   year: number;
@@ -147,10 +148,26 @@ export function TransfersPanel() {
             {yearRows.map((r) => (
               <tr key={r.year}>
                 <td><strong>{r.year}</strong></td>
-                <td style={{ textAlign: "right" }}>{r.count.toLocaleString()}</td>
-                <td style={{ textAlign: "right", color: "var(--aq-red)" }}>{formatCurrency(r.out)}</td>
-                <td style={{ textAlign: "right", color: "var(--aq-green)" }}>{formatCurrency(r.in)}</td>
-                <td style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(r.net)}</td>
+                <td style={{ textAlign: "right" }}>
+                  <SourceLink title={`Transfer-category transactions · ${r.year}-01-01 -> ${r.year}-12-31`} query={{ kind: "bank_transactions", start: `${r.year}-01-01`, end: `${r.year}-12-31`, category: "transfer,owner draw,owner contribution,loan payment,due to,due from,shareholder,internal" }}>
+                    {r.count.toLocaleString()}
+                  </SourceLink>
+                </td>
+                <td style={{ textAlign: "right", color: "var(--aq-red)" }}>
+                  <SourceLink title={`Transfer-category outflows · ${r.year}-01-01 -> ${r.year}-12-31`} query={{ kind: "bank_transactions", start: `${r.year}-01-01`, end: `${r.year}-12-31`, category: "transfer,owner draw,owner contribution,loan payment,due to,due from,shareholder,internal", direction: "out" }}>
+                    {formatCurrency(r.out)}
+                  </SourceLink>
+                </td>
+                <td style={{ textAlign: "right", color: "var(--aq-green)" }}>
+                  <SourceLink title={`Transfer-category inflows · ${r.year}-01-01 -> ${r.year}-12-31`} query={{ kind: "bank_transactions", start: `${r.year}-01-01`, end: `${r.year}-12-31`, category: "transfer,owner draw,owner contribution,loan payment,due to,due from,shareholder,internal", direction: "in" }}>
+                    {formatCurrency(r.in)}
+                  </SourceLink>
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 600 }}>
+                  <SourceLink title={`Transfer-category net · ${r.year}-01-01 -> ${r.year}-12-31`} query={{ kind: "bank_transactions", start: `${r.year}-01-01`, end: `${r.year}-12-31`, category: "transfer,owner draw,owner contribution,loan payment,due to,due from,shareholder,internal" }}>
+                    {formatCurrency(r.net)}
+                  </SourceLink>
+                </td>
                 <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(r.cumulative)}</td>
               </tr>
             ))}
@@ -245,7 +262,11 @@ export function TransfersPanel() {
               <span style={{ fontSize: 10 }}>
                 <span className="aq-lite-badge aq-lite-badge-warn">{it.category || "—"}</span>
               </span>
-              <span style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(it.amount)}</span>
+              <span style={{ textAlign: "right", fontWeight: 600 }}>
+                <SourceLink title={`Bank transaction · ${it.posted_date || "no date"}`} query={{ kind: "bank_transactions", ids: String(it.id) }}>
+                  {formatCurrency(it.amount)}
+                </SourceLink>
+              </span>
               <span style={{ fontSize: 11, fontWeight: 600, textAlign: "right" }}>
                 {it.amount < 0 ? (
                   <span style={{ color: "var(--aq-red)" }}>OUT</span>

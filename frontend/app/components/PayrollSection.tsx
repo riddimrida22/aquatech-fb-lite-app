@@ -1,5 +1,7 @@
 "use client";
 
+import { SourceLink } from "./SourceDrawer";
+
 type PayrollUser = {
   id: number;
   email: string;
@@ -120,7 +122,16 @@ export function PayrollSection({
               return (
                 <tr key={`payroll-period-${u.user_id}`}>
                   <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{u.employee || u.email}</td>
-                  <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{Number(u.hours || 0).toFixed(2)}</td>
+                  <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>
+                    {payrollHoursReport?.selected_period_start && payrollHoursReport?.selected_period_end ? (
+                      <SourceLink
+                        title={`Hours - ${u.employee || u.email} - ${payrollHoursReport.selected_period_start} to ${payrollHoursReport.selected_period_end}`}
+                        query={{ kind: "time_entries", user_id: u.user_id, start: payrollHoursReport.selected_period_start, end: payrollHoursReport.selected_period_end }}
+                      >
+                        {Number(u.hours || 0).toFixed(2)}
+                      </SourceLink>
+                    ) : Number(u.hours || 0).toFixed(2)}
+                  </td>
                   <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{costRate !== null || billRate !== null ? "Rate configured" : "Missing rate"}</td>
                   <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{costRate !== null ? formatCurrency(costRate) : "-"}</td>
                   <td style={{ borderBottom: "1px solid #eee", padding: 6 }}>{billRate !== null ? formatCurrency(billRate) : "-"}</td>

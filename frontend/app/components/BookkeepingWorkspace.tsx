@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
+import { SourceLink } from "./SourceDrawer";
 
 type BookkeepingAction = {
   id: number;
@@ -269,7 +270,11 @@ export function BookkeepingWorkspace() {
                     <tr key={o.id} style={{ borderBottom: "1px solid #f1f5f9", verticalAlign: "top" }}>
                       <td style={{ padding: "8px 4px" }}>{o.posted_date ?? "—"}</td>
                       <td style={{ padding: "8px 4px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                        {o.amount !== null ? formatCurrency(o.amount) : "—"}
+                        {o.amount !== null && o.bank_transaction_id != null ? (
+                          <SourceLink title={`Overridden bank transaction · ${o.posted_date ?? "no date"}`} query={{ kind: "bank_transactions", ids: String(o.bank_transaction_id) }}>
+                            {formatCurrency(o.amount)}
+                          </SourceLink>
+                        ) : o.amount !== null ? formatCurrency(o.amount) : "—"}
                       </td>
                       <td style={{ padding: "8px 4px", color: "#374151" }}>
                         {o.name?.slice(0, 80) ?? `bt#${o.bank_transaction_id ?? "?"}`}
