@@ -70,7 +70,8 @@ export function CreditCardsPanel() {
   const pe = data?.period.end ?? end;
   const span = `${ps} -> ${pe}`;
   const tx = (c: Card, bucket?: string) => ({
-    kind: "bank_transactions" as const, start: ps, end: pe, account_id: c.account_ids.join(","), ...(bucket ? { bucket } : {}),
+    // scope "all": every row on the card, incl. personal charges put on a business card
+    kind: "bank_transactions" as const, start: ps, end: pe, account_id: c.account_ids.join(","), scope: "all", ...(bucket ? { bucket } : {}),
   });
   const cell = (c: Card, v: number, bucket: string, label: string, color?: string) => (
     <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color }}>
