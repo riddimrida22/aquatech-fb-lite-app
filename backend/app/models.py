@@ -689,6 +689,19 @@ class WinLossReview(Base):
     reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class DataHealthRun(Base):
+    """One run of the nightly data-health audit (freshness + calculation cross-checks).
+    results_json holds the per-check list; status is the worst check (ok / warn / fail)."""
+    __tablename__ = "data_health_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="nightly")
+    status: Mapped[str] = mapped_column(String(8), default="ok")
+    summary: Mapped[str] = mapped_column(String(255), default="")
+    results_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
 class AppSetting(Base):
     """Key/value store for admin-toggleable app settings (feature switches).
 
