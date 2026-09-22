@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
+import { SourceLink } from "./SourceDrawer";
 
 type CatGroup = { group: string; categories: string[] };
 type QueueRow = {
@@ -204,7 +205,11 @@ export function CategorizationWorkspace() {
                     <div style={{ fontWeight: 600 }}>{r.merchant_name || "—"}</div>
                     <div style={{ fontSize: 11, color: "var(--aq-muted)", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.description}</div>
                   </td>
-                  <td style={{ textAlign: "right", whiteSpace: "nowrap", color: r.amount < 0 ? "inherit" : "var(--aq-green)" }}>{formatCurrency(Math.abs(r.amount))}</td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap", color: r.amount < 0 ? "inherit" : "var(--aq-green)" }}>
+                    <SourceLink title={`Bank transaction · ${r.posted_date || "no date"}`} query={{ kind: "bank_transactions", ids: String(id) }}>
+                      {formatCurrency(Math.abs(r.amount))}
+                    </SourceLink>
+                  </td>
                   <td style={{ fontSize: 12, color: "var(--aq-muted)", whiteSpace: "nowrap" }}>{r.account_name || "—"}</td>
                   <td>
                     <select value={sel} onChange={(e) => setPending((p) => ({ ...p, [id]: e.target.value }))} style={{ minWidth: 200 }}>

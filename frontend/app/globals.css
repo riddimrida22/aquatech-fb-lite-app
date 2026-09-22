@@ -1367,3 +1367,22 @@ table th.aq-sortable-header.aq-sortable-desc::after {
   color: #f7e4bd;
 }
 [data-theme="dark"] .aq-freshness--stale .aq-freshness-label { color: #e9cf9a; }
+
+/* ---------- Clickable figures that open their source records ---------- */
+button.aq-source-link {
+  all: unset;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border-bottom: 1px dotted currentColor;
+  line-height: inherit;
+}
+button.aq-source-link:hover {
+  color: var(--aq-primary-dark);
+  border-bottom-style: solid;
+}
+button.aq-source-link:focus-visible {
+  outline: 2px solid #9db6d3;
+  outline-offset: 2px;
+  border-radius: 2px;
+}

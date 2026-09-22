@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPut } from "../../lib/api";
+import { SourceLink } from "./SourceDrawer";
 
 type Project = { id: number; name: string };
 type SubtaskRow = { subtask_id: number; subtask_name: string; code: string; task_id: number; task_name: string };
@@ -111,7 +112,7 @@ export default function HourEstimatesWorkspace() {
                 {subtasks.map((s) => (
                   <tr key={s.subtask_id}>
                     <td>
-                      <span className="aq-lite-muted" style={{ fontSize: 11 }}>{s.task_name}</span><br />
+                      <span className="aq-lite-muted" style={{ fontSize: 11 }}>{projectId != null ? <SourceLink title={`${s.task_name} · actual time logged`} query={{ kind: "time_entries", project_id: projectId, task_id: s.task_id }}>{s.task_name}</SourceLink> : s.task_name}</span><br />
                       {s.subtask_name}
                     </td>
                     {users.map((u) => {

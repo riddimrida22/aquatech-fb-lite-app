@@ -1543,6 +1543,17 @@ class InvoiceRenderContextOut(BaseModel):
 
 
 NOISE_WORDS = {"POS", "ONLINE", "PAYMENT", "DEBIT", "CREDIT", "CARD", "PURCHASE"}
+MONEY_MOVEMENT_CATEGORIES = (
+    "Credit Card Payment",        # paying down a company card (card account side and bank side)
+    "Internal Transfer",          # between the firm's own accounts
+    "Loan Payment",               # principal + interest on a loan / LOC
+    "Loan Proceeds / Advance",    # loan draws, factoring advances (BOC, Fundbox)
+    "Invoice Payment Received",   # client paying an invoice (revenue is booked from the invoice)
+    "Owner Contribution",         # owner putting money into the company
+    "Owner Distribution",         # company paying the owner (non-wage)
+    "Refund / Credit",            # vendor refunds, card credits
+)
+
 DEFAULT_EXPENSE_CATEGORY_MAP: dict[str, list[str]] = {
     "COGS": [
         "Labor",
@@ -1573,6 +1584,8 @@ DEFAULT_EXPENSE_CATEGORY_MAP: dict[str, list[str]] = {
         "Owner Draw",
         "Uncategorized",
     ],
+    # Money that moves but is neither income nor expense (never in the P&L).
+    "Money Movement": list(MONEY_MOVEMENT_CATEGORIES),
 }
 BANK_CATEGORY_KEYWORD_RULES: list[tuple[list[str], tuple[str, str, float]]] = [
     (["adobe", "microsoft", "google workspace", "quickbooks", "xero", "dropbox", "github", "notion", "slack", "zoom", "atlassian"], ("OH", "Software And Subscriptions", 0.94)),
@@ -1665,6 +1678,14 @@ CHART_OF_ACCOUNTS: dict[str, tuple[str, str]] = {
     "Equity Transfer In/Out (...6611 / ...0273)": ("OTHER", "Transfer"),
     "Owner Draw": ("OTHER", "Owner Draw"),
     "Uncategorized": ("OTHER", "Uncategorized"),
+    # Money movement — never income or expense
+    "Credit Card Payment": ("OTHER", "Transfer"),
+    "Internal Transfer": ("OTHER", "Transfer"),
+    "Loan Proceeds / Advance": ("OTHER", "Financing"),
+    "Invoice Payment Received": ("OTHER", "Revenue Receipt"),
+    "Owner Contribution": ("OTHER", "Owner Equity"),
+    "Owner Distribution": ("OTHER", "Owner Draw"),
+    "Refund / Credit": ("OTHER", "Refund"),
 }
 # Ordered display structure for the P&L / categorization UI.
 COA_INDIRECT_GROUPS = ["Admin / G&A", "Marketing", "Business Development"]
@@ -5487,10 +5508,10 @@ def accounting_utilization(
         """
         SELECT te.user_id, u.full_name,
           COALESCE(SUM(te.hours),0) AS total_hours,
-          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) THEN te.hours ELSE 0 END),0) AS billable_hours,
-          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billable_value,
+          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) AND NOT COALESCE(p.is_overhead,false) THEN te.hours ELSE 0 END),0) AS billable_hours,
+          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) AND NOT COALESCE(p.is_overhead,false) THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billable_value,
           COALESCE(SUM(CASE WHEN NOT COALESCE(p.is_overhead,false) THEN te.hours*COALESCE(te.cost_rate_applied,0) ELSE 0 END),0) AS labor_cost,
-          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) AND te.billed THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billed_value,
+          COALESCE(SUM(CASE WHEN te.is_billable AND COALESCE(p.is_billable,false) AND COALESCE(t.is_billable,false) AND NOT COALESCE(p.is_overhead,false) AND te.billed THEN te.hours*COALESCE(te.bill_rate_applied,0) ELSE 0 END),0) AS billed_value,
           COALESCE(SUM(CASE WHEN COALESCE(p.is_overhead,false) THEN te.hours ELSE 0 END),0) AS overhead_hours
         FROM time_entries te
         JOIN users u ON u.id=te.user_id
@@ -7164,7 +7185,7 @@ def _loan_is_receivable(loan: "Loan") -> bool:
 
 # Category labels (in category_json) that resolve to Owner Draw, and brokerage
 # merchant tokens — kept in sync with _OPEX_LABEL_SYNONYMS + PERSONAL_OVERRIDE_KEYWORDS.
-_OWNER_DRAW_CAT_LIKE = ("%owner draw%", "%personal travel%", "%personal meals%",
+_OWNER_DRAW_CAT_LIKE = ("%owner draw%", "%owner distribution%", "%personal travel%", "%personal meals%",
                         "%personal medical%", "%government and non profit%",
                         "%government_and_non_profit%")
 _BROKERAGE_NAME_LIKE = ("%ALPACADB%", "%MOOMOO FINANCIAL%", "%FUTUINC%", "%RH BROKERAGE%",
@@ -7176,7 +7197,7 @@ _BROKERAGE_NAME_LIKE = ("%ALPACADB%", "%MOOMOO FINANCIAL%", "%FUTUINC%", "%RH BR
 OWNER_ZELLE_IN_PATTERN = "%zelle%from%bertrand%"  # owner → company Zelle (capital contribution)
 
 
-def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
+def _owner_distributions(db: Session, s: date, e: date, collect: list | None = None) -> dict[str, float]:
     """Non-dividend distributions to the sole 100% shareholder for [s, e].
 
     Three sources, matching the standalone Distribution Schedule:
@@ -7225,6 +7246,10 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
             a_out += -amt
         elif amt > 0:
             a_in += amt
+        if collect is not None:
+            collect.append({"id": t.id, "date": t.posted_date.isoformat() if t.posted_date else "",
+                            "description": (t.name or "")[:120], "amount": round(float(t.amount or 0), 2),
+                            "bucket": "A: transfers to/from personal 0273"})
     # A') owner cash put back by Zelle ("Zelle payment from BertrandAlbert Byrne") —
     # a capital contribution that doesn't carry "0273"; omitting it overstated net
     # distributions by $135,800 for 2026 (settled netting: $448,180 out − $320,537 in).
@@ -7235,7 +7260,18 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     )).all():
         if _first_time(t):
             zelle_in += float(t.amount or 0)
+        if collect is not None:
+            collect.append({"id": t.id, "date": t.posted_date.isoformat() if t.posted_date else "", "description": (t.name or "")[:120], "amount": round(float(t.amount or 0), 2), "bucket": "A: owner Zelle contribution"})
     a_in += zelle_in
+    # A'') money in that the user categorised "Owner Contribution" by hand.
+    for t in db.scalars(select(BankTransaction).where(
+        *live, BankTransaction.amount > 0,
+        BankTransaction.category_json.ilike("%owner contribution%"),
+    )).all():
+        if _first_time(t):
+            a_in += float(t.amount or 0)
+        if collect is not None:
+            collect.append({"id": t.id, "date": t.posted_date.isoformat() if t.posted_date else "", "description": (t.name or "")[:120], "amount": round(float(t.amount or 0), 2), "bucket": "A: categorised owner contribution"})
     # B) personal spend/obligations on business accounts booked to Owner Draw
     for t in db.scalars(select(BankTransaction).where(
         *live, BankTransaction.amount < 0,
@@ -7243,6 +7279,8 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     )).all():
         if _first_time(t):
             b_out += -float(t.amount or 0)
+        if collect is not None:
+            collect.append({"id": t.id, "date": t.posted_date.isoformat() if t.posted_date else "", "description": (t.name or "")[:120], "amount": round(float(t.amount or 0), 2), "bucket": "B: Owner Draw spend"})
     # C) transfers funding personal brokerage accounts (net wash in practice)
     for t in db.scalars(select(BankTransaction).where(
         *live,
@@ -7255,6 +7293,10 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
             c_out += -amt
         elif amt > 0:
             c_in += amt
+        if collect is not None:
+            collect.append({"id": t.id, "date": t.posted_date.isoformat() if t.posted_date else "",
+                            "description": (t.name or "")[:120], "amount": round(amt, 2),
+                            "bucket": "C: brokerage"})
     gross_out = a_out + b_out + c_out
     returned_in = a_in + c_in
     return {
@@ -7627,6 +7669,316 @@ def run_data_health(
 ) -> dict[str, object]:
     """Run the data-health audit now (the same checks the nightly job runs)."""
     return _run_data_health_audit(db, trigger="manual")
+
+
+# ---------------------------------------------------------------------------
+# Source records behind any figure (powers the clickable "source" drawer on tables)
+# ---------------------------------------------------------------------------
+def _src_date(v: str | None) -> date | None:
+    return datetime.strptime(v, "%Y-%m-%d").date() if v else None
+
+
+@app.get("/sources")
+def list_sources(
+    kind: str,
+    start: str | None = None,
+    end: str | None = None,
+    user_id: int | None = None,
+    project_id: int | None = None,
+    task_id: int | None = None,
+    billable: bool | None = None,
+    unbilled: bool | None = None,
+    overhead: bool | None = None,
+    client: str | None = None,
+    status: str | None = None,
+    open_only: bool | None = None,
+    date_field: str = "issue",
+    account_id: str | None = None,
+    category: str | None = None,
+    q: str | None = None,
+    direction: str | None = None,
+    ids: str | None = None,
+    bucket: str | None = None,
+    scope: str = "business",
+    limit: int = 2000,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """Return the underlying records for a figure shown in the app, with column
+    definitions and a total, so every table cell can open its source. kinds:
+    time_entries | invoices | bank_transactions. All filters are optional."""
+    s_d, e_d = _src_date(start), _src_date(end)
+    limit = max(1, min(int(limit or 2000), 5000))
+
+    if kind == "time_entries":
+        q_ = (select(TimeEntry, User.full_name, Project.name, Project.is_billable, Project.is_overhead,
+                     Task.name, Task.is_billable)
+              .join(User, User.id == TimeEntry.user_id)
+              .join(Project, Project.id == TimeEntry.project_id)
+              .outerjoin(Task, Task.id == TimeEntry.task_id))
+        if s_d: q_ = q_.where(TimeEntry.work_date >= s_d)
+        if e_d: q_ = q_.where(TimeEntry.work_date <= e_d)
+        if user_id: q_ = q_.where(TimeEntry.user_id == user_id)
+        if project_id: q_ = q_.where(TimeEntry.project_id == project_id)
+        if task_id: q_ = q_.where(TimeEntry.task_id == task_id)
+        if overhead is not None: q_ = q_.where(Project.is_overhead.is_(bool(overhead)))
+        rows = []
+        tot_h = tot_v = tot_c = 0.0
+        for te, uname, pname, p_bill, p_ovh, tname, t_bill in db.execute(
+                q_.order_by(TimeEntry.work_date.desc(), TimeEntry.id.desc()).limit(limit)).all():
+            is_bill = bool(te.is_billable) and bool(p_bill) and bool(t_bill) and not bool(p_ovh)
+            if billable is not None and is_bill != bool(billable):
+                continue
+            if unbilled and (not is_bill or bool(te.billed)):
+                continue
+            h = float(te.hours or 0)
+            value = h * float(te.bill_rate_applied or 0) if is_bill else 0.0
+            cost = 0.0 if p_ovh else h * float(te.cost_rate_applied or 0)
+            tot_h += h; tot_v += value; tot_c += cost
+            rows.append({"id": te.id, "date": te.work_date.isoformat(), "person": uname, "project": pname,
+                         "task": tname or "", "hours": round(h, 2), "bill_rate": round(float(te.bill_rate_applied or 0), 2),
+                         "value": round(value, 2), "cost": round(cost, 2),
+                         "status": ("billed" if te.billed else "unbilled") if is_bill else ("overhead" if p_ovh else "non-billable"),
+                         "note": (te.note or "")[:140]})
+        return {"kind": kind, "count": len(rows), "rows": rows,
+                "totals": {"hours": round(tot_h, 2), "value": round(tot_v, 2), "cost": round(tot_c, 2)},
+                "columns": [
+                    {"key": "date", "label": "Date"}, {"key": "person", "label": "Person"},
+                    {"key": "project", "label": "Project"}, {"key": "task", "label": "Task"},
+                    {"key": "hours", "label": "Hours", "align": "right"},
+                    {"key": "bill_rate", "label": "Rate", "align": "right", "money": True},
+                    {"key": "value", "label": "Billable value", "align": "right", "money": True},
+                    {"key": "cost", "label": "Loaded cost", "align": "right", "money": True},
+                    {"key": "status", "label": "Status"}, {"key": "note", "label": "Note"}]}
+
+    if kind == "invoices":
+        q_ = select(Invoice)
+        field = Invoice.paid_date if date_field == "paid" else Invoice.issue_date
+        if s_d: q_ = q_.where(field >= s_d)
+        if e_d: q_ = q_.where(field <= e_d)
+        if project_id: q_ = q_.where(Invoice.project_id == project_id)
+        if client: q_ = q_.where(func.trim(Invoice.client_name) == client.strip())
+        if status: q_ = q_.where(func.lower(Invoice.status).in_([x.strip().lower() for x in status.split(",")]))
+        if open_only: q_ = q_.where(Invoice.balance_due > 0.005, Invoice.status.notin_(["void", "draft", "written_off"]))
+        pnames = dict(db.execute(select(Project.id, Project.name)).all())
+        rows = []
+        for inv in db.scalars(q_.order_by(Invoice.issue_date.desc()).limit(limit)).all():
+            rows.append({"id": inv.id, "invoice": inv.invoice_number, "issued": inv.issue_date.isoformat() if inv.issue_date else "",
+                         "client": inv.client_name, "project": pnames.get(inv.project_id, ""),
+                         "amount": round(float(inv.subtotal_amount or 0), 2), "paid": round(float(inv.amount_paid or 0), 2),
+                         "paid_date": inv.paid_date.isoformat() if inv.paid_date else "",
+                         "balance": round(float(inv.balance_due or 0), 2), "status": inv.status})
+        return {"kind": kind, "count": len(rows), "rows": rows,
+                "totals": {k: round(sum(r[k] for r in rows), 2) for k in ("amount", "paid", "balance")},
+                "columns": [
+                    {"key": "invoice", "label": "Invoice"}, {"key": "issued", "label": "Issued"},
+                    {"key": "client", "label": "Client"}, {"key": "project", "label": "Project"},
+                    {"key": "amount", "label": "Amount", "align": "right", "money": True},
+                    {"key": "paid", "label": "Paid", "align": "right", "money": True},
+                    {"key": "paid_date", "label": "Paid on"},
+                    {"key": "balance", "label": "Balance", "align": "right", "money": True},
+                    {"key": "status", "label": "Status"}]}
+
+    if kind == "bank_transactions":
+        q_ = select(BankTransaction).where(~BankTransaction.source.in_(SUPERSEDED_SOURCES),
+                                           BankTransaction.pending.is_(False))
+        if scope == "business" and not ids:
+            q_ = q_.where(BankTransaction.is_business.is_(True))
+        if ids:
+            q_ = q_.where(BankTransaction.id.in_([int(x) for x in ids.split(",") if x.strip().isdigit()]))
+        if s_d: q_ = q_.where(BankTransaction.posted_date >= s_d)
+        if e_d: q_ = q_.where(BankTransaction.posted_date <= e_d)
+        if account_id: q_ = q_.where(BankTransaction.account_id == account_id)
+        if category:  # comma-separated = match ANY
+            q_ = q_.where(or_(*[BankTransaction.category_json.ilike(f"%{c.strip()}%") for c in category.split(",") if c.strip()]))
+        if q: q_ = q_.where(BankTransaction.name.ilike(f"%{q}%"))
+        if direction == "out": q_ = q_.where(BankTransaction.amount < 0)
+        if direction == "in": q_ = q_.where(BankTransaction.amount > 0)
+        acct = {a.account_id: (a.name or a.account_id) + (f" ...{a.mask}" if a.mask else "")
+                for a in db.scalars(select(BankAccount)).all()}
+        rows = []
+        for t in db.scalars(q_.order_by(BankTransaction.posted_date.desc()).limit(limit)).all():
+            try:
+                cat = ", ".join(str(c) for c in json.loads(t.category_json or "[]"))
+            except Exception:
+                cat = t.category_json or ""
+            rows.append({"id": t.id, "date": t.posted_date.isoformat() if t.posted_date else "",
+                         "account": acct.get(t.account_id, t.account_id), "description": (t.name or "")[:120],
+                         "amount": round(float(t.amount or 0), 2), "category": cat[:60],
+                         "scope": "business" if t.is_business else "personal"})
+        return {"kind": kind, "count": len(rows), "rows": rows,
+                "totals": {"amount": round(sum(r["amount"] for r in rows), 2)},
+                "columns": [
+                    {"key": "date", "label": "Date"}, {"key": "account", "label": "Account"},
+                    {"key": "description", "label": "Description"},
+                    {"key": "amount", "label": "Amount", "align": "right", "money": True},
+                    {"key": "category", "label": "Category"}, {"key": "scope", "label": "Scope"}]}
+
+    if kind == "owner_distributions":
+        # Exactly the rows _owner_distributions counts (same filters + dedupe), so the drawer
+        # total reconciles to the distribution figure clicked. bucket = A | B | C | zelle | 0273.
+        rows_: list[dict] = []
+        res = _owner_distributions(db, s_d or date(date.today().year, 1, 1), e_d or date.today(), collect=rows_)
+        if bucket:
+            want = [b.strip().lower() for b in bucket.split(",") if b.strip()]
+            rows_ = [r for r in rows_ if any(w in r["bucket"].lower() for w in want)]
+        if direction == "in":
+            rows_ = [r for r in rows_ if r["amount"] > 0]
+        elif direction == "out":
+            rows_ = [r for r in rows_ if r["amount"] < 0]
+        rows_.sort(key=lambda r: r["date"], reverse=True)
+        return {"kind": kind, "count": len(rows_), "rows": rows_[:limit],
+                "totals": {"amount": round(sum(r["amount"] for r in rows_), 2)},
+                "summary": res,
+                "columns": [{"key": "date", "label": "Date"}, {"key": "bucket", "label": "Bucket"},
+                            {"key": "description", "label": "Description"},
+                            {"key": "amount", "label": "Amount (+ in / - out)", "align": "right", "money": True}]}
+
+    if kind == "payroll":
+        # Pay-period rows from the payroll journals (+ in-app runs for uncovered pay dates).
+        inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
+        who = (q or "").strip().lower()
+        rows = []
+        journal_dates: set[date] = set()
+
+        def _pd(v: str) -> date | None:
+            for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+                try:
+                    return datetime.strptime((v or "").strip(), fmt).date()
+                except ValueError:
+                    continue
+            return None
+        if inbox.exists():
+            for period in _deduped_payroll_periods(inbox):
+                pdt = _pd(period.get("pay_day") or "")
+                if pdt is not None:
+                    journal_dates.add(pdt)
+                if pdt is None or (s_d and pdt < s_d) or (e_d and pdt > e_d):
+                    continue
+                for r in period.get("rows", []) or []:
+                    emp = str(r.get("employee") or "")
+                    if who and who not in emp.lower():
+                        continue
+                    rows.append({"pay_date": pdt.isoformat(), "period": str(period.get("period") or ""), "employee": emp,
+                                 "hours": round(float(r.get("hours") or 0), 2), "gross": round(float(r.get("gross") or 0), 2),
+                                 "employer_taxes": round(float(r.get("employer_taxes") or 0), 2),
+                                 "employer_401k": round(float(r.get("employer_401k") or 0), 2),
+                                 "employer_cost": round(float(r.get("employer_cost") or 0), 2),
+                                 "net_pay": round(float(r.get("net_pay") or 0), 2), "source": "journal"})
+        try:
+            from .payroll.models import PayrollEmployee, PayrollLine, PayrollRun
+            rq = (select(PayrollRun.check_date, PayrollEmployee.legal_name, PayrollLine.gross, PayrollLine.lines_json)
+                  .join(PayrollLine, PayrollLine.run_id == PayrollRun.id)
+                  .join(PayrollEmployee, PayrollEmployee.id == PayrollLine.employee_id)
+                  .where(PayrollRun.status == "paid", PayrollRun.check_date.notin_(journal_dates)))
+            if s_d: rq = rq.where(PayrollRun.check_date >= s_d)
+            if e_d: rq = rq.where(PayrollRun.check_date <= e_d)
+            for cd, name, g_, lj in db.execute(rq).all():
+                if who and who not in (name or "").lower():
+                    continue
+                g = float(g_ or 0)
+                try:
+                    d = json.loads(lj or "{}")
+                except Exception:
+                    d = {}
+                taxes = float(d.get("ss") or 0) + float(d.get("medicare") or 0) + g * 0.012
+                match = float(d.get("er_match") or 0)
+                rows.append({"pay_date": cd.isoformat(), "period": "in-app run", "employee": name or "",
+                             "hours": round(float(d.get("hours") or 0), 2), "gross": round(g, 2),
+                             "employer_taxes": round(taxes, 2), "employer_401k": round(match, 2),
+                             "employer_cost": round(g + taxes + match, 2), "net_pay": round(float(d.get("net") or 0), 2),
+                             "source": "in-app"})
+        except Exception:
+            pass
+        rows.sort(key=lambda r: (r["pay_date"], r["employee"]), reverse=True)
+        return {"kind": kind, "count": len(rows), "rows": rows[:limit],
+                "totals": {k: round(sum(r[k] for r in rows), 2) for k in ("hours", "gross", "employer_cost")},
+                "columns": [
+                    {"key": "pay_date", "label": "Pay date"}, {"key": "period", "label": "Period"},
+                    {"key": "employee", "label": "Employee"}, {"key": "hours", "label": "Hours", "align": "right"},
+                    {"key": "gross", "label": "Gross", "align": "right", "money": True},
+                    {"key": "employer_taxes", "label": "Employer taxes", "align": "right", "money": True},
+                    {"key": "employer_401k", "label": "401(k) match", "align": "right", "money": True},
+                    {"key": "employer_cost", "label": "Employer cost", "align": "right", "money": True},
+                    {"key": "net_pay", "label": "Net pay", "align": "right", "money": True},
+                    {"key": "source", "label": "Source"}]}
+
+    raise HTTPException(status_code=400, detail="kind must be time_entries, invoices, bank_transactions or payroll")
+
+
+_MM_RAW_OK = ("", "uncategorized", "transfer", "other / uncategorized")
+
+
+def _money_movement_label(tx: BankTransaction, loan_linked: set[int], acct_type: dict[str, str]) -> str | None:
+    """Money-movement category for a bank row, or None. Direction-aware; mirrors the
+    keyword rules the P&L and cash flow already use to exclude these rows."""
+    nm = (tx.name or "").upper()
+    amt = float(tx.amount or 0)
+    on_card = acct_type.get(tx.account_id, "") == "credit"
+    if tx.id in loan_linked:
+        return "Loan Payment"
+    if on_card and amt > 0 and ("PAYMENT THANK YOU" in nm or "AUTOPAY" in nm or "MOBILE PAYMENT" in nm):
+        return "Credit Card Payment"
+    if amt < 0 and any(k in nm for k in ("PAYMENT TO CHASE CARD", "AMERICAN EXPRESS ACH", "ORIG CO NAME:AMERICAN EXPRESS",
+                                         "AUTOMATIC PAYMENT - THANK", "CAPITAL ONE MOBILE PMT")):
+        return "Credit Card Payment"
+    if "0273" in nm and "TRANSFER" in nm and "WIRE" not in nm:
+        return "Owner Distribution" if amt < 0 else "Owner Contribution"
+    if amt > 0 and "ZELLE PAYMENT FROM BERTRAND" in nm:
+        return "Owner Contribution"
+    if amt > 0 and any(k in nm for k in ("BOC CAPITAL", "FUNDBOX")):
+        return "Loan Proceeds / Advance"
+    if amt > 0 and any(k in nm for k in ("REAL TIME PAYMENT", "FEDWIRE", "HDR INC", "STRIPE")):
+        return "Invoice Payment Received"
+    if any(k in nm for k in ("ONLINE TRANSFER TO CHK", "ONLINE TRANSFER FROM CHK", "XFER FROM", "XFER TO",
+                             "TRANSFER TO CK", "TRANSFER FROM CK", "INTERNAL TRANSFER")):
+        return "Internal Transfer"
+    return None
+
+
+@app.post("/admin/categorize-money-movement")
+def categorize_money_movement(
+    apply: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("MANAGE_RATES")),
+) -> dict[str, object]:
+    """Assign money-movement categories (credit card payments, loan payments/proceeds,
+    invoice payments received, owner contributions/distributions, internal transfers) to
+    business bank rows that are uncategorised or carry a raw bank code. Never overwrites a
+    category someone chose. Preview by default; ?apply=true writes (category_source =
+    system_money_movement, previous category kept in raw_json.prev_category)."""
+    loan_linked = {p.bank_transaction_id for p in db.scalars(select(LoanPayment)).all() if p.bank_transaction_id}
+    acct_type = {a.account_id: (a.type or "").lower() for a in db.scalars(select(BankAccount)).all()}
+    counts: dict[str, list] = defaultdict(lambda: [0, 0.0])
+    changed = 0
+    for tx in db.scalars(select(BankTransaction).where(
+            BankTransaction.is_business.is_(True), ~BankTransaction.source.in_(SUPERSEDED_SOURCES))).all():
+        _g, cur = _tx_category_from_json(tx)
+        cur_l = (cur or "").strip().lower()
+        raw_code = bool(cur) and cur == cur.upper() and "_" in cur  # e.g. TRANSFER_OUT, LOAN_PAYMENTS
+        raw = _parse_json_obj(tx.raw_json)
+        if str(raw.get("category_source") or "").lower() == "manual":
+            continue
+        if not (cur_l in _MM_RAW_OK or raw_code):
+            continue
+        label = _money_movement_label(tx, loan_linked, acct_type)
+        if not label or label == cur:
+            continue
+        counts[label][0] += 1
+        counts[label][1] += float(tx.amount or 0)
+        changed += 1
+        if apply:
+            raw["prev_category"] = cur
+            raw["category_source"] = "system_money_movement"
+            tx.raw_json = json.dumps(raw)
+            tx.category_json = json.dumps([label])
+    if apply:
+        _log_audit_event(db=db, entity_type="bank_transaction", entity_id=0, action="categorize_money_movement",
+                         actor_user_id=current_user.id if current_user else None,
+                         payload={"changed": changed, "by_label": {k: v[0] for k, v in counts.items()}})
+        db.commit()
+    return {"status": "applied" if apply else "preview", "changed": changed,
+            "by_label": {k: {"count": v[0], "net_amount": round(v[1], 2)} for k, v in sorted(counts.items())}}
 
 
 @app.get("/payroll/journal/summary")

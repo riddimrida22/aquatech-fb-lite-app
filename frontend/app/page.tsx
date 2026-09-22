@@ -22,6 +22,7 @@ import DailyProfitabilityKPI from "./components/DailyProfitabilityKPI";
 import OwnerWealthKPI from "./components/OwnerWealthKPI";
 import UtilizationWorkspace from "./components/UtilizationWorkspace";
 import DataHealthPanel, { DataHealthBanner } from "./components/DataHealthPanel";
+import SourceDrawerHost, { SourceLink } from "./components/SourceDrawer";
 import ProjectAlertsPanel from "./components/ProjectAlertsPanel";
 import HourEstimatesWorkspace from "./components/HourEstimatesWorkspace";
 import OverheadRatePanel from "./components/OverheadRatePanel";
@@ -35,6 +36,7 @@ import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
 import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
 import { AccountingWorkspace, PLReport } from "./components/AccountingWorkspace";
+import { LoansPanel } from "./components/LoansPanel";
 import { BookkeepingWorkspace } from "./components/BookkeepingWorkspace";
 import { CategorizationWorkspace } from "./components/CategorizationWorkspace";
 import { CloudConnectionsPanel } from "./components/CloudConnectionsPanel";
@@ -86,6 +88,7 @@ type WorkspaceKey =
   | "bookkeeping"
   | "utilization"
   | "datahealth"
+  | "loans"
   | "hourestimates"
   | "reports"
   | "imports"
@@ -121,6 +124,7 @@ const NAV: NavEntry[] = [
     children: [
       { key: "accounting", label: "Overview", hint: "P&L · Cash · Balance", tier: 1 },
       { key: "invoices", label: "Invoicing / A/R", hint: "Billing + receivables", tier: 1 },
+      { key: "loans", label: "Loans", hint: "LOCs · BOC · payments", tier: 2 },
       { key: "utilization", label: "Utilization", hint: "Billable % · leaks", tier: 2 },
       { key: "costs", label: "Costs & Expenses", hint: "Spend + tax", tier: 2 },
       { key: "payables", label: "Payables & Owner", hint: "A/P + owner comp", tier: 3 },
@@ -1164,6 +1168,7 @@ export default function AquatechPmHome() {
       </aside>
 
       <main className="aq-lite-main">
+        <SourceDrawerHost />
         <header className="aq-lite-topbar">
           <div>
             <p className="aq-lite-eyebrow">Small business operating system</p>
@@ -1661,11 +1666,17 @@ export default function AquatechPmHome() {
               <tbody>
                 {clientRollups.map((client) => (
                   <tr key={client.name} style={{ cursor: "pointer" }} title="View projects →" onClick={() => setWorkspace("projects")}>
-                    <td>{client.name}</td>
+                    <td>{client.name === "Unassigned" ? client.name : (
+                      <SourceLink title={`Invoices - ${client.name}`} query={{ kind: "invoices", client: client.name }}>{client.name}</SourceLink>
+                    )}</td>
                     <td>{client.projectCount}</td>
                     <td>{client.activeProjectCount}</td>
-                    <td>{formatCurrency(client.billedRevenue)}</td>
-                    <td>{formatCurrency(client.outstandingRevenue)}</td>
+                    <td>{client.name === "Unassigned" ? formatCurrency(client.billedRevenue) : (
+                      <SourceLink title={`Billed - ${client.name}`} query={{ kind: "invoices", client: client.name }}>{formatCurrency(client.billedRevenue)}</SourceLink>
+                    )}</td>
+                    <td>{client.name === "Unassigned" ? formatCurrency(client.outstandingRevenue) : (
+                      <SourceLink title={`Outstanding - ${client.name}`} query={{ kind: "invoices", client: client.name, open_only: true }}>{formatCurrency(client.outstandingRevenue)}</SourceLink>
+                    )}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2089,6 +2100,8 @@ export default function AquatechPmHome() {
         ) : null}
 
         {workspace === "datahealth" ? <DataHealthPanel /> : null}
+
+        {workspace === "loans" ? <LoansPanel canManage={capabilities.canManageProjects} /> : null}
 
         {workspace === "utilization" ? (
           <>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { SourceLink } from "./SourceDrawer";
 import { apiGet } from "../../lib/api";
 import { formatCurrency, formatNumber } from "./workspaceShared";
 import { GroupedList } from "./GroupedList";
@@ -181,14 +182,14 @@ export function PayrollPortal() {
               const v = data.by_year[y];
               return (
                 <tr key={y}>
-                  <td><strong>{y}</strong></td>
+                  <td><strong><SourceLink title={`Payroll pay periods · ${y}`} query={{ kind: "payroll", start: `${y}-01-01`, end: `${y}-12-31` }}>{y}</SourceLink></strong></td>
                   <td style={{ textAlign: "right" }}>{v.employee_count}</td>
                   <td style={{ textAlign: "right" }}>{v.period_count}</td>
                   <td style={{ textAlign: "right" }}>{formatNumber(v.totals.hours, 0)}</td>
-                  <td style={{ textAlign: "right" }}>{formatCurrency(v.totals.gross)}</td>
+                  <td style={{ textAlign: "right" }}><SourceLink title={`Payroll gross · ${y}`} query={{ kind: "payroll", start: `${y}-01-01`, end: `${y}-12-31` }}>{formatCurrency(v.totals.gross)}</SourceLink></td>
                   <td style={{ textAlign: "right" }}>{formatCurrency(v.totals.employer_taxes)}</td>
                   <td style={{ textAlign: "right" }}>{formatCurrency(v.totals.employer_401k)}</td>
-                  <td style={{ textAlign: "right", fontWeight: 700, color: "var(--aq-green)" }}>{formatCurrency(v.totals.employer_cost)}</td>
+                  <td style={{ textAlign: "right", fontWeight: 700, color: "var(--aq-green)" }}><SourceLink title={`Payroll employer cost · ${y}`} query={{ kind: "payroll", start: `${y}-01-01`, end: `${y}-12-31` }}>{formatCurrency(v.totals.employer_cost)}</SourceLink></td>
                 </tr>
               );
             })}
@@ -247,11 +248,11 @@ export function PayrollPortal() {
                       </div>
                     </td>
                     <td style={{ textAlign: "right" }}>{formatNumber(vals.hours, 0)}</td>
-                    <td style={{ textAlign: "right" }}>{formatCurrency(vals.gross)}</td>
+                    <td style={{ textAlign: "right" }}><SourceLink title={`${emp} · payroll gross`} query={{ kind: "payroll", q: emp }}>{formatCurrency(vals.gross)}</SourceLink></td>
                     <td style={{ textAlign: "right" }}>{formatCurrency(vals.employer_taxes)}</td>
                     <td style={{ textAlign: "right" }}>{formatCurrency(vals.employer_401k)}</td>
                     <td style={{ textAlign: "right" }}>{formatCurrency(vals.net_pay)}</td>
-                    <td style={{ textAlign: "right", fontWeight: 700, color: "var(--aq-green)" }}>{formatCurrency(vals.employer_cost)}</td>
+                    <td style={{ textAlign: "right", fontWeight: 700, color: "var(--aq-green)" }}><SourceLink title={`${emp} · employer cost`} query={{ kind: "payroll", q: emp }}>{formatCurrency(vals.employer_cost)}</SourceLink></td>
                     <td style={{ textAlign: "right" }}>{pct.toFixed(1)}%</td>
                   </tr>
                   {expanded ? (
@@ -274,10 +275,10 @@ export function PayrollPortal() {
                               <tr key={y}>
                                 <td>{y}</td>
                                 <td style={{ textAlign: "right" }}>{formatNumber(t.hours, 0)}</td>
-                                <td style={{ textAlign: "right" }}>{formatCurrency(t.gross)}</td>
+                                <td style={{ textAlign: "right" }}><SourceLink title={`${emp} · payroll gross · ${y}`} query={{ kind: "payroll", q: emp, start: `${y}-01-01`, end: `${y}-12-31` }}>{formatCurrency(t.gross)}</SourceLink></td>
                                 <td style={{ textAlign: "right" }}>{formatCurrency(t.employer_taxes)}</td>
                                 <td style={{ textAlign: "right" }}>{formatCurrency(t.employer_401k)}</td>
-                                <td style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(t.employer_cost)}</td>
+                                <td style={{ textAlign: "right", fontWeight: 600 }}><SourceLink title={`${emp} · employer cost · ${y}`} query={{ kind: "payroll", q: emp, start: `${y}-01-01`, end: `${y}-12-31` }}>{formatCurrency(t.employer_cost)}</SourceLink></td>
                               </tr>
                             ))}
                           </tbody>

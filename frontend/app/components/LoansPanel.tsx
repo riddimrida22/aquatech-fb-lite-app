@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../../lib/api";
 import { formatCurrency } from "./workspaceShared";
+import { SourceLink } from "./SourceDrawer";
 
 export type Loan = {
   id: number;
@@ -448,7 +449,13 @@ function LoanPaymentsInline({ loanId, canManage, onChange }: { loanId: number; c
             {items.map((p) => (
               <tr key={p.id}>
                 <td>{p.payment_date}</td>
-                <td style={{ textAlign: "right" }}>{formatCurrency(p.total_amount)}</td>
+                <td style={{ textAlign: "right" }}>
+                  {p.bank_transaction_id != null ? (
+                    <SourceLink title={`Loan payment bank transaction - ${p.payment_date}`} query={{ kind: "bank_transactions", ids: String(p.bank_transaction_id) }}>
+                      {formatCurrency(p.total_amount)}
+                    </SourceLink>
+                  ) : formatCurrency(p.total_amount)}
+                </td>
                 <td style={{ textAlign: "right" }}>{formatCurrency(p.principal_amount)}</td>
                 <td style={{ textAlign: "right" }}>{formatCurrency(p.interest_amount)}</td>
                 <td style={{ textAlign: "right" }}>{formatCurrency(p.fees_amount)}</td>
