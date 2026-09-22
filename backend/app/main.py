@@ -7597,8 +7597,14 @@ CSV_FEED_MIRRORS = {"Chase6611_Activity": "6611"}
 def _gapfill_csv_feeds(db: Session) -> dict[str, int]:
     """Copy live-feed transactions the curated CSV hasn't caught up to yet into the books
     (source 'csv_gapfill'), and drop any gap-fill row the CSV has since delivered. Keeps the
-    books complete between manual CSV refreshes without ever counting a transaction twice."""
+    books complete between manual CSV refreshes without ever counting a transaction twice.
+
+    Matching is per transaction on (posted date, amount) as a multiset, from the CSV's last
+    day on: the CSV's final day is often only partly covered, and two genuine same-amount
+    transfers on one day must both survive."""
+    from collections import Counter
     added = removed = 0
+    key = lambda t: (t.posted_date, round(float(t.amount or 0), 2))  # noqa: E731
     for csv_acct, mask in CSV_FEED_MIRRORS.items():
         csv_rows = db.scalars(select(BankTransaction).where(BankTransaction.account_id == csv_acct,
                                                             BankTransaction.source == "csv")).all()
@@ -7606,36 +7612,39 @@ def _gapfill_csv_feeds(db: Session) -> dict[str, int]:
             continue
         last_csv = max(t.posted_date for t in csv_rows if t.posted_date)
         conn_id = csv_rows[0].connection_id
-
-        def _twin(t, pool):
-            return any(abs(float(c.amount or 0) - float(t.amount or 0)) < 0.005 and c.posted_date and t.posted_date
-                       and abs((c.posted_date - t.posted_date).days) <= 3 for c in pool)
-
-        recent_csv = [c for c in csv_rows if c.posted_date and c.posted_date >= last_csv - timedelta(days=10)]
-        # retire gap-fill rows the CSV now covers
-        for g in db.scalars(select(BankTransaction).where(BankTransaction.account_id == csv_acct,
-                                                          BankTransaction.source == "csv_gapfill")).all():
-            if (g.posted_date and g.posted_date <= last_csv) or _twin(g, recent_csv):
+        csv_have = Counter(key(t) for t in csv_rows if t.posted_date and t.posted_date >= last_csv)
+        live_ids = [a.account_id for a in db.scalars(select(BankAccount).where(BankAccount.mask == mask)).all()]
+        live = db.scalars(select(BankTransaction).where(
+            BankTransaction.account_id.in_(live_ids), BankTransaction.pending.is_(False),
+            BankTransaction.posted_date >= last_csv,
+            BankTransaction.source.in_(["plaid_api", "plaid_api_superseded"]))).all()
+        # The two Plaid logins mirror each other; keep one copy of each (date, amount) occurrence.
+        live_by_key: dict = {}
+        for t in live:
+            live_by_key.setdefault(t.account_id, []).append(t)
+        best = max(live_by_key.values(), key=len) if live_by_key else []
+        want = Counter(key(t) for t in best) - csv_have  # occurrences the CSV does not have yet
+        gap = db.scalars(select(BankTransaction).where(BankTransaction.account_id == csv_acct,
+                                                       BankTransaction.source == "csv_gapfill")).all()
+        keep = Counter()
+        for g in gap:  # retire gap-fill rows the CSV now covers (or that predate its last day)
+            k = key(g)
+            if g.posted_date < last_csv or keep[k] >= want.get(k, 0):
                 db.delete(g)
                 removed += 1
-        db.flush()
-        have = {g.transaction_id for g in db.scalars(select(BankTransaction).where(
-            BankTransaction.account_id == csv_acct, BankTransaction.source == "csv_gapfill")).all()}
-        live_ids = [a.account_id for a in db.scalars(select(BankAccount).where(BankAccount.mask == mask)).all()]
-        for t in db.scalars(select(BankTransaction).where(
-                BankTransaction.account_id.in_(live_ids), BankTransaction.pending.is_(False),
-                BankTransaction.posted_date > last_csv,
-                BankTransaction.source.in_(["plaid_api", "plaid_api_superseded"]))).all():
-            tid = f"gapfill:{t.transaction_id}"[:128]
-            if tid in have or _twin(t, recent_csv):
-                continue
-            db.add(BankTransaction(connection_id=conn_id, account_id=csv_acct, transaction_id=tid,
-                                   posted_date=t.posted_date, name=t.name, merchant_name=t.merchant_name,
-                                   amount=t.amount, iso_currency_code=t.iso_currency_code, pending=False,
-                                   is_business=True, category_json=t.category_json or "[]",
-                                   raw_json=json.dumps({"gapfill_from": t.id}), source="csv_gapfill"))
-            have.add(tid)
-            added += 1
+            else:
+                keep[k] += 1
+        for t in best:
+            k = key(t)
+            if keep[k] < want.get(k, 0):
+                db.add(BankTransaction(connection_id=conn_id, account_id=csv_acct,
+                                       transaction_id=f"gapfill:{t.transaction_id}"[:128],
+                                       posted_date=t.posted_date, name=t.name, merchant_name=t.merchant_name,
+                                       amount=t.amount, iso_currency_code=t.iso_currency_code, pending=False,
+                                       is_business=True, category_json=t.category_json or "[]",
+                                       raw_json=json.dumps({"gapfill_from": t.id}), source="csv_gapfill"))
+                keep[k] += 1
+                added += 1
     db.commit()
     return {"added": added, "removed": removed}
 
