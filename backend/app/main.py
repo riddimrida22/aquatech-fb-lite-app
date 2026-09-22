@@ -1858,6 +1858,12 @@ def _start_fb_time_sync_worker() -> None:
         try:
             with SessionLocal() as db:
                 r = pl_mod.sync_summary(db)
+                try:
+                    g = _gapfill_csv_feeds(db)
+                    print(f"[plaid_daily] csv gap-fill: {g}", flush=True)
+                except Exception as gexc:  # noqa: BLE001
+                    db.rollback()
+                    print(f"[plaid_daily] csv gap-fill failed: {gexc!r}", flush=True)
                 txn = r.get("transactions") if isinstance(r, dict) else r
                 print(f"[plaid_daily] sync ok: transactions={txn}", flush=True)
         except Exception as exc:  # noqa: BLE001 — scheduler thread must not die
@@ -7583,6 +7589,101 @@ def accounting_balance_sheet(
 _HEALTH_RANK = {"ok": 0, "warn": 1, "fail": 2}
 
 
+# Curated CSV feeds the books use for an account, and the bank mask whose live Plaid feed
+# can fill the CSV's gap until the next manual refresh.
+CSV_FEED_MIRRORS = {"Chase6611_Activity": "6611"}
+
+
+def _gapfill_csv_feeds(db: Session) -> dict[str, int]:
+    """Copy live-feed transactions the curated CSV hasn't caught up to yet into the books
+    (source 'csv_gapfill'), and drop any gap-fill row the CSV has since delivered. Keeps the
+    books complete between manual CSV refreshes without ever counting a transaction twice."""
+    added = removed = 0
+    for csv_acct, mask in CSV_FEED_MIRRORS.items():
+        csv_rows = db.scalars(select(BankTransaction).where(BankTransaction.account_id == csv_acct,
+                                                            BankTransaction.source == "csv")).all()
+        if not csv_rows:
+            continue
+        last_csv = max(t.posted_date for t in csv_rows if t.posted_date)
+        conn_id = csv_rows[0].connection_id
+
+        def _twin(t, pool):
+            return any(abs(float(c.amount or 0) - float(t.amount or 0)) < 0.005 and c.posted_date and t.posted_date
+                       and abs((c.posted_date - t.posted_date).days) <= 3 for c in pool)
+
+        recent_csv = [c for c in csv_rows if c.posted_date and c.posted_date >= last_csv - timedelta(days=10)]
+        # retire gap-fill rows the CSV now covers
+        for g in db.scalars(select(BankTransaction).where(BankTransaction.account_id == csv_acct,
+                                                          BankTransaction.source == "csv_gapfill")).all():
+            if (g.posted_date and g.posted_date <= last_csv) or _twin(g, recent_csv):
+                db.delete(g)
+                removed += 1
+        db.flush()
+        have = {g.transaction_id for g in db.scalars(select(BankTransaction).where(
+            BankTransaction.account_id == csv_acct, BankTransaction.source == "csv_gapfill")).all()}
+        live_ids = [a.account_id for a in db.scalars(select(BankAccount).where(BankAccount.mask == mask)).all()]
+        for t in db.scalars(select(BankTransaction).where(
+                BankTransaction.account_id.in_(live_ids), BankTransaction.pending.is_(False),
+                BankTransaction.posted_date > last_csv,
+                BankTransaction.source.in_(["plaid_api", "plaid_api_superseded"]))).all():
+            tid = f"gapfill:{t.transaction_id}"[:128]
+            if tid in have or _twin(t, recent_csv):
+                continue
+            db.add(BankTransaction(connection_id=conn_id, account_id=csv_acct, transaction_id=tid,
+                                   posted_date=t.posted_date, name=t.name, merchant_name=t.merchant_name,
+                                   amount=t.amount, iso_currency_code=t.iso_currency_code, pending=False,
+                                   is_business=True, category_json=t.category_json or "[]",
+                                   raw_json=json.dumps({"gapfill_from": t.id}), source="csv_gapfill"))
+            have.add(tid)
+            added += 1
+    db.commit()
+    return {"added": added, "removed": removed}
+
+
+def _books_account_ids(db: Session, mask: str) -> list[str]:
+    """Account ids whose (non-superseded) transactions ARE the books for a bank mask."""
+    from .plaid_integration import _superseded_account_ids
+    sup = _superseded_account_ids(db)
+    ids = [a.account_id for a in db.scalars(select(BankAccount).where(BankAccount.mask == mask,
+                                                                     BankAccount.is_business.is_(True))).all()
+           if a.account_id not in sup]
+    return ids + [k for k, m in CSV_FEED_MIRRORS.items() if m == mask]
+
+
+def _statement_tie(db: Session) -> list[dict]:
+    """Per account: last bank-statement ending balance + posted book activity since = the
+    bank's current balance? finance.bank_statement_balances holds the statement anchors."""
+    from sqlalchemy import text as _t
+    out = []
+    try:
+        anchors = db.execute(_t("SELECT DISTINCT ON (mask) mask, statement_end, ending_balance "
+                                "FROM finance.bank_statement_balances ORDER BY mask, statement_end DESC")).all()
+    except Exception:
+        db.rollback()
+        return out
+    latest = _latest_balance_accounts(db)
+    for mask, s_end, s_bal in anchors:
+        acct = latest.get((mask, "depository"))
+        if acct is None:
+            continue
+        activity = float(db.scalar(select(func.coalesce(func.sum(BankTransaction.amount), 0.0)).where(
+            BankTransaction.account_id.in_(_books_account_ids(db, mask)),
+            ~BankTransaction.source.in_(SUPERSEDED_SOURCES), BankTransaction.pending.is_(False),
+            BankTransaction.posted_date > s_end)) or 0.0)
+        # A bank balance can already include items still pending in the feed; allow for them.
+        all_ids = [a.account_id for a in db.scalars(select(BankAccount).where(BankAccount.mask == mask)).all()]
+        pending = float(db.scalar(select(func.coalesce(func.sum(BankTransaction.amount), 0.0)).where(
+            BankTransaction.account_id.in_(all_ids), BankTransaction.pending.is_(True),
+            BankTransaction.posted_date > s_end)) or 0.0)
+        implied = float(s_bal) + activity
+        bank = float(acct.current_balance or 0)
+        out.append({"mask": mask, "statement_end": s_end.isoformat(), "statement_balance": float(s_bal),
+                    "books_activity": round(activity, 2), "books_balance": round(implied, 2),
+                    "bank_balance": round(bank, 2), "bank_pending": round(pending, 2),
+                    "diff": round(implied - bank, 2), "diff_with_pending": round(implied + pending - bank, 2)})
+    return out
+
+
 def _health_check(out: list, key: str, group: str, label: str, fn) -> None:
     try:
         status, detail, value = fn()
@@ -7645,6 +7746,19 @@ def _run_data_health_audit(db: Session, trigger: str = "nightly") -> dict[str, o
                             f"(excluded from COGS): {runs}"), len(drafts)
         return "ok", f"No overdue payroll runs. Last paid in-app run {last_paid}.", 0
     _health_check(checks, "payroll", "Freshness", "Payroll recorded", payroll_current)
+
+    def statement_tie():
+        rows = _statement_tie(db)
+        if not rows:
+            return "warn", "No bank-statement balances on file to reconcile against.", 0
+        bad = [r for r in rows if abs(r["diff"]) > 0.01 and abs(r["diff_with_pending"]) > 0.01]
+        if bad:
+            return "warn", "Books off from the bank: " + "; ".join(
+                f"...{r['mask']} books {r['books_balance']:,.2f} vs bank {r['bank_balance']:,.2f} "
+                f"(diff {r['diff']:,.2f}; last statement {r['statement_end']})" for r in bad), len(bad)
+        return "ok", "Every account ties to its last bank statement: " + "; ".join(
+            f"...{r['mask']} {r['bank_balance']:,.2f}" for r in rows), 0
+    _health_check(checks, "statement_tie", "Accuracy", "Books tie to bank statements", statement_tie)
 
     def cost_refresh():
         blocked = db.scalar(select(func.count()).select_from(AuditEvent).where(
