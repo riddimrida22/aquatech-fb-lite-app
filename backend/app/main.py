@@ -4279,9 +4279,17 @@ def accounting_pl(
             select(Loan.id).where(func.lower(Loan.name).like("%fundbox%"))
         ).all()
     ]
+    receivable_loan_ids = [ln.id for ln in db.scalars(select(Loan)).all() if _loan_is_receivable(ln)]
     _lp_where = [LoanPayment.payment_date >= s, LoanPayment.payment_date <= e]
     if fundbox_loan_ids:
         _lp_where.append(~LoanPayment.loan_id.in_(fundbox_loan_ids))
+    if receivable_loan_ids:  # interest ON MONEY THE COMPANY LENT is income (below), never expense
+        _lp_where.append(~LoanPayment.loan_id.in_(receivable_loan_ids))
+    interest_income = float(db.scalar(
+        select(func.coalesce(func.sum(LoanPayment.interest_amount), 0.0)).where(
+            LoanPayment.payment_date >= s, LoanPayment.payment_date <= e,
+            LoanPayment.loan_id.in_(receivable_loan_ids or [-1]))
+    ) or 0.0)
     interest_expense = float(db.scalar(
         select(func.coalesce(func.sum(LoanPayment.interest_amount), 0.0)).where(*_lp_where)
     ) or 0.0)
@@ -4321,8 +4329,9 @@ def accounting_pl(
     cogs = round(cogs - nonbillable_labor, 2)  # remove indirect labor from COGS
     gross_profit_cash = revenue - cogs
     gross_profit_accrual = revenue_accrual - cogs
-    net_income_cash = revenue - cogs - nonbillable_labor - opex - interest_expense - fees_expense
-    net_income_accrual = revenue_accrual - cogs - nonbillable_labor - opex - interest_expense - fees_expense
+    net_income_cash = revenue - cogs - nonbillable_labor - opex - interest_expense - fees_expense + interest_income
+    net_income_accrual = (revenue_accrual - cogs - nonbillable_labor - opex - interest_expense - fees_expense
+                          + interest_income)
 
     def _margin(num: float, den: float) -> float:
         return round(num / den, 4) if den else 0.0
@@ -4408,6 +4417,7 @@ def accounting_pl(
         "needs_review_count": needs_review_count,
         "needs_review_items": sorted(needs_review_items, key=lambda r: -r["amount"]),
         "interest_expense": interest_expense,
+        "interest_income": interest_income,  # on shareholder/owner loans the company made
         "fees_expense": fees_expense,
         "interest_detail": interest_detail,
         "fundbox_financing_cost": fundbox_financing_cost,
