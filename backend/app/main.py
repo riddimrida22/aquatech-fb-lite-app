@@ -24,7 +24,7 @@ import httpx
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import and_, delete, exists, false, func, or_, select
+from sqlalchemy import and_, case, delete, exists, false, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
@@ -3708,6 +3708,18 @@ def _verify_chart_of_accounts_coverage() -> list[str]:
     return sorted(lbl for lbl in emitted if str(lbl).strip() not in CHART_OF_ACCOUNTS)
 
 
+def _accrual_invoice_amount():
+    """Accrual revenue per invoice: the subtotal, except a WRITTEN-OFF invoice counts only
+    what was actually collected; VOID and DRAFT invoices are excluded by the caller."""
+    return case(
+        (func.lower(func.coalesce(Invoice.status, "")) == "written_off", func.coalesce(Invoice.amount_paid, 0.0)),
+        else_=func.coalesce(Invoice.subtotal_amount, 0.0),
+    )
+
+
+ACCRUAL_EXCLUDED_STATUSES = ("draft", "void")
+
+
 def _accounting_period(start_iso: str | None, end_iso: str | None) -> tuple[date, date]:
     today = date.today()
     if end_iso:
@@ -3808,15 +3820,16 @@ def accounting_pl(
     # Revenue (cash basis): paid invoices with paid_date in period
     revenue = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
-        .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e)
+        .where(Invoice.paid_date.isnot(None), Invoice.paid_date >= s, Invoice.paid_date <= e,
+               func.lower(func.coalesce(Invoice.status, "")) != "void")
     ) or 0.0)
 
-    # Accrual revenue: invoices issued in period (alternate). Exclude DRAFTS —
-    # a draft is not billed work; FreshBooks excludes them from invoiced totals too.
+    # Accrual revenue: invoices issued in period. Exclude DRAFTS (not billed work) and
+    # VOIDS (cancelled); a WRITTEN-OFF invoice counts only the amount actually collected.
     revenue_accrual = float(db.scalar(
-        select(func.coalesce(func.sum(Invoice.subtotal_amount), 0.0))
+        select(func.coalesce(func.sum(_accrual_invoice_amount()), 0.0))
         .where(Invoice.issue_date >= s, Invoice.issue_date <= e,
-               func.lower(func.coalesce(Invoice.status, "")) != "draft")
+               func.lower(func.coalesce(Invoice.status, "")).notin_(ACCRUAL_EXCLUDED_STATUSES))
     ) or 0.0)
 
     # Drill-down source for the (cash) Revenue line: the paid invoices behind it.
@@ -3838,6 +3851,7 @@ def accounting_pl(
     cogs = 0.0
     cogs_incomplete = False
     payroll_breakdown = {"gross": 0.0, "employer_taxes": 0.0, "employer_401k": 0.0}
+    journal_pay_dates: set[date] = set()  # every pay date an external journal covers (any window)
     try:
         inbox = Path(settings.FRESHBOOKS_TRANSITION_DIR).expanduser()
         if inbox.exists():
@@ -3866,6 +3880,8 @@ def accounting_pl(
                                 break
                             except ValueError:
                                 continue
+                if pd is not None:
+                    journal_pay_dates.add(pd)
                 if pd is None or pd < s or pd > e:
                     continue
                 t = period.get("totals", {})
@@ -3879,11 +3895,12 @@ def accounting_pl(
         cogs_incomplete = True
         print(f"[accounting_pl] COGS payroll parse failed: {exc!r}", flush=True)
 
-    # Fallback when no EXTERNAL payroll journal covered this window: source labor COGS
-    # from payroll RUNS produced in-app (the timekeeping → payroll → COGS integration).
-    # Mirrors _labor_cost_split's fallback (same source + employer-cost formula) so the
-    # billable/non-billable split reconciles. Prod is unaffected while journals exist.
-    if payroll_breakdown["gross"] == 0.0 and not cogs_incomplete:
+    # In-app payroll RUNS fill every pay date the external journals don't cover (the
+    # timekeeping → payroll → COGS integration). Per PAY DATE, not all-or-nothing: the
+    # old "only when the window has no journal at all" rule dropped the Sep-4-2026 in-app
+    # run from YTD COGS while the monthly view (Sept alone) included it. Mirrors
+    # _labor_cost_split (same source + employer-cost formula) so the split reconciles.
+    if not cogs_incomplete:
         try:
             from .payroll.models import PayrollLine, PayrollRun
 
@@ -3894,6 +3911,7 @@ def accounting_pl(
                     PayrollRun.status == "paid",
                     PayrollRun.check_date >= s,
                     PayrollRun.check_date <= e,
+                    PayrollRun.check_date.notin_(journal_pay_dates),
                 )
             ).all():
                 g = float(gross or 0)
@@ -4439,11 +4457,13 @@ def accounting_cashflow(
     cash_out_opex = 0.0
     cash_out_payroll = 0.0  # real wages/taxes paid (Gusto/Paychex) — operating cash out
     cc_transfers_keywords = CC_TRANSFER_KEYWORDS
+    _owner_draw_like = tuple(p.strip("%").lower() for p in _OWNER_DRAW_CAT_LIKE)
     for tx in db.scalars(
         select(BankTransaction).where(
             BankTransaction.posted_date.isnot(None),
             BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
             BankTransaction.is_business.is_(True), BankTransaction.amount < 0,
+            BankTransaction.pending.is_(False),  # a pending row and its posted twin would both count
             ~BankTransaction.source.in_(superseded_sources),
         )
     ).all():
@@ -4456,6 +4476,8 @@ def accounting_cashflow(
             continue
         if any(k in nm_upper for k in personal_overrides_cf):
             continue
+        if any(k in (tx.category_json or "").lower() for k in _owner_draw_like):
+            continue  # Owner Draw spend is an owner distribution (owner section), not operating cash
         # Payroll IS an operating cash outflow (unlike the P&L, which sources COGS
         # from the Gusto journal). Capture it separately so the operating section
         # reflects real cash paid to employees.
@@ -4476,6 +4498,7 @@ def accounting_cashflow(
         "boc_factoring": 0.0,        # BOC Capital advances against factored invoices
         "fundbox_draw": 0.0,         # FundBox LOC draws
         "owner_contribution": 0.0,   # Online transfers from 0273 + Zelle from BertrandAlbert
+        "internal_transfer": 0.0,    # moves between the firm's own business accounts
         "cc_payment_thank_you": 0.0, # Internal CC credit
         "other": 0.0,
     }
@@ -4484,6 +4507,7 @@ def accounting_cashflow(
             BankTransaction.posted_date.isnot(None),
             BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
             BankTransaction.is_business.is_(True), BankTransaction.amount > 0,
+            BankTransaction.pending.is_(False),
             ~BankTransaction.source.in_([*superseded_sources, "csv_fb_expenses"]),
         )
     ).all():
@@ -4493,8 +4517,10 @@ def accounting_cashflow(
             inflow_breakdown["boc_factoring"] += amt
         elif "FUNDBOX" in nm:
             inflow_breakdown["fundbox_draw"] += amt
-        elif "ONLINE TRANSFER FROM CHK" in nm or "ZELLE PAYMENT FROM BERTRAND" in nm:
+        elif ("TRANSFER" in nm and "0273" in nm) or "ZELLE PAYMENT FROM BERTRAND" in nm:
             inflow_breakdown["owner_contribution"] += amt
+        elif "ONLINE TRANSFER FROM CHK" in nm or "XFER FROM" in nm or "TRANSFER FROM CK" in nm:
+            inflow_breakdown["internal_transfer"] += amt  # own-account move, not owner capital
         elif "PAYMENT THANK YOU" in nm:
             inflow_breakdown["cc_payment_thank_you"] += amt
         elif "REAL TIME PAYMENT" in nm or "FEDWIRE" in nm or "STRIPE" in nm:
@@ -4506,32 +4532,11 @@ def accounting_cashflow(
     financing_in = inflow_breakdown["boc_factoring"] + inflow_breakdown["fundbox_draw"]
     financing_net = financing_in - loan_payments_total
 
-    # Owner / equity cash flows: net cash drawn to the owner's personal account (...0273).
-    # Distributions out reduce cash; contributions in add cash. Same detection as
-    # business-health (account-transfer pattern only; exclude intl wires + the 0273 leg).
-    owner_txns = db.scalars(
-        select(BankTransaction).where(
-            BankTransaction.posted_date.isnot(None),
-            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
-            BankTransaction.is_business.is_(True),  # business side only; excludes dup/personal feeds
-            ~BankTransaction.source.in_(superseded_sources),
-            BankTransaction.name.ilike("%transfer%0273%"),
-            ~BankTransaction.name.ilike("%wire%"),
-            BankTransaction.account_id != "Chase0273_Activity",
-        )
-    ).all()
-    distributions_out = sum(-float(t.amount or 0) for t in owner_txns if float(t.amount or 0) < 0)
-    contributions_in = sum(float(t.amount or 0) for t in owner_txns if float(t.amount or 0) > 0)
-    # Owner → company Zelle is also capital put back (no "0273" in the memo).
-    contributions_in += float(db.scalar(
-        select(func.coalesce(func.sum(BankTransaction.amount), 0.0)).where(
-            BankTransaction.posted_date.isnot(None),
-            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
-            BankTransaction.is_business.is_(True), BankTransaction.amount > 0,
-            ~BankTransaction.source.in_(superseded_sources),
-            BankTransaction.name.ilike(OWNER_ZELLE_IN_PATTERN),
-        )
-    ) or 0.0)
+    # Owner / equity cash flows — the ONE settled definition (_owner_distributions):
+    # 0273 transfers + owner Zelle contributions + Owner Draw spend + brokerage.
+    _od = _owner_distributions(db, s, e)
+    distributions_out = float(_od["gross_out"])
+    contributions_in = float(_od["returned_in"])
     owner_net = contributions_in - distributions_out  # +ve = net cash in from owner
 
     operating_net = cash_in_invoices - cash_out_opex - cash_out_payroll
@@ -4608,43 +4613,16 @@ def _owner_actual_payroll(start: date, end: date) -> dict[str, float]:
 
 
 def _owner_0273_flows(db: Session, s: date, e: date) -> dict[str, float]:
-    """Owner cash moved through the personal Chase ...0273 account over [s, e].
-    Money OUT = distribution, money IN = capital contribution. Deduped by the bank
-    "transaction#: NNN" so the same transfer arriving from both Plaid and a Chase
-    CSV (or a Plaid re-import) is counted once — otherwise the totals are inflated."""
-    superseded_sources = SUPERSEDED_SOURCES
-    rows = db.scalars(
-        select(BankTransaction).where(
-            BankTransaction.posted_date.isnot(None),
-            BankTransaction.posted_date >= s,
-            BankTransaction.posted_date <= e,
-            BankTransaction.is_business.is_(True),  # business side only; excludes dup/personal feeds
-            ~BankTransaction.source.in_(superseded_sources),
-            # Account-transfer pattern only; exclude international wires (their refs
-            # contain "0273") and rows recorded ON the 0273 account itself.
-            BankTransaction.name.ilike("%transfer%0273%"),
-            ~BankTransaction.name.ilike("%wire%"),
-            BankTransaction.account_id != "Chase0273_Activity",
-        )
-    ).all()
-    seen: set[str] = set()
-    dist_out = 0.0
-    contrib_in = 0.0
-    for t in rows:
-        mnum = re.search(r"transaction#:\s*(\d+)", t.name or "", re.I)
-        if mnum is not None:
-            if mnum.group(1) in seen:
-                continue  # duplicate import of the same bank transfer
-            seen.add(mnum.group(1))
-        amt = float(t.amount or 0)
-        if amt < 0:
-            dist_out += -amt
-        elif amt > 0:
-            contrib_in += amt
+    """Owner distributions / contributions over [s, e] for Business Health and the
+    owner panels. Delegates to _owner_distributions — the ONE settled definition
+    (0273 transfers + owner Zelle contributions + Owner Draw spend + brokerage) — so
+    every screen reports the same distribution figure. (Previously 0273-only, which
+    missed $135.8k of 2026 owner Zelle contributions and overstated net distributions.)"""
+    d = _owner_distributions(db, s, e)
     return {
-        "distributions_out": round(dist_out, 2),
-        "contributions_in": round(contrib_in, 2),
-        "net_distributions": round(dist_out - contrib_in, 2),
+        "distributions_out": d["gross_out"],
+        "contributions_in": d["returned_in"],
+        "net_distributions": d["net"],
     }
 
 
@@ -4945,6 +4923,7 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
     Reconciles exactly to total payroll (cogs_labor + nonbillable + unallocated = total)."""
     inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
     paycost: dict[str, float] = defaultdict(float)
+    journal_pay_dates: set[date] = set()
     if inbox.exists():
         for period in _deduped_payroll_periods(inbox):
             pd_str = (period.get("pay_day") or "").strip()
@@ -4955,17 +4934,17 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
                     break
                 except ValueError:
                     continue
+            if pd is not None:
+                journal_pay_dates.add(pd)
             if pd is None or pd < s or pd > e:
                 continue
             for r in period.get("rows", []):
                 paycost[(r.get("employee") or "").strip()] += float(r.get("employer_cost") or 0)
 
-    # Fallback when no EXTERNAL payroll journal (Gusto/Paychex) covers this window:
-    # source employer cost from payroll RUNS produced in-app. This is the
-    # timekeeping → payroll → COGS integration — a firm running payroll inside AqtPM
-    # gets labor COGS without any external file. Prod is unaffected while journals
-    # exist (this branch only runs when the journal produced nothing for [s, e]).
-    if not paycost:
+    # In-app payroll RUNS cover every pay date the external journals (Gusto/Paychex)
+    # don't — per pay date, so a window mixing journal months and in-app months
+    # (e.g. YTD 2026: journals thru Aug 21, in-app from Sep 4) gets both, never twice.
+    if True:
         try:
             import json as _json
 
@@ -4979,6 +4958,7 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
                     PayrollRun.status == "paid",
                     PayrollRun.check_date >= s,
                     PayrollRun.check_date <= e,
+                    PayrollRun.check_date.notin_(journal_pay_dates),
                 )
             ).all()
             for legal_name, gross, lj in run_rows:
@@ -5016,7 +4996,13 @@ def _labor_cost_split(db: Session, s: date, e: date) -> dict:
     # allocating the payroll journal understates it when the journal is partial.
     # This is an ATTRIBUTION of time already costed in the business (payroll actuals);
     # it does NOT change COGS, gross margin, or net income.
-    bd_task_ids = list(db.scalars(select(Task.id).where(Task.name == "Business Development")).all())
+    # BD time = any task named "Business Development" PLUS every task under the
+    # "Business Development" overhead project (pursuit time is logged to its "Pursuits" task).
+    _bd_proj_ids = list(db.scalars(select(Project.id).where(Project.name == "Business Development")).all())
+    bd_task_ids = list(db.scalars(select(Task.id).where(or_(
+        Task.name == "Business Development",
+        Task.project_id.in_(_bd_proj_ids) if _bd_proj_ids else false(),
+    ))).all())
     bd_hours: dict[int, float] = defaultdict(float)
     bd_cost: dict[int, float] = defaultdict(float)
     if bd_task_ids:
@@ -5097,6 +5083,7 @@ def _payroll_fringe_rate(db: Session, s: date, e: date) -> tuple[float, dict]:
     from the payroll journal over [s, e] (pay-day basis). Falls back to a default."""
     inbox = Path(get_settings().FRESHBOOKS_TRANSITION_DIR).expanduser()
     gross = burden = 0.0
+    journal_pay_dates: set[date] = set()
     if inbox.exists():
         for period in _deduped_payroll_periods(inbox):
             pd_str = (period.get("pay_day") or "").strip()
@@ -5107,13 +5094,45 @@ def _payroll_fringe_rate(db: Session, s: date, e: date) -> tuple[float, dict]:
                     break
                 except ValueError:
                     continue
+            if pd is not None:
+                journal_pay_dates.add(pd)
             if pd is None or pd < s or pd > e:
                 continue
             t = period.get("totals", {})
             gross += float(t.get("gross", 0))
             burden += float(t.get("employer_taxes", 0)) + float(t.get("employer_401k", 0))
+    # In-app payroll runs for pay dates the journals don't cover (same rule as P&L COGS).
+    try:
+        from .payroll.models import PayrollLine, PayrollRun
+        for g_, lj in db.execute(
+            select(PayrollLine.gross, PayrollLine.lines_json)
+            .join(PayrollRun, PayrollRun.id == PayrollLine.run_id)
+            .where(PayrollRun.status == "paid", PayrollRun.check_date >= s, PayrollRun.check_date <= e,
+                   PayrollRun.check_date.notin_(journal_pay_dates))
+        ).all():
+            g = float(g_ or 0)
+            try:
+                d = json.loads(lj or "{}")
+            except Exception:
+                d = {}
+            gross += g
+            burden += float(d.get("ss") or 0) + float(d.get("medicare") or 0) + g * 0.012 + float(d.get("er_match") or 0)
+    except Exception:
+        pass
+    # Employee benefits (workers' comp / disability / health) are fringe too — they were
+    # left out of both the fringe and the overhead pool, understating loaded cost.
+    benefits = float(db.scalar(
+        select(func.coalesce(func.sum(-BankTransaction.amount), 0.0)).where(
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True), BankTransaction.amount < 0,
+            BankTransaction.pending.is_(False),
+            ~BankTransaction.source.in_(SUPERSEDED_SOURCES),
+            or_(*[func.upper(BankTransaction.name).like(f"%{k}%") for k in BENEFITS_TO_COGS_KEYWORDS]),
+        )
+    ) or 0.0)
+    burden += benefits
     rate = (burden / gross) if gross > 0 else OVERHEAD_DEFAULT_FRINGE
-    return rate, {"gross": round(gross, 2), "employer_burden": round(burden, 2)}
+    return rate, {"gross": round(gross, 2), "employer_burden": round(burden, 2), "benefits": round(benefits, 2)}
 
 
 def _compute_overhead_rate(db: Session, s: date, e: date) -> dict:
@@ -5371,7 +5390,7 @@ def accounting_project_alerts(
               GROUP BY te.project_id
             ), inv AS (
               SELECT project_id, SUM(subtotal_amount) AS invoiced, MAX(issue_date) AS last_invoice
-              FROM invoices WHERE status <> 'void' AND project_id IS NOT NULL GROUP BY project_id
+              FROM invoices WHERE status NOT IN ('void','draft') AND project_id IS NOT NULL GROUP BY project_id
             )
             SELECT p.id, p.name, p.lifecycle_status, COALESCE(p.overall_budget_fee,0) AS budget,
                    COALESCE(wip.unbilled_wip,0), COALESCE(wip.stale_wip,0), wip.oldest_unbilled,
@@ -5602,44 +5621,35 @@ def accounting_daily_profitability(
     day_cost: dict[_date, float] = defaultdict(float)
     day_bill_h: dict[_date, float] = defaultdict(float)
     day_nonbill_h: dict[_date, float] = defaultdict(float)
-    # Revenue = billable hours × the ACTUAL per-project bill rate stored on each entry
-    # (rates vary by project). Only when an entry's rate is missing or is the stale flat
-    # $125 default (from before per-project rates were applied) do we fall back to the
-    # person's standard invoiced rate (direct × multiplier).
-    _uname = {u.id: u.full_name for u in db.scalars(select(User)).all()}
-    _std_cache: dict[int, float | None] = {}
-    # --- Derived fully-loaded cost rates (salary + fringe + overhead) from actual
-    # trailing-12-month financials. Overhead is recovered on CLIENT (direct) hours ONLY;
-    # overhead-project hours (admin/BD/PTO) are already inside the overhead pool, so
-    # costing them again would double-count. Hence: client hour → loaded rate; overhead
-    # hour → $0 direct cost. Identity: Σ client_h × loaded = direct labor + overhead pool
-    # = total cost, so the daily margins sum to true operating profit.
-    _oh = _compute_overhead_rate(db, _sub_months(target, 12), lb_end)
-    _rate_map = {e["user_id"]: e["cost_rate_loaded"] for e in _oh["employees"]}
-    _ovh_proj = {p.id: bool(p.is_overhead) for p in db.scalars(select(Project)).all()}
+    # Revenue = billable hours × the per-project/task rate-card price stamped on each entry.
+    # Cost = the entry's STAMPED loaded rate (cost_rate_applied: salary + fringe + overhead,
+    # kept current YTD by the nightly refresh) — the same source Utilization and Project
+    # Margin use, so every screen agrees for the same days. Overhead is recovered on CLIENT
+    # hours only: overhead-project hours (admin/BD/PTO) are already inside the overhead
+    # pool, so they cost $0 here. Identity: Σ client_h × loaded = direct labor + overhead pool.
+    _projs = {p.id: p for p in db.scalars(select(Project)).all()}
+    _tasks = {t.id: t for t in db.scalars(select(Task)).all()}
+    unpriced_hours = 0.0
     for te in db.scalars(
         select(TimeEntry).where(
             TimeEntry.work_date >= series_start, TimeEntry.work_date <= target
         )
     ).all():
         h = float(te.hours or 0)
-        if _ovh_proj.get(te.project_id, False):
-            cost = 0.0  # overhead time is recovered via the loaded rate on client hours
-        else:
-            _lr = _rate_map.get(te.user_id)
-            cost = h * (_lr if _lr is not None else float(te.cost_rate_applied or 0))
+        _p = _projs.get(te.project_id)
+        _t = _tasks.get(te.task_id)
+        is_ovh = bool(_p.is_overhead) if _p else False
+        cost = 0.0 if is_ovh else h * float(te.cost_rate_applied or 0)  # overhead time is inside the loaded rate
         day_cost[te.work_date] += cost
-        if te.is_billable:
+        # Billable = entry AND project AND task billable (same rule as Utilization), never
+        # overhead time. Revenue is the entry's own rate-card price: no global/placeholder
+        # substitution — hours with no rate are reported as unpriced, not guessed.
+        billable = bool(te.is_billable) and bool(_p and _p.is_billable) and bool(_t and _t.is_billable) and not is_ovh
+        if billable:
             ba = float(te.bill_rate_applied or 0)
-            if ba > 0 and abs(ba - 125.0) > 0.01:
-                rate = ba  # real per-project rate on the entry
-            else:
-                if te.user_id not in _std_cache:
-                    _std_cache[te.user_id] = _invoice_bill_rate(_uname.get(te.user_id, ""))
-                rate = _std_cache[te.user_id]
-                if rate is None:
-                    rate = ba  # no standard rate known — use whatever the entry has
-            day_rev[te.work_date] += h * rate
+            if ba <= 0:
+                unpriced_hours += h
+            day_rev[te.work_date] += h * ba
             day_bill_h[te.work_date] += h
         else:
             day_nonbill_h[te.work_date] += h
@@ -5740,6 +5750,7 @@ def accounting_daily_profitability(
             "business_days_in_lookback": lb_business_days,
         },
         "daily_profit": t_profit,
+        "unpriced_billable_hours": round(unpriced_hours, 2),
         "break_even": {
             "billable_hours_needed": breakeven_bill_h,
             "margin_per_billable_hour": margin_per_bill_h,
@@ -5752,10 +5763,10 @@ def accounting_daily_profitability(
         },
         "series": series,
         "notes": [
-            "Daily profit = billable hours × bill rate − all hours × cost rate.",
-            "Billable hours are priced at each entry's actual per-project bill rate; a stale $125 default falls back to the person's standard invoiced rate (direct × 2.354 staff / × 2.14 principal).",
-            "The cost rate is a fully-loaded wrap (~1.75× direct salary = direct + fringe + overhead), so overhead is ALREADY inside it — it is NOT subtracted a second time.",
-            "Non-billable time is costed (at the loaded rate) but earns nothing, so it correctly lowers the day.",
+            "Daily profit = billable hours × bill rate − client-project hours × loaded cost rate.",
+            "Billable hours are priced at each entry's project/task rate-card rate; hours with no rate are counted as unpriced (see unpriced_billable_hours), never guessed.",
+            "The cost rate is a fully-loaded wrap (direct salary + fringe + overhead), so overhead is ALREADY inside it — it is NOT subtracted a second time.",
+            "Internal (overhead-project) time costs $0 here because its cost is inside the loaded rate; unbilled time on client projects is costed and earns nothing, so it lowers the day.",
             f"For reference, actual booked non-COGS OPEX averaged ${round(opex_lookback / lookback_months, 2):,.0f}/mo over the last {lookback_months} months; the gap vs the overhead recovered in the loaded rates is over/under-applied overhead, shown in the monthly P&L.",
             "Earned-value (accrual) management KPI — value produced vs loaded cost, not cash collected.",
         ],
@@ -6459,11 +6470,25 @@ def _bd_overhead_ids(db: Session) -> tuple[int, int, int]:
 
 
 def _pursuit_bd_effort(db: Session, pursuit_id: int) -> tuple[float, float]:
-    hrs, cost = db.execute(
-        select(func.coalesce(func.sum(TimeEntry.hours), 0.0),
-               func.coalesce(func.sum(TimeEntry.hours * TimeEntry.cost_rate_applied), 0.0))
-        .where(TimeEntry.pursuit_id == pursuit_id)).one()
-    return round(float(hrs or 0), 1), round(float(cost or 0), 2)
+    """Hours and labor cost invested in a pursuit. BD time is itself OVERHEAD, so it is
+    costed at salary + fringe (cost_rate_labor), not the loaded rate — the loaded rate
+    already carries an overhead share, which would overstate BD cost."""
+    entries = db.execute(
+        select(TimeEntry.user_id, TimeEntry.hours, TimeEntry.cost_rate_applied)
+        .where(TimeEntry.pursuit_id == pursuit_id)).all()
+    if not entries:
+        return 0.0, 0.0
+    today = date.today()
+    oh = _compute_overhead_rate(db, date(today.year, 1, 1), today)
+    labor = {int(e["user_id"]): float(e["cost_rate_labor"]) for e in oh["employees"]}
+    mult = (1 + oh["overhead_rate"]) or 1.0
+    hrs = cost = 0.0
+    for uid, h, cr in entries:
+        h = float(h or 0)
+        rate = labor.get(int(uid)) if uid is not None else None
+        hrs += h
+        cost += h * (rate if rate is not None else float(cr or 0) / mult)
+    return round(hrs, 1), round(cost, 2)
 
 
 class PursuitTimeIn(BaseModel):
@@ -6798,7 +6823,11 @@ def bd_metrics(db: Session = Depends(get_db), _: User = Depends(require_permissi
         select(TimeEntry.pursuit_id, func.sum(TimeEntry.hours),
                func.sum(TimeEntry.hours * TimeEntry.cost_rate_applied))
         .where(TimeEntry.pursuit_id.isnot(None)).group_by(TimeEntry.pursuit_id)).all()
-    bd_by_pursuit = {pid: (float(h or 0), float(c or 0)) for pid, h, c in bd_rows}
+    # BD time is overhead: cost it at salary + fringe (loaded ÷ (1 + overhead rate)),
+    # matching _pursuit_bd_effort — the loaded rate already carries an overhead share.
+    _t = date.today()
+    _oh_mult = (1 + _compute_overhead_rate(db, date(_t.year, 1, 1), _t)["overhead_rate"]) or 1.0
+    bd_by_pursuit = {pid: (float(h or 0), float(c or 0) / _oh_mult) for pid, h, c in bd_rows}
     pmap = {p.id: p for p in pursuits}
     bd_cost_total = round(sum(c for _h, c in bd_by_pursuit.values()), 2)
     bd_hours_total = round(sum(h for h, _c in bd_by_pursuit.values()), 1)
@@ -7126,7 +7155,8 @@ _OWNER_DRAW_CAT_LIKE = ("%owner draw%", "%personal travel%", "%personal meals%",
                         "%government_and_non_profit%")
 _BROKERAGE_NAME_LIKE = ("%ALPACADB%", "%MOOMOO FINANCIAL%", "%FUTUINC%", "%RH BROKERAGE%",
                         "%RHS BROKERAGE%", "%ROBINHOOD%", "%INTERACTIVEBROKERS%",
-                        "%INTERACTIVE BROKER%", "%PUBLIC.COM%")
+                        "%INTERACTIVE BROKER%", "%PUBLIC.COM%",
+                        "%MANUAL DB-BKRG%", "%MANUAL CR-BKRG%")  # in sync with PERSONAL_OVERRIDE_KEYWORDS
 
 
 OWNER_ZELLE_IN_PATTERN = "%zelle%from%bertrand%"  # owner → company Zelle (capital contribution)
@@ -7144,17 +7174,38 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     """
     superseded = SUPERSEDED_SOURCES
     a_out = a_in = b_out = c_out = c_in = 0.0
+    # Each bank row counts in at most ONE bucket (a 0273 transfer that is also categorised
+    # Owner Draw, or a brokerage row, is not counted twice), and the same bank transfer
+    # arriving from two feeds (same "transaction#") is counted once.
+    counted: set[int] = set()
+    seen_txn: set[str] = set()
+
+    def _first_time(t: BankTransaction) -> bool:
+        if t.id in counted:
+            return False
+        mnum = re.search(r"transaction#:\s*(\d+)", t.name or "", re.I)
+        if mnum is not None:
+            if mnum.group(1) in seen_txn:
+                return False
+            seen_txn.add(mnum.group(1))
+        counted.add(t.id)
+        return True
+
+    live = (BankTransaction.posted_date.isnot(None),
+            BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
+            BankTransaction.is_business.is_(True),
+            BankTransaction.pending.is_(False),
+            ~BankTransaction.source.in_(superseded))
     # A) cash transfers to the owner's personal checking (...0273), business side only
     # (personal-account legs and duplicate feeds flagged non-business are excluded)
     for t in db.scalars(select(BankTransaction).where(
-        BankTransaction.posted_date.isnot(None),
-        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
-        BankTransaction.is_business.is_(True),
-        ~BankTransaction.source.in_(superseded),
+        *live,
         BankTransaction.name.ilike("%transfer%0273%"),
         ~BankTransaction.name.ilike("%wire%"),
         BankTransaction.account_id != "Chase0273_Activity",
     )).all():
+        if not _first_time(t):
+            continue
         amt = float(t.amount or 0)
         if amt < 0:
             a_out += -amt
@@ -7165,31 +7216,26 @@ def _owner_distributions(db: Session, s: date, e: date) -> dict[str, float]:
     # distributions by $135,800 for 2026 (settled netting: $448,180 out − $320,537 in).
     zelle_in = 0.0
     for t in db.scalars(select(BankTransaction).where(
-        BankTransaction.posted_date.isnot(None),
-        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
-        BankTransaction.is_business.is_(True), BankTransaction.amount > 0,
-        ~BankTransaction.source.in_(superseded),
+        *live, BankTransaction.amount > 0,
         BankTransaction.name.ilike(OWNER_ZELLE_IN_PATTERN),
     )).all():
-        zelle_in += float(t.amount or 0)
+        if _first_time(t):
+            zelle_in += float(t.amount or 0)
     a_in += zelle_in
     # B) personal spend/obligations on business accounts booked to Owner Draw
     for t in db.scalars(select(BankTransaction).where(
-        BankTransaction.posted_date.isnot(None),
-        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
-        BankTransaction.is_business.is_(True), BankTransaction.amount < 0,
-        ~BankTransaction.source.in_(superseded),
+        *live, BankTransaction.amount < 0,
         or_(*[BankTransaction.category_json.ilike(p) for p in _OWNER_DRAW_CAT_LIKE]),
     )).all():
-        b_out += -float(t.amount or 0)
+        if _first_time(t):
+            b_out += -float(t.amount or 0)
     # C) transfers funding personal brokerage accounts (net wash in practice)
     for t in db.scalars(select(BankTransaction).where(
-        BankTransaction.posted_date.isnot(None),
-        BankTransaction.posted_date >= s, BankTransaction.posted_date <= e,
-        BankTransaction.is_business.is_(True),
-        ~BankTransaction.source.in_(superseded),
+        *live,
         or_(*[func.upper(BankTransaction.name).like(p) for p in _BROKERAGE_NAME_LIKE]),
     )).all():
+        if not _first_time(t):
+            continue
         amt = float(t.amount or 0)
         if amt < 0:
             c_out += -amt
@@ -7222,16 +7268,30 @@ def accounting_balance_sheet(
     # Cash = business DEPOSITORY accounts only. Credit-card accounts also carry a
     # current_balance, but that is money OWED (a liability), not cash — summing all
     # business accounts previously booked card debt as an asset and overstated cash.
-    cash = float(db.scalar(
-        select(func.coalesce(func.sum(BankAccount.current_balance), 0.0))
-        .where(BankAccount.is_business.is_(True))
-        .where(func.lower(func.coalesce(BankAccount.type, "")) != "credit")
-    ) or 0.0)
-    credit_card_debt = float(db.scalar(
-        select(func.coalesce(func.sum(BankAccount.current_balance), 0.0))
-        .where(BankAccount.is_business.is_(True))
-        .where(func.lower(func.coalesce(BankAccount.type, "")) == "credit")
-    ) or 0.0)
+    # Each real account counted ONCE: skip Plaid accounts registered as duplicate feeds
+    # (superseded_bank_account_ids), and if the same account (mask + type) is still exposed
+    # by two logins, keep the most recently synced balance. Cash = depository only (a Plaid
+    # loan/investment balance is not cash).
+    # A duplicate-feed account (registered superseded for TRANSACTIONS) may still carry the
+    # freshest BALANCE for the same real account, so it competes on recency — but only when
+    # it matches a business account's mask + type (never a personal account like 0273).
+    from .plaid_integration import _superseded_account_ids
+    _sup = _superseded_account_ids(db)
+    _key = lambda a: (a.mask or a.account_id, (a.type or "").lower())  # noqa: E731
+    _biz = [a for a in db.scalars(select(BankAccount).where(BankAccount.is_business.is_(True))).all()]
+    _biz_keys = {_key(a) for a in _biz}
+    _dups = [a for a in db.scalars(select(BankAccount).where(BankAccount.account_id.in_(_sup))).all()
+             if _key(a) in _biz_keys] if _sup else []
+    _latest: dict[tuple, BankAccount] = {}
+    for acct in [*_biz, *_dups]:
+        if acct.current_balance is None:
+            continue
+        key = _key(acct)
+        prev = _latest.get(key)
+        if prev is None or (acct.last_synced_at or datetime.min) > (prev.last_synced_at or datetime.min):
+            _latest[key] = acct
+    cash = sum(float(a.current_balance or 0.0) for (_m, t), a in _latest.items() if t == "depository")
+    credit_card_debt = sum(float(a.current_balance or 0.0) for (_m, t), a in _latest.items() if t == "credit")
     ar = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.balance_due), 0.0))
         .where(Invoice.balance_due > 0)
@@ -10095,9 +10155,10 @@ def export_time_entries_csv(
     for r in out_rows:
         project_ref = project_map.get(r.project_id)
         task_ref = task_map.get(r.task_id)
-        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False)
+        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False) and bool(r.is_billable)
         revenue = float(r.hours * r.bill_rate_applied) if is_billable else 0.0
-        cost = float(r.hours * r.cost_rate_applied)
+        # Overhead-project time is already inside the loaded rate on client hours.
+        cost = 0.0 if (project_ref is not None and bool(getattr(project_ref, "is_overhead", False)))             else float(r.hours * r.cost_rate_applied)
         profit = revenue - cost
         writer.writerow(
             [
@@ -10729,7 +10790,7 @@ def project_margin(
     for te in entries:
         project_ref = project_by_id.get(te.project_id)
         task_ref = task_by_id.get(te.task_id)
-        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False)
+        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False) and bool(te.is_billable)
         row = actual_by_project.setdefault(te.project_id, {"actual_hours": 0.0, "actual_revenue": 0.0, "actual_cost": 0.0, "unbilled_wip": 0.0,
                                                            "absorbed_overhead_cost": 0.0})
         row["actual_hours"] += float(te.hours)
@@ -11406,9 +11467,9 @@ def invoice_revenue_status(
     #   collected_period = payments received in the period (cash)
     s, e = _accounting_period(start, end)
     invoiced_period = float(db.scalar(
-        select(func.coalesce(func.sum(Invoice.subtotal_amount), 0.0))
+        select(func.coalesce(func.sum(_accrual_invoice_amount()), 0.0))
         .where(Invoice.issue_date.isnot(None), Invoice.issue_date >= s, Invoice.issue_date <= e,
-               func.lower(func.coalesce(Invoice.status, "")) != "draft")
+               func.lower(func.coalesce(Invoice.status, "")).notin_(ACCRUAL_EXCLUDED_STATUSES))
     ) or 0.0)
     collected_period = float(db.scalar(
         select(func.coalesce(func.sum(Invoice.amount_paid), 0.0))
@@ -12253,6 +12314,9 @@ def public_invoice_payment_submit(
         inv.payment_link_enabled = False
     else:
         inv.status = "partial"
+        # A partial payment is still cash received: date it, or it silently drops out of
+        # cash revenue (paid_date = date of the most recent payment).
+        inv.paid_date = today
     _log_audit_event(
         db=db,
         entity_type="invoice",
@@ -12299,6 +12363,9 @@ def update_invoice_payment(
     inv.amount_paid = paid
     inv.balance_due = balance
     inv.paid_date = payload.paid_date
+    if paid > 0 and not inv.paid_date:
+        # Any recorded payment (full or partial) needs a date or it is missing from cash revenue.
+        inv.paid_date = date.today()
 
     desired = (payload.status or "").strip().lower()
     if desired in {"draft", "sent", "partial", "paid", "void"}:
@@ -12312,6 +12379,7 @@ def update_invoice_payment(
             inv.status = "partial"
         else:
             inv.status = "sent" if inv.status != "draft" else inv.status
+    _sync_invoice_billed_flags(db, inv)
 
     _log_audit_event(
         db=db,
@@ -12869,9 +12937,10 @@ def _reconciliation_rows(db: Session, start: date, end: date) -> tuple[dict[str,
         row["total_hours"] = float(row["total_hours"]) + float(te.hours)
         project_ref = projects_by_id.get(te.project_id)
         task_ref = tasks_by_id.get(te.task_id)
-        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False)
+        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False) and bool(te.is_billable)
         row["bill_amount"] = float(row["bill_amount"]) + (float(te.hours * te.bill_rate_applied) if is_billable else 0.0)
-        row["cost_amount"] = float(row["cost_amount"]) + float(te.hours * te.cost_rate_applied)
+        _ovh = project_ref is not None and bool(getattr(project_ref, "is_overhead", False))
+        row["cost_amount"] = float(row["cost_amount"]) + (0.0 if _ovh else float(te.hours * te.cost_rate_applied))
 
         if te.user_id not in users_by_id:
             row["orphan_user_refs"] = int(row["orphan_user_refs"]) + 1
@@ -12922,11 +12991,15 @@ def _reconciliation_rows(db: Session, start: date, end: date) -> tuple[dict[str,
         "hours_in_range": float(sum(float(e.hours) for e in entries)),
         "bill_amount_in_range": float(
             sum(
-                (float(e.hours * e.bill_rate_applied) if bool(projects_by_id.get(e.project_id).is_billable if projects_by_id.get(e.project_id) else False) and bool(tasks_by_id.get(e.task_id).is_billable if tasks_by_id.get(e.task_id) else False) else 0.0)
+                (float(e.hours * e.bill_rate_applied) if bool(e.is_billable) and bool(projects_by_id.get(e.project_id).is_billable if projects_by_id.get(e.project_id) else False) and bool(tasks_by_id.get(e.task_id).is_billable if tasks_by_id.get(e.task_id) else False) else 0.0)
                 for e in entries
             )
         ),
-        "cost_amount_in_range": float(sum(float(e.hours * e.cost_rate_applied) for e in entries)),
+        # Overhead-project hours are already inside the loaded rate on client hours.
+        "cost_amount_in_range": float(sum(
+            float(e.hours * e.cost_rate_applied) for e in entries
+            if not (projects_by_id.get(e.project_id) is not None and bool(getattr(projects_by_id.get(e.project_id), "is_overhead", False)))
+        )),
     }
     snapshot["profit_amount_in_range"] = float(snapshot["bill_amount_in_range"]) - float(snapshot["cost_amount_in_range"])
     return snapshot, monthly_rows
@@ -12987,7 +13060,7 @@ def _project_performance_rows(db: Session, start: date, end: date) -> list[dict[
             continue
         project_ref = projects_by_id.get(te.project_id)
         task_ref = tasks_by_id.get(te.task_id)
-        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False)
+        is_billable = bool(project_ref.is_billable if project_ref else False) and bool(task_ref.is_billable if task_ref else False) and bool(te.is_billable)
         revenue = float(te.hours * te.bill_rate_applied) if is_billable else 0.0
         # Overhead-project time is already inside the loaded rate charged on client
         # hours; costing it again here double-counted overhead (same rule as the daily KPI).
@@ -13604,27 +13677,20 @@ async def freshbooks_time_import(
         bill_rate = _parse_float(_first_value(row, bill_cols))
         cost_rate = _parse_float(_first_value(row, cost_cols))
         if bill_rate is None or cost_rate is None:
-            existing_rate = db.scalar(
-                select(UserRate)
-                .where(and_(UserRate.user_id == user.id, UserRate.effective_date <= parsed_date))
-                .order_by(UserRate.effective_date.desc())
-            )
-            if existing_rate:
-                bill_rate = _normalize_rate_4dp(float(existing_rate.bill_rate), "bill_rate")
-                cost_rate = _normalize_rate_4dp(float(existing_rate.cost_rate), "cost_rate")
-            else:
-                bill_rate = bill_rate if bill_rate is not None else 125.0
-                cost_rate = cost_rate if cost_rate is not None else round(float(bill_rate) * 0.4, 2)
-                bill_rate = _normalize_rate_4dp(float(bill_rate), "bill_rate")
-                cost_rate = _normalize_rate_4dp(float(cost_rate), "cost_rate")
-                new_rate = UserRate(
-                    user_id=user.id,
-                    effective_date=parsed_date,
-                    bill_rate=bill_rate,
-                    cost_rate=cost_rate,
+            # No global / placeholder rate (owner rule): BILL comes from the project/task
+            # rate card, else 0 and flagged via /admin/missing-bill-rates; COST is the
+            # person's current loaded cost. Never fabricate a UserRate row.
+            if bill_rate is None:
+                bill_rate = _effective_bill_rate(db, project.id, task.id, user.id) or 0.0
+            if cost_rate is None:
+                existing_rate = db.scalar(
+                    select(UserRate)
+                    .where(and_(UserRate.user_id == user.id, UserRate.effective_date <= parsed_date))
+                    .order_by(UserRate.effective_date.desc())
                 )
-                db.add(new_rate)
-                db.flush()
+                cost_rate = float(existing_rate.cost_rate) if existing_rate else 0.0
+            bill_rate = _normalize_rate_4dp(float(bill_rate), "bill_rate")
+            cost_rate = _normalize_rate_4dp(float(cost_rate), "cost_rate")
         else:
             bill_rate = _normalize_rate_4dp(float(bill_rate), "bill_rate")
             cost_rate = _normalize_rate_4dp(float(cost_rate), "cost_rate")
@@ -13737,6 +13803,21 @@ async def freshbooks_time_import(
     }
 
 
+def _sync_invoice_billed_flags(db: Session, inv: "Invoice") -> None:
+    """Keep TimeEntry.billed in step with an in-app invoice's status: hours on a sent /
+    partial / paid / overdue invoice are billed (out of WIP); a void releases them."""
+    st = (inv.status or "").lower()
+    if st in ("draft",):
+        return
+    ids = [i for i in db.scalars(select(InvoiceLine.source_time_entry_id).where(
+        InvoiceLine.invoice_id == inv.id, InvoiceLine.source_time_entry_id.isnot(None))).all()]
+    if not ids:
+        return
+    flag = st != "void"
+    for te in db.scalars(select(TimeEntry).where(TimeEntry.id.in_(ids))).all():
+        te.billed = flag
+
+
 def _invoice_preview_rows(
     db: Session,
     start: date,
@@ -13756,10 +13837,21 @@ def _invoice_preview_rows(
         project_ids = sorted({e.project_id for e in entries})
         task_map = {t.id: t for t in db.scalars(select(Task).where(Task.id.in_(task_ids) if task_ids else false())).all()}
         project_map = {p.id: p for p in db.scalars(select(Project).where(Project.id.in_(project_ids) if project_ids else false())).all()}
+        # Never bill the same hours twice: skip entries already flagged billed or already
+        # on a line of any non-void invoice (drafts included, so two drafts can't overlap).
+        _already = set(db.scalars(
+            select(InvoiceLine.source_time_entry_id)
+            .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+            .where(InvoiceLine.source_time_entry_id.in_([e.id for e in entries]),
+                   func.lower(func.coalesce(Invoice.status, "")) != "void")
+        ).all())
         entries = [
             e
             for e in entries
-            if bool(project_map.get(e.project_id).is_billable if project_map.get(e.project_id) else False)
+            if bool(e.is_billable)
+            and not bool(getattr(e, "billed", False))
+            and e.id not in _already
+            and bool(project_map.get(e.project_id).is_billable if project_map.get(e.project_id) else False)
             and bool(task_map.get(e.task_id).is_billable if task_map.get(e.task_id) else False)
         ]
 
