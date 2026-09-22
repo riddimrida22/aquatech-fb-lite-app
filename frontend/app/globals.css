@@ -1094,6 +1094,27 @@ table th.aq-sortable-header.aq-sortable-desc::after {
 
   .aq-lite-nav {
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    align-items: start;
+  }
+
+  .aq-lite-nav-group {
+    min-width: 0;
+  }
+
+  /* In the tile row an open group takes its own full row, children as tiles beneath the head,
+     so they never spill over the neighbouring tile or stretch the row. */
+  .aq-lite-nav-group.is-open {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+
+  .aq-lite-nav-group.is-open > .aq-lite-nav-group-head {
+    grid-column: 1 / -1;
+  }
+
+  .aq-lite-nav-group.is-open > .aq-lite-nav-child {
+    margin-left: 0;
+    width: 100%;
   }
 
   .aq-lite-sidebar-card {
