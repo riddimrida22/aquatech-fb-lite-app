@@ -395,7 +395,7 @@ export default function AquatechPmHome() {
     projectId: "",
     start: startOfMonthIso(),
     end: todayIso(),
-    approvedOnly: true,
+    approvedOnly: false,
   });
   const [expenseForm, setExpenseForm] = useState({
     projectId: "",
