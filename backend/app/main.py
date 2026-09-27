@@ -13002,7 +13002,16 @@ def invoice_next_period(
     billed_ends = {i.end_date for i in db.scalars(select(Invoice).where(
         Invoice.project_id == project_id, Invoice.status.notin_(["void"]))).all() if i.end_date}
     closed = [p for p in periods if p[3] <= today]
-    unbilled = [p for p in closed if p[3] not in billed_ends]
+    # A period counts as done when an invoice covers its end date OR when it holds no
+    # unbilled billable time. The legacy FreshBooks invoices carry no period dates, so the
+    # end-date test alone would re-offer periods that were billed long ago; unbilled hours
+    # are the factual test of what is actually left to bill.
+    def _unbilled(p):
+        return float(db.scalar(select(func.coalesce(func.sum(TimeEntry.hours), 0.0)).where(
+            TimeEntry.project_id == project_id, TimeEntry.is_billable.is_(True),
+            or_(TimeEntry.billed.is_(False), TimeEntry.billed.is_(None)),
+            TimeEntry.work_date >= p[2], TimeEntry.work_date <= p[3])) or 0.0)
+    unbilled = [p for p in closed if p[3] not in billed_ends and _unbilled(p) > 0]
     running = next((p for p in periods if p[2] <= today <= p[3]), None)
     pick, state = (unbilled[0], "closed") if unbilled else ((running, "open") if running else (None, "none"))
     if pick is None:
@@ -13012,6 +13021,7 @@ def invoice_next_period(
         "project_id": project_id, "client": client, "has_calendar": True, "state": state,
         "period_no": pick[1], "start": pick[2].isoformat(), "end": pick[3].isoformat(),
         "closes_in_days": (pick[3] - today).days, "source": pick[4],
+        "unbilled_hours": round(_unbilled(pick), 2),
         "unbilled_closed_periods": [{"period_no": p[1], "start": p[2].isoformat(), "end": p[3].isoformat()}
                                     for p in unbilled],
         "note": (f"Period {pick[1]} closed {(today - pick[3]).days} day(s) ago - ready to invoice."
