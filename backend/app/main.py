@@ -12969,6 +12969,58 @@ def run_recurring_invoices_now(
     return _run_recurring_invoices(db, run_date or date.today(), actor_user_id=current_user.id)
 
 
+@app.get("/invoices/next-period")
+def invoice_next_period(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),
+) -> dict[str, object]:
+    """The billing period this project should invoice next, from the CLIENT'S OWN calendar
+    (finance.billing_periods, loaded from the schedule the client supplied).
+
+    The next period to bill is the earliest CLOSED period that has no invoice against it;
+    if every closed period is billed, the period now running is returned as 'open' so the
+    caller can show when it closes rather than invoicing early."""
+    from sqlalchemy import text as _t
+    proj = db.get(Project, project_id)
+    if proj is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    client = (proj.client_name or "").strip()
+    today = date.today()
+    try:
+        rows = db.execute(_t("SELECT client, period_no, period_begin, period_end, source "
+                             "FROM finance.billing_periods ORDER BY period_begin")).all()
+    except Exception:
+        db.rollback()
+        rows = []
+    # match the project's client to a calendar owner ("HDR" matches "HDR Inc.", etc.)
+    cl = client.lower()
+    periods = [r for r in rows if r[0].lower() in cl or cl.startswith(r[0].lower())]
+    if not periods:
+        return {"project_id": project_id, "client": client, "has_calendar": False,
+                "note": "No billing calendar on file for this client - enter the dates manually."}
+    billed_ends = {i.end_date for i in db.scalars(select(Invoice).where(
+        Invoice.project_id == project_id, Invoice.status.notin_(["void"]))).all() if i.end_date}
+    closed = [p for p in periods if p[3] <= today]
+    unbilled = [p for p in closed if p[3] not in billed_ends]
+    running = next((p for p in periods if p[2] <= today <= p[3]), None)
+    pick, state = (unbilled[0], "closed") if unbilled else ((running, "open") if running else (None, "none"))
+    if pick is None:
+        return {"project_id": project_id, "client": client, "has_calendar": True,
+                "note": "Every period on the calendar is already invoiced."}
+    return {
+        "project_id": project_id, "client": client, "has_calendar": True, "state": state,
+        "period_no": pick[1], "start": pick[2].isoformat(), "end": pick[3].isoformat(),
+        "closes_in_days": (pick[3] - today).days, "source": pick[4],
+        "unbilled_closed_periods": [{"period_no": p[1], "start": p[2].isoformat(), "end": p[3].isoformat()}
+                                    for p in unbilled],
+        "note": (f"Period {pick[1]} closed {(today - pick[3]).days} day(s) ago - ready to invoice."
+                 if state == "closed" else
+                 f"Period {pick[1]} is still running; it closes {pick[3].isoformat()} "
+                 f"({(pick[3] - today).days} day(s) away)."),
+    }
+
+
 @app.get("/invoices/preview", response_model=InvoicePreviewOut)
 def invoice_preview(
     start: date,
