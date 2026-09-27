@@ -405,6 +405,7 @@ export default function AquatechPmHome() {
     amount: "",
   });
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
+  const [periodHint, setPeriodHint] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<string | null>(null);
 
   const capabilities = useMemo(() => deriveUserCapabilities(user), [user]);
@@ -678,6 +679,22 @@ export default function AquatechPmHome() {
     const numericProjectId = Number(projectId);
     if (numericProjectId) {
       await ensureWbs(numericProjectId);
+      // Fill the period from the client's own billing calendar, so the dates match what
+      // the client expects instead of a month-to-date guess.
+      try {
+        const p = await apiGet<{
+          has_calendar: boolean; state?: string; period_no?: number | null;
+          start?: string; end?: string; note?: string;
+        }>(`/invoices/next-period?project_id=${numericProjectId}`);
+        if (p.has_calendar && p.start && p.end) {
+          setInvoiceForm((current) => ({ ...current, start: p.start!, end: p.end! }));
+          setPeriodHint(p.note ?? null);
+        } else {
+          setPeriodHint(p.note ?? null);
+        }
+      } catch {
+        setPeriodHint(null);
+      }
     }
   }
 
@@ -1851,6 +1868,13 @@ export default function AquatechPmHome() {
                         required
                       />
                     </label>
+                  </div>
+                  {periodHint ? (
+                    <p className="aq-lite-muted" style={{ fontSize: 12.5, margin: "2px 0 6px" }}>
+                      📅 {periodHint} Dates come from the client&apos;s billing calendar; edit them if you need a different period.
+                    </p>
+                  ) : null}
+                  <div className="aq-lite-form-grid">
                   </div>
                   <label className="aq-lite-inline-check">
                     <input
