@@ -1324,7 +1324,9 @@ class InvoiceCreateRequest(BaseModel):
     start: date
     end: date
     project_id: int | None = None
-    approved_only: bool = True
+    # Per user 2026-09-27: hours entered in the app COUNT AS APPROVED unless he says
+    # otherwise, so billing never silently drops time for a missing weekly signature.
+    approved_only: bool = False
     issue_date: date | None = None
     due_date: date | None = None
     notes: str = ""
@@ -1385,7 +1387,7 @@ class RecurringInvoiceScheduleCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     project_id: int | None = None
     cadence: str = Field(default="monthly")
-    approved_only: bool = True
+    approved_only: bool = False
     due_days: int = Field(default=30, ge=1, le=120)
     next_run_date: date
     auto_send_email: bool = False
@@ -13036,7 +13038,7 @@ def invoice_preview(
     start: date,
     end: date,
     project_id: int | None = None,
-    approved_only: bool = True,
+    approved_only: bool = False,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("VIEW_FINANCIALS")),
 ) -> InvoicePreviewOut:
