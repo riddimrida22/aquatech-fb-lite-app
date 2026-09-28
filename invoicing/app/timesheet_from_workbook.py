@@ -39,6 +39,17 @@ AQTPM_TO_CODE = {
 SPECIAL_ROWS = {"10052026": (19, 10052026, "BWT 1608-Jobcon")}
 
 
+def bucket_key(project: str, task: str | None = None) -> str:
+    """Which timesheet ROW a time entry belongs on. Overhead sits under one AqtPM project
+    ("Aquatech Operations" / "No Project"), but the timesheet keeps ADMINISTRATION (100004)
+    and BUSINESS DEVELOPMENT (100005) apart, so the TASK decides the row."""
+    p = (project or "").strip()
+    t = (task or "").strip().lower()
+    if p in ("Aquatech Operations", "No Project") and "business development" in t:
+        return "Business Development"
+    return p
+
+
 def _norm(code):
     if isinstance(code, float) and code == int(code):
         return str(int(code))

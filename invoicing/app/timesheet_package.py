@@ -56,15 +56,16 @@ def build_weekly_timesheets(outdir: str, invoice_hours: dict, data: dict,
             if not has_billed:
                 continue
             wk_i += 1
-            wk_entries = [DayEntry(r["project"], r["date"], r["hours"], r["note"])
+            wk_entries = [DayEntry(r["project"], r["date"], r["hours"], r["note"], r.get("task", ""))
                           for r in emp_rows if mon <= r["date"] <= sunday]
             ts_xlsx = os.path.join(outdir, f"Week {wk_i} {first} {last} TIMESHEET.xlsx")
             project_hours: dict = {}
             for r in emp_rows:
                 if mon <= r["date"] <= sunday and r["hours"]:
-                    project_hours.setdefault(r["project"], {})
-                    project_hours[r["project"]][r["date"]] = (
-                        project_hours[r["project"]].get(r["date"], 0) + r["hours"])
+                    _k = tfw.bucket_key(r["project"], r.get("task"))
+                    project_hours.setdefault(_k, {})
+                    project_hours[_k][r["date"]] = (
+                        project_hours[_k].get(r["date"], 0) + r["hours"])
             wb_res = tfw.build_from_workbook(full, sunday, ts_xlsx,
                                              emp_signature=config.employee_signature(full),
                                              sup_signature=sup_sig, project_hours=project_hours)
