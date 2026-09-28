@@ -47,6 +47,7 @@ AQTPM_TO_CODE = {
     "Aquatech Operations": "100004",       # -> ADMINISTRATION
     "No Project": "100004",
     "BWT Design Assistance": "0040042025",
+    "1539-REG - Stantec JV (NYC DEP)": "0040042025",   # same row: the AqtPM name for the Stantec JV
     "Brentwood Brook": "3",
     "Mount Vernon Flood Study": "0020032025",
     "Hydraulic Modeling 4063001X": "0010012024",
