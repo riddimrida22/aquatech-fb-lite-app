@@ -179,6 +179,9 @@ def build_timesheet_xlsx(out_path: str, *, employee_first: str, employee_last: s
     hours: dict[str, dict[dt.date, float]] = {}
     for e in entries:
         code = AQTPM_TO_CODE.get(bucket_key(e.project, getattr(e, "task", None)))
+        if not code and e.hours:
+            print(f"[timesheet] WARNING: no timesheet row for project {e.project!r} - "
+                  f"{e.hours}h on {e.date} DROPPED from the sheet", flush=True)
         if not code:
             continue
         hours.setdefault(code, {})

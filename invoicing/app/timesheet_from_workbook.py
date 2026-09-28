@@ -29,6 +29,7 @@ AQTPM_TO_CODE = {
     "LTCP4": "0020012024",
     "Aquatech Operations": "100004", "No Project": "100004",   # -> ADMINISTRATION
     "BWT Design Assistance": "0040042025",                     # Stantec JV
+    "1539-REG - Stantec JV (NYC DEP)": "0040042025",           # same row, AqtPM's name for it
     "Brentwood Brook": "3",
     "Mount Vernon Flood Study": "0020032025",
     "Hydraulic Modeling 4063001X": "0010012024",              # BEPA
@@ -151,6 +152,8 @@ def build_from_workbook(full_name: str, week_ending: dt.date, out_xlsx: str, *,
         for proj, daily in project_hours.items():
             code = AQTPM_TO_CODE.get(proj)
             if not code:
+                print(f"[timesheet] WARNING: no timesheet row for project {proj!r} - "
+                      f"{sum(daily.values())}h DROPPED from the sheet", flush=True)
                 continue
             if code in SPECIAL_ROWS:                 # repurpose a numbered slot (JobCon)
                 row, set_code, set_title = SPECIAL_ROWS[code]
