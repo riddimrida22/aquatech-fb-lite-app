@@ -55,6 +55,18 @@ AQTPM_TO_CODE = {
 }
 SUPERVISOR = "BERTRAND BYRNE, PhD, P.E"
 
+
+def bucket_key(project: str, task: str | None = None) -> str:
+    """Which timesheet ROW a time entry belongs on. Overhead sits under one AqtPM project
+    ("Aquatech Operations" / "No Project"), but the timesheet keeps ADMINISTRATION (100004)
+    and BUSINESS DEVELOPMENT (100005) apart, so the TASK decides the row."""
+    p = (project or "").strip()
+    t = (task or "").strip().lower()
+    if p in ("Aquatech Operations", "No Project") and "business development" in t:
+        return "Business Development"
+    return p
+
+
 thin = Side(style="thin", color="000000")
 med = Side(style="medium", color="000000")
 GRID = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -66,6 +78,7 @@ class DayEntry:
     date: dt.date
     hours: float
     note: str = ""
+    task: str = ""      # decides ADMINISTRATION vs BUSINESS DEVELOPMENT for overhead
 
 
 def _box(ws, r1, c1, r2, c2, side=med):
@@ -164,7 +177,7 @@ def build_timesheet_xlsx(out_path: str, *, employee_first: str, employee_last: s
     # --- aggregate AqtPM hours by code+date ---
     hours: dict[str, dict[dt.date, float]] = {}
     for e in entries:
-        code = AQTPM_TO_CODE.get(e.project)
+        code = AQTPM_TO_CODE.get(bucket_key(e.project, getattr(e, "task", None)))
         if not code:
             continue
         hours.setdefault(code, {})

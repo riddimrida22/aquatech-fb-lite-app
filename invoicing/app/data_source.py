@@ -42,10 +42,11 @@ def pull(project_id: int, begin: dt.date, end: dt.date,
         proj_name = _project_name(conn, project_id)
         rows = conn.execute(text("""
             SELECT u.full_name, p.name AS pname, te.work_date, te.hours, te.note,
-                   te.bill_rate_applied
+                   te.bill_rate_applied, t.name AS task
             FROM time_entries te
             JOIN users u ON u.id = te.user_id
             JOIN projects p ON p.id = te.project_id
+            LEFT JOIN tasks t ON t.id = te.task_id
             WHERE te.work_date >= :ts_begin AND te.work_date <= :ts_end
             ORDER BY u.full_name, te.work_date
         """), {"ts_begin": ts_begin, "ts_end": ts_end}).all()
@@ -53,10 +54,12 @@ def pull(project_id: int, begin: dt.date, end: dt.date,
     invoice_hours: dict[str, float] = {}
     timesheet: dict[str, list] = {}
     bill_rates: dict[str, float] = {}
-    for full_name, pname, d, hrs, note, brate in rows:
+    for full_name, pname, d, hrs, note, brate, task in rows:
         h = float(hrs or 0)
+        # `task` rides along so the timesheet can split overhead into its ADMINISTRATION
+        # and BUSINESS DEVELOPMENT rows (both sit under one AqtPM project).
         timesheet.setdefault(full_name, []).append(
-            {"project": pname, "date": d, "hours": h, "note": note or ""})
+            {"project": pname, "date": d, "hours": h, "note": note or "", "task": task or ""})
         if pname == proj_name and begin <= d <= end:
             invoice_hours[full_name] = round(invoice_hours.get(full_name, 0.0) + h, 2)
             if brate:
