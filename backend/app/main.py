@@ -10418,6 +10418,14 @@ def get_wbs(
     for task in tasks:
         _, created = _ensure_default_subtask_for_task(db, task)
         created_default_subtask = created_default_subtask or created
+    # QP-01 / D-035: every billable task on an active client project offers a QA/QC subtask, so
+    # picking it in the timesheet starts (or continues) a QA/QC review. Tasks that already have
+    # one (e.g. a fee-sheet QA/QC line flagged is_qaqc) keep it; no duplicate is added.
+    if (not project.is_overhead) and project.is_billable and project.is_active:
+        for task in tasks:
+            if task.is_billable:
+                _, created = qaqc_service.ensure_qaqc_subtask(db, task)
+                created_default_subtask = created_default_subtask or created
     if created_default_subtask:
         db.commit()
 

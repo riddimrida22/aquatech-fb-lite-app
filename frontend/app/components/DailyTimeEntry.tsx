@@ -703,6 +703,7 @@ export function DailyTimeEntry({
             {subtasksFor(editorRow.pid, editorRow.tid).find((s) => s.id === Number(editor.subtaskId))?.is_qaqc ? (
               <QaqcRecordPicker
                 projectId={editorRow.pid}
+                taskId={editorRow.tid}
                 note={editor.note}
                 onNote={(note) => setEditor((s) => (s ? { ...s, note } : s))}
               />

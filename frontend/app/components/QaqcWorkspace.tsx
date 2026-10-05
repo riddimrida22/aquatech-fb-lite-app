@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE, apiDelete, apiGet, apiPost, apiPut } from "../../lib/api";
+import { QAQC_OPEN_KEY } from "./QaqcRecordPicker";
 
 // QA/QC reviews — Quality Procedure QP-01, done online.
 // Part 1 details · Part 2 items checked · Part 3 findings (resolution + back-check)
@@ -119,6 +120,13 @@ export default function QaqcWorkspace() {
     setErr(null); setMsg(null);
     apiGet<Detail>(`/qaqc/reviews/${id}`).then((d) => { setDetail(d); setView("detail"); }).catch((e) => setErr(errText(e)));
   }, []);
+
+  // A record opened from the timesheet's QA/QC panel.
+  useEffect(() => {
+    let id: string | null = null;
+    try { id = window.sessionStorage.getItem(QAQC_OPEN_KEY); window.sessionStorage.removeItem(QAQC_OPEN_KEY); } catch { /* storage blocked */ }
+    if (id && /^\d+$/.test(id)) openRecord(Number(id));
+  }, [openRecord]);
 
   // Every action returns the full record; one helper keeps the view in step.
   const act = useCallback(async (fn: () => Promise<Detail>, ok?: string) => {
@@ -254,6 +262,8 @@ function NewReview({ meta, onCreated, onError }: { meta: Meta; onCreated: (d: De
   const submit = async () => {
     onError(null);
     if (!projectId || !f.task_id || f.title.trim().length < 3) { onError("Pick the project and task, and describe the work product reviewed."); return; }
+    if (!f.preparer_user_id) { onError("Name the preparer: whose work is being reviewed."); return; }
+    if (f.preparer_user_id === f.reviewer_user_id) { onError("You cannot review your own work: pick a reviewer other than the preparer."); return; }
     setSaving(true);
     try {
       const d = await apiPost<Detail>("/qaqc/reviews", {
@@ -296,10 +306,10 @@ function NewReview({ meta, onCreated, onError }: { meta: Meta; onCreated: (d: De
         <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Planned review hours
           <input type="number" min={0} step={0.25} value={f.planned_hours} onChange={(e) => setF({ ...f, planned_hours: e.target.value })} />
         </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Preparer (who produced the work)
+        <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Preparer (whose work it is)
           <select value={f.preparer_user_id} onChange={(e) => setF({ ...f, preparer_user_id: e.target.value ? Number(e.target.value) : "" })}>
             <option value="">Select</option>
-            {meta.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            {meta.users.filter((u) => u.id !== f.reviewer_user_id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </label>
         <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Reviewer
@@ -314,7 +324,7 @@ function NewReview({ meta, onCreated, onError }: { meta: Meta; onCreated: (d: De
           <textarea rows={2} value={f.scope} onChange={(e) => setF({ ...f, scope: e.target.value })} />
         </label>
       </div>
-      {f.preparer_user_id && f.preparer_user_id === f.reviewer_user_id ? <p style={{ color: RED, fontSize: 13 }}>The reviewer cannot be the preparer of the work.</p> : null}
+      {f.preparer_user_id && f.preparer_user_id === f.reviewer_user_id ? <p style={{ color: RED, fontSize: 13 }}>You cannot review your own work: the reviewer must be someone other than the preparer.</p> : null}
       <div style={{ marginTop: 12 }}><button type="button" onClick={submit} disabled={saving}>{saving ? "Opening..." : "Open record"}</button></div>
     </div>
   );
@@ -435,7 +445,7 @@ function Part1({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Planned review hours<input type="number" min={0} step={0.25} value={f.planned_hours} onChange={(e) => setF({ ...f, planned_hours: e.target.value })} /></label>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Preparer
             <select value={f.preparer_user_id} onChange={(e) => setF({ ...f, preparer_user_id: e.target.value ? Number(e.target.value) : "" })}>
-              <option value="">Select</option>{meta.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              <option value="">Select</option>{meta.users.filter((u) => u.id !== f.reviewer_user_id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select></label>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Reviewer
             <select value={f.reviewer_user_id} disabled={!meta.me.is_pm} onChange={(e) => setF({ ...f, reviewer_user_id: Number(e.target.value) })}>
@@ -591,7 +601,7 @@ function Part3({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Assigned to (defaults to the preparer)
             <select value={n.assigned_user_id} onChange={(e) => setN({ ...n, assigned_user_id: e.target.value ? Number(e.target.value) : "" })}>
               <option value="">{r.preparer_name ? `${r.preparer_name} (preparer)` : "Select"}</option>
-              {meta.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {meta.users.filter((u) => u.id !== r.reviewer_user_id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select></label>
           <div><button type="button" disabled={busy || n.description.trim().length < 3} onClick={async () => {
             if (await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings`, { ...n, assigned_user_id: n.assigned_user_id || null }), "Finding logged.")) setN(blank);

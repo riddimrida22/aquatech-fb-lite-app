@@ -755,7 +755,7 @@ export function WeeklyTimeEntry({
                 </label>
               </div>
               {subtaskOptionsFor(Number(pickProjectId), Number(pickTaskId)).find((s) => s.id === Number(pickSubtaskId))?.is_qaqc ? (
-                <QaqcRecordPicker projectId={Number(pickProjectId)} note={pickNote} onNote={setPickNote} />
+                <QaqcRecordPicker projectId={Number(pickProjectId)} taskId={Number(pickTaskId)} note={pickNote} onNote={setPickNote} />
               ) : null}
               <label>
                 Notes

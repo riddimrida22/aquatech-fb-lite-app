@@ -9,7 +9,9 @@ Who may do what:
     admin names another reviewer), resolve findings assigned to them or on work they prepared
   * the reviewer: edit Parts 1-3 while open, certify, back-check, close. Certification,
     back-check and closure are the reviewer's own signed-in acts; nobody does them for them.
-    The reviewer never resolves findings on their own review (independent back-check)
+    The reviewer never resolves findings on their own review (independent back-check).
+  * nobody reviews their own work: every record must name a preparer, the reviewer can never be
+    the preparer, and findings are never assigned to the reviewer
   * MANAGE_PROJECTS (PM/admin): edit any open record, decide disputed findings
   * admin: approve release with open Minor findings (the Principal's approval)
 Time entries are linked by the record number in their note (service.link_time_entry).
@@ -145,13 +147,18 @@ def qaqc_project_tasks(project_id: int, db: Session = Depends(get_db),
 
 @router.get("/open-records")
 def qaqc_open_records(project_id: int, db: Session = Depends(get_db),
-                      _: User = Depends(get_current_user)) -> list[dict]:
-    """Records time can still be charged to (not closed), for the timesheet picker."""
+                      u: User = Depends(get_current_user)) -> list[dict]:
+    """Records time can still be charged to (not closed), for the timesheet picker.
+    The caller's own reviews come first."""
     rows = db.scalars(select(QaqcReview).where(QaqcReview.project_id == project_id,
                                                QaqcReview.status != "closed")
                       .order_by(QaqcReview.seq.desc())).all()
-    return [{"id": r.id, "record_no": r.record_no, "title": r.title, "task_id": r.task_id,
-             "status": r.status} for r in rows]
+    nm = _names(db)
+    out = [{"id": r.id, "record_no": r.record_no, "title": r.title, "task_id": r.task_id,
+            "status": r.status, "reviewer_name": nm.get(r.reviewer_user_id),
+            "preparer_name": nm.get(r.preparer_user_id or 0),
+            "mine": u.id in (r.reviewer_user_id, r.preparer_user_id)} for r in rows]
+    return sorted(out, key=lambda x: not x["mine"])
 
 
 class SubtaskFlagIn(BaseModel):
@@ -204,8 +211,11 @@ class ReviewIn(BaseModel):
 
 
 def _check_people(preparer_id: int | None, reviewer_id: int) -> None:
-    if preparer_id and preparer_id == reviewer_id:
-        raise HTTPException(status_code=400, detail="The reviewer cannot be the preparer of the work (QP-01).")
+    if not preparer_id:
+        raise HTTPException(status_code=400, detail="Name the preparer: whose work is being reviewed (QP-01).")
+    if preparer_id == reviewer_id:
+        raise HTTPException(status_code=400, detail="You cannot review your own work: the reviewer must be "
+                                                    "someone other than the preparer (QP-01).")
 
 
 @router.post("/reviews")
@@ -389,7 +399,10 @@ class FindingIn(BaseModel):
     assigned_user_id: int | None = None
 
 
-def _apply_finding(f: QaqcFinding, p: FindingIn) -> None:
+def _apply_finding(f: QaqcFinding, p: FindingIn, reviewer_id: int | None = None) -> None:
+    if reviewer_id and p.assigned_user_id == reviewer_id:
+        raise HTTPException(status_code=400, detail="A finding cannot be assigned to the reviewer; assign it to "
+                                                    "the preparer or another team member.")
     if p.severity not in SEVERITIES:
         raise HTTPException(status_code=400, detail="Severity must be Major, Minor or Observation.")
     f.description, f.evidence = p.description.strip(), p.evidence.strip()
@@ -405,7 +418,7 @@ def qaqc_add_finding(review_id: int, payload: FindingIn, db: Session = Depends(g
     seq = (db.scalar(select(func.max(QaqcFinding.seq)).where(QaqcFinding.review_id == r.id)) or 0) + 1
     f = QaqcFinding(review_id=r.id, seq=seq, status="open",
                     assigned_user_id=payload.assigned_user_id or r.preparer_user_id)
-    _apply_finding(f, payload)
+    _apply_finding(f, payload, r.reviewer_user_id)
     if not payload.assigned_user_id:
         f.assigned_user_id = r.preparer_user_id
     db.add(f)
@@ -423,7 +436,7 @@ def qaqc_update_finding(review_id: int, finding_id: int, payload: FindingIn, db:
     f = db.get(QaqcFinding, finding_id)
     if not f or f.review_id != r.id:
         raise HTTPException(status_code=404, detail="Finding not found")
-    _apply_finding(f, payload)
+    _apply_finding(f, payload, r.reviewer_user_id)
     db.commit()
     return qaqc_get(r.id, db, u)
 

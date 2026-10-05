@@ -17,15 +17,30 @@ QAQC_SUBTASK_NAME = "QA/QC"
 
 
 def project_code(project: Project) -> str:
-    """Short code used in record numbers. Takes the project name before any " - "
-    qualifier, keeps letters/digits/hyphens, and pads a single trailing digit after
-    letters (LTCP4 -> LTCP04, matching how the contract is referred to)."""
-    base = (project.name or f"P{project.id}").split(" - ")[0]
-    code = re.sub(r"[^A-Za-z0-9-]", "", base).upper().strip("-")[:20] or f"P{project.id}"
-    m = re.fullmatch(r"([A-Z]+)(\d)", code)
-    if m:
-        code = f"{m.group(1)}0{m.group(2)}"
-    return code
+    """Short code used in record numbers, from the project name before any " - " qualifier.
+    One word keeps its letters/digits/hyphens and pads a single trailing digit after letters
+    (LTCP4 -> LTCP04, 1539-REG -> 1539-REG). Several words become initials, keeping short
+    all-caps words and the leading number of any word with digits
+    (Mount Vernon Flood Study -> MVFS, BWT 1608-Jobcon -> BWT1608, Brentwood Brook -> BB)."""
+    base = (project.name or "").split(" - ")[0].strip()
+    words = [w for w in re.split(r"\s+", base) if re.search(r"[A-Za-z0-9]", w)]
+    if len(words) <= 1:
+        code = re.sub(r"[^A-Za-z0-9-]", "", base).upper().strip("-")[:20]
+        m = re.fullmatch(r"([A-Z]+)(\d)", code)
+        if m:
+            code = f"{m.group(1)}0{m.group(2)}"
+    else:
+        parts = []
+        for w in words:
+            digits = re.match(r"\D*?(\d+)", w)
+            if re.search(r"\d", w) and digits:
+                parts.append(digits.group(1))
+            elif w.isupper() and len(re.sub(r"[^A-Z]", "", w)) <= 5:
+                parts.append(re.sub(r"[^A-Z]", "", w))
+            else:
+                parts.append(re.sub(r"[^A-Za-z]", "", w)[:1].upper())
+        code = "".join(parts)[:12]
+    return code or f"P{project.id}"
 
 
 def next_record_no(db: Session, code: str) -> tuple[str, int]:

@@ -26,6 +26,7 @@ import SourceDrawerHost, { SourceLink } from "./components/SourceDrawer";
 import ProjectAlertsPanel from "./components/ProjectAlertsPanel";
 import HourEstimatesWorkspace from "./components/HourEstimatesWorkspace";
 import QaqcWorkspace from "./components/QaqcWorkspace";
+import { QAQC_OPEN_EVENT } from "./components/QaqcRecordPicker";
 import OverheadRatePanel from "./components/OverheadRatePanel";
 import DecisionsRegister from "./components/DecisionsRegister";
 import { BdWorkspace } from "./components/BdWorkspace";
@@ -266,6 +267,12 @@ export default function AquatechPmHome() {
   useAutoSortableTables();
 
   const [workspace, setWorkspace] = useState<WorkspaceKey>("dashboard");
+  // "Open QA-..." from the timesheet's QA/QC panel jumps to the QA/QC workspace.
+  useEffect(() => {
+    const go = () => setWorkspace("qaqc");
+    window.addEventListener(QAQC_OPEN_EVENT, go);
+    return () => window.removeEventListener(QAQC_OPEN_EVENT, go);
+  }, []);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [timeTab, setTimeTab] = useState<TimeTab>("enter");
   const [dashTab, setDashTab] = useState<DashTab>("overview");
