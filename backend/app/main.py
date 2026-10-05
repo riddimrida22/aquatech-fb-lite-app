@@ -10423,7 +10423,8 @@ def get_wbs(
     # one (e.g. a fee-sheet QA/QC line flagged is_qaqc) keep it; no duplicate is added.
     if (not project.is_overhead) and project.is_billable and project.is_active:
         for task in tasks:
-            if task.is_billable:
+            # "No Service" is a placeholder task, not deliverable work: no QA/QC subtask (owner 2026-10-05).
+            if task.is_billable and (task.name or "").strip().lower() != "no service":
                 _, created = qaqc_service.ensure_qaqc_subtask(db, task)
                 created_default_subtask = created_default_subtask or created
     if created_default_subtask:
