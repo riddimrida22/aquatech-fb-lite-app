@@ -81,6 +81,8 @@ const F_BADGE: Record<string, string> = {
 const SEV_LABEL: Record<string, string> = { major: "Major", minor: "Minor", observation: "Observation" };
 
 const nowrap: React.CSSProperties = { whiteSpace: "nowrap" };
+// Neutral outline button: reads correctly in light and dark themes.
+const quiet: React.CSSProperties = { background: "transparent", color: "inherit", border: "1px solid rgba(128,128,128,0.5)", boxShadow: "none" };
 const box: React.CSSProperties = { border: "1px solid rgba(128,128,128,0.25)", borderRadius: 10, padding: 14, marginTop: 14 };
 const h4: React.CSSProperties = { margin: "0 0 8px", fontSize: 15 };
 const cell: React.CSSProperties = { verticalAlign: "top", padding: "6px 8px" };
@@ -147,8 +149,8 @@ export default function QaqcWorkspace() {
         </div>
       </div>
 
-      {err ? <p className="aq-lite-error" style={{ color: RED, marginTop: 10 }}>{err}</p> : null}
-      {msg ? <p style={{ color: "#235944", marginTop: 10 }}>{msg}</p> : null}
+      {err ? <p className="aq-lite-error-banner" style={{ marginTop: 10, marginBottom: 0, padding: "8px 12px" }}>{err}</p> : null}
+      {msg ? <p className="aq-lite-flash" style={{ marginTop: 10, marginBottom: 0, padding: "8px 12px" }}>{msg}</p> : null}
 
       {view === "records" ? (
         <div style={{ marginTop: 14 }}>
@@ -332,7 +334,7 @@ function RecordView({ d, meta, busy, act, onBack }: {
 
   return (
     <div style={{ marginTop: 10 }}>
-      <button type="button" onClick={onBack} style={{ background: "transparent", color: "inherit", border: "1px solid rgba(128,128,128,0.4)", boxShadow: "none" }}>Back to records</button>
+      <button type="button" onClick={onBack} style={quiet}>Back to records</button>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
         <h3 style={{ margin: 0, fontSize: 20 }}>{r.record_no}</h3>
         <span className={STATUS_BADGE[r.status]} style={nowrap}>{STATUS_LABEL[r.status]}</span>
@@ -450,7 +452,7 @@ function Part1({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
               }), "Part 1 saved.");
               if (ok) setEditing(false);
             }}>Save</button>
-            <button type="button" onClick={() => setEditing(false)} style={{ background: "transparent", color: "inherit", border: "1px solid rgba(128,128,128,0.4)", boxShadow: "none" }}>Cancel</button>
+            <button type="button" onClick={() => setEditing(false)} style={quiet}>Cancel</button>
           </div>
         </div>
       )}
@@ -527,7 +529,7 @@ function Part3({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
       <h4 style={h4}>Part 3. Findings</h4>
       {d.findings.length === 0 && !p.can_edit ? <p className="aq-lite-muted" style={{ fontSize: 13, margin: 0 }}>No findings were recorded.</p> : null}
       {d.findings.map((f) => {
-        const canResolve = r.status === "certified" && ["open", "returned"].includes(f.status) && (p.me === f.assigned_user_id || p.is_preparer || p.is_pm);
+        const canResolve = r.status === "certified" && ["open", "returned"].includes(f.status) && !p.is_reviewer && (p.me === f.assigned_user_id || p.is_preparer || p.is_pm);
         const canBackcheck = r.status === "certified" && f.status === "resolved" && p.is_reviewer;
         const canDecide = r.status === "certified" && p.is_pm && !["verified", "closed_by_decision"].includes(f.status);
         const v = getIn(f.id);
@@ -560,11 +562,11 @@ function Part3({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
                   <button type="button" disabled={busy} onClick={async () => {
                     if (await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings/${f.id}/backcheck`, { verified: true, note: v.note }), `Finding ${f.seq} verified closed.`)) setIn(f.id, { note: "" });
                   }}>Verified closed</button>
-                  <button type="button" disabled={busy || v.note.trim().length < 3} style={{ background: "#fbe3dc", color: "#8b2e1d", borderColor: "#e8a896" }} onClick={async () => {
+                  <button type="button" disabled={busy || v.note.trim().length < 3} style={quiet} onClick={async () => {
                     if (await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings/${f.id}/backcheck`, { verified: false, note: v.note }), `Finding ${f.seq} returned to the preparer.`)) setIn(f.id, { note: "" });
                   }}>Return to preparer</button>
                 </> : null}
-                {canDecide ? <button type="button" disabled={busy || v.note.trim().length < 3} style={{ background: "#ecf0f4", color: "#4a5b6c", borderColor: "#c8d3dd" }} onClick={async () => {
+                {canDecide ? <button type="button" disabled={busy || v.note.trim().length < 3} style={quiet} onClick={async () => {
                   if (window.confirm(`Close finding ${f.seq} by decision rather than correction?`) && await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings/${f.id}/decide`, { note: v.note }), `Finding ${f.seq} closed by decision.`)) setIn(f.id, { note: "" });
                 }}>Close by decision (PM)</button> : null}
               </div>

@@ -8,7 +8,8 @@ Who may do what:
   * any signed-in user: view records, open a record (they become the reviewer unless an
     admin names another reviewer), resolve findings assigned to them or on work they prepared
   * the reviewer: edit Parts 1-3 while open, certify, back-check, close. Certification,
-    back-check and closure are the reviewer's own signed-in acts; nobody does them for them
+    back-check and closure are the reviewer's own signed-in acts; nobody does them for them.
+    The reviewer never resolves findings on their own review (independent back-check)
   * MANAGE_PROJECTS (PM/admin): edit any open record, decide disputed findings
   * admin: approve release with open Minor findings (the Principal's approval)
 Time entries are linked by the record number in their note (service.link_time_entry).
@@ -499,6 +500,10 @@ def qaqc_resolve(review_id: int, finding_id: int, payload: ResolveIn, db: Sessio
                  u: User = Depends(get_current_user)) -> dict:
     r = _review_or_404(db, review_id)
     f = _finding_for(db, r, finding_id)
+    if u.id == r.reviewer_user_id:
+        # QP-01 5.5/5.6: the preparer corrects, the reviewer independently back-checks.
+        raise HTTPException(status_code=403, detail="The reviewer cannot resolve findings on their own review; "
+                                                    "the preparer (or the person assigned) records the resolution.")
     if u.id not in (f.assigned_user_id, r.preparer_user_id) and not _is_pm(u):
         raise HTTPException(status_code=403, detail="Only the person assigned (or the preparer) can record the "
                                                     "resolution.")
