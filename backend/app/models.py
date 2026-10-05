@@ -118,6 +118,9 @@ class Subtask(Base):
     name: Mapped[str] = mapped_column(String(255))
     budget_hours: Mapped[float] = mapped_column(Float, default=0.0)
     budget_fee: Mapped[float] = mapped_column(Float, default=0.0)
+    # QA/QC subtask (QP-01): time charged here is QA/QC review time and is expected to
+    # carry a QA/QC record number in its note. Set by the QA/QC module or by an admin.
+    is_qaqc: Mapped[bool] = mapped_column(Boolean, default=False)
 
     task: Mapped[Task] = relationship(back_populates="subtasks")
 
@@ -171,6 +174,9 @@ class TimeEntry(Base):
     # (never entered by staff); cleared when that invoice is voided. `billed` stays the flag
     # the app reads; this records WHICH invoice, so a re-dated entry can still be traced.
     invoice_id: Mapped[int | None] = mapped_column(ForeignKey("invoices.id"), nullable=True, index=True)
+    # QA/QC record this time was charged to (QP-01). Derived by the system from the record
+    # number in the note (QA-<code>-<seq>) on every save; never entered directly.
+    qaqc_review_id: Mapped[int | None] = mapped_column(ForeignKey("qaqc_reviews.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     # Provenance + external-id (FreshBooks time-entry id). Used by sync_time_entries to upsert.
     # Values: manual | freshbooks_api
@@ -748,3 +754,5 @@ class InvoiceGeneration(Base):
 # payroll_lines, payroll_ytd, payroll_tax_tables) with the shared metadata so
 # init_db()/create_all creates them. Import kept at the bottom to avoid cycles.
 from .payroll import models as _payroll_models  # noqa: E402,F401
+# QA/QC review tables (qaqc_reviews, qaqc_items, qaqc_findings, qaqc_attachments, qaqc_events).
+from .qaqc import models as _qaqc_models  # noqa: E402,F401

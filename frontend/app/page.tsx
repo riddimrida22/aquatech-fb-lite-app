@@ -25,6 +25,7 @@ import DataHealthPanel, { DataHealthBanner } from "./components/DataHealthPanel"
 import SourceDrawerHost, { SourceLink } from "./components/SourceDrawer";
 import ProjectAlertsPanel from "./components/ProjectAlertsPanel";
 import HourEstimatesWorkspace from "./components/HourEstimatesWorkspace";
+import QaqcWorkspace from "./components/QaqcWorkspace";
 import OverheadRatePanel from "./components/OverheadRatePanel";
 import DecisionsRegister from "./components/DecisionsRegister";
 import { BdWorkspace } from "./components/BdWorkspace";
@@ -92,6 +93,7 @@ type WorkspaceKey =
   | "loans"
   | "creditcards"
   | "hourestimates"
+  | "qaqc"
   | "reports"
   | "imports"
   | "settings";
@@ -142,6 +144,7 @@ const NAV: NavEntry[] = [
   },
   { key: "time", label: "Time", hint: "Hours + timesheets", tier: 1 },
   { key: "projects", label: "Projects", hint: "Pipeline + setup", tier: 2 },
+  { key: "qaqc", label: "QA/QC", hint: "Reviews · findings · sign-off", tier: 2 },
   {
     groupKey: "bizdev",
     label: "Business Dev",
@@ -1086,7 +1089,7 @@ export default function AquatechPmHome() {
           </div>
         </div>
         <nav className="aq-lite-nav">
-          {(timeOnly ? NAV.filter((entry) => !isNavGroup(entry) && (entry as NavLeaf).key === "time") : NAV).map((entry) => {
+          {(timeOnly ? NAV.filter((entry) => !isNavGroup(entry) && ["time", "qaqc"].includes((entry as NavLeaf).key)) : NAV).map((entry) => {
             if (!isNavGroup(entry)) {
               if (entry.requires && !(capabilities as Record<string, boolean>)[entry.requires]) return null;
               return (
@@ -2142,6 +2145,8 @@ export default function AquatechPmHome() {
         {workspace === "hourestimates" ? (
           <HourEstimatesWorkspace />
         ) : null}
+
+        {workspace === "qaqc" ? <QaqcWorkspace /> : null}
 
         {workspace === "reports" ? (
           <div className="aq-lite-stack">

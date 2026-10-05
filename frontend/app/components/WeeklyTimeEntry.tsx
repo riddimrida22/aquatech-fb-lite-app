@@ -11,6 +11,7 @@ import {
   User,
   formatNumber,
 } from "./workspaceShared";
+import QaqcRecordPicker, { noteHasRecord } from "./QaqcRecordPicker";
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -377,6 +378,10 @@ export function WeeklyTimeEntry({
     const subtask = subtaskOptionsFor(projectId, taskId).find((s) => s.id === subtaskId);
     if (!project || !task || !subtask) {
       setError("Could not resolve the selected project/task/subtask.");
+      return;
+    }
+    if (subtask.is_qaqc && !noteHasRecord(pickNote)) {
+      setError("Pick the QA/QC record this line is for (QA/QC subtask).");
       return;
     }
     const key = rowKeyOf(projectId, taskId, subtaskId);
@@ -749,6 +754,9 @@ export function WeeklyTimeEntry({
                   </select>
                 </label>
               </div>
+              {subtaskOptionsFor(Number(pickProjectId), Number(pickTaskId)).find((s) => s.id === Number(pickSubtaskId))?.is_qaqc ? (
+                <QaqcRecordPicker projectId={Number(pickProjectId)} note={pickNote} onNote={setPickNote} />
+              ) : null}
               <label>
                 Notes
                 <textarea

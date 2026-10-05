@@ -41,6 +41,7 @@ def init_db() -> None:
     _ensure_project_columns()
     _ensure_user_columns()
     _ensure_task_columns()
+    _ensure_subtask_columns()
     _ensure_invoice_columns()
     _ensure_invoice_line_columns()
     _ensure_bank_columns()
@@ -153,6 +154,16 @@ def _ensure_task_columns() -> None:
             conn.execute(text(stmt))
 
 
+def _ensure_subtask_columns() -> None:
+    insp = inspect(engine)
+    if not insp.has_table("subtasks"):
+        return
+    cols = {c["name"] for c in insp.get_columns("subtasks")}
+    if "is_qaqc" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE subtasks ADD COLUMN is_qaqc BOOLEAN DEFAULT FALSE"))
+
+
 def _ensure_invoice_columns() -> None:
     insp = inspect(engine)
     if not insp.has_table("invoices"):
@@ -207,6 +218,11 @@ def _ensure_time_entry_columns() -> None:
     if "pursuit_id" not in cols:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE time_entries ADD COLUMN pursuit_id INTEGER"))
+    if "qaqc_review_id" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE time_entries ADD COLUMN qaqc_review_id INTEGER"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_time_entries_qaqc_review_id "
+                              "ON time_entries (qaqc_review_id)"))
 
 
 def _ensure_library_columns() -> None:

@@ -221,6 +221,14 @@ from .payroll.routes import router as payroll_router  # noqa: E402
 
 app.include_router(payroll_router)
 
+# QA/QC reviews (Quality Procedure QP-01): online records, sign-off, findings log.
+from .qaqc import service as qaqc_service  # noqa: E402
+from .qaqc.models import QaqcFinding, QaqcReview  # noqa: E402
+from .qaqc.routes import business_days_between as _qaqc_business_days  # noqa: E402
+from .qaqc.routes import router as qaqc_router  # noqa: E402
+
+app.include_router(qaqc_router)
+
 HIDDEN_PROJECT_NAMES = {"no project", "imported project"}
 NO_SUBTASK_CODE = "NO-SUBTASK"
 NO_SUBTASK_NAME = "No Sub-Task"
@@ -8027,6 +8035,34 @@ def _run_data_health_audit(db: Session, trigger: str = "nightly") -> dict[str, o
         return "ok", f"Owner distributions agree everywhere (net ${d['net']:,.2f}).", d["net"]
     _health_check(checks, "distributions", "Accuracy", "Distributions consistent", distributions_agree)
 
+    # ---------------- QA/QC (QP-01) ----------------
+    def qaqc_findings_overdue():
+        rows = db.execute(select(QaqcFinding, QaqcReview).join(QaqcReview, QaqcReview.id == QaqcFinding.review_id)
+                          .where(QaqcReview.status == "certified", QaqcFinding.severity != "observation",
+                                 QaqcFinding.status.in_(["open", "resolved", "returned"]))).all()
+        late = [f"{r.record_no} #{f.seq}" for f, r in rows
+                if _qaqc_business_days((r.certified_at or f.created_at).date(), today) > 10]
+        if late:
+            return "warn", (f"{len(late)} QA/QC finding(s) open more than 10 business days: "
+                            + ", ".join(late[:12])), len(late)
+        return "ok", f"No QA/QC finding open more than 10 business days ({len(rows)} open).", 0
+    _health_check(checks, "qaqc_overdue", "QA/QC", "QA/QC findings followed up", qaqc_findings_overdue)
+
+    def qaqc_hours_linked():
+        since = today - timedelta(days=90)
+        rows = db.execute(select(TimeEntry.id, TimeEntry.hours, User.full_name)
+                          .join(Subtask, Subtask.id == TimeEntry.subtask_id)
+                          .join(User, User.id == TimeEntry.user_id)
+                          .where(Subtask.is_qaqc.is_(True), TimeEntry.qaqc_review_id.is_(None),
+                                 TimeEntry.work_date >= since)).all()
+        if rows:
+            hrs = sum(float(h or 0) for _i, h, _n in rows)
+            who = sorted({n for _i, _h, n in rows})
+            return "warn", (f"{len(rows)} QA/QC entries ({hrs:,.2f} h, last 90 days) carry no QA/QC record "
+                            f"number: {', '.join(who)}."), round(hrs, 2)
+        return "ok", "All QA/QC subtask time in the last 90 days is tied to a QA/QC record.", 0
+    _health_check(checks, "qaqc_linked", "QA/QC", "QA/QC hours tied to a record", qaqc_hours_linked)
+
     worst = max((c["status"] for c in checks), key=lambda st: _HEALTH_RANK[st], default="ok")
     n_fail = sum(1 for c in checks if c["status"] == "fail")
     n_warn = sum(1 for c in checks if c["status"] == "warn")
@@ -10411,6 +10447,7 @@ def get_wbs(
                         "name": sub.name,
                         "budget_hours": sub.budget_hours,
                         "budget_fee": sub.budget_fee,
+                        "is_qaqc": bool(getattr(sub, "is_qaqc", False)),
                     }
                     for sub in subtasks_by_task.get(task.id, [])
                 ],
@@ -10915,6 +10952,7 @@ def create_time_entry(
         bill_rate_applied=eff_bill if eff_bill is not None else 0.0,
         cost_rate_applied=rate.cost_rate,
     )
+    qaqc_service.link_time_entry(db, entry)  # QP-01: record number in the note -> QA/QC record
     db.add(entry)
     db.flush()
     # D-026: Aquatech time supersedes FreshBooks — drop the FB copy for this (user, day, project).
@@ -11258,6 +11296,7 @@ def update_time_entry(
         )
     entry.bill_rate_applied = _eff_bill if _eff_bill is not None else 0.0
     entry.cost_rate_applied = rate.cost_rate
+    qaqc_service.link_time_entry(db, entry)  # QP-01: re-link (or unlink) from the edited note
 
     db.flush()
     # D-026: Aquatech time supersedes FreshBooks — drop the FB copy for this (user, day, project).

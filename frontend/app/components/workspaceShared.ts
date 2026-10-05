@@ -38,6 +38,7 @@ export type Subtask = {
   name: string;
   budget_hours: number;
   budget_fee: number;
+  is_qaqc?: boolean; // QA/QC subtask (QP-01): time here must name a QA/QC record
 };
 
 export type Task = {

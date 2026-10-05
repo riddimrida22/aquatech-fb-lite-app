@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../../lib/api";
 import { Project, ProjectWbs, Subtask, Task, TimeEntry, User, formatNumber } from "./workspaceShared";
 import { WeeklyTimeEntry } from "./WeeklyTimeEntry"; // reused for the Week grid (rows × days)
+import QaqcRecordPicker, { noteHasRecord } from "./QaqcRecordPicker";
 
 type View = "day" | "week" | "month" | "all";
 type StaffOption = { id: number; name: string; email: string };
@@ -188,6 +189,11 @@ export function DailyTimeEntry({
     }
     if (Number.isNaN(hrs) || hrs <= 0) {
       setError("Enter hours greater than 0.");
+      return;
+    }
+    const pickedSub = subtasksFor(pid, tid).find((s) => s.id === sid);
+    if (pickedSub?.is_qaqc && !noteHasRecord(editor.note)) {
+      setError("Pick the QA/QC record this time is for (QA/QC subtask).");
       return;
     }
     setBusy(true);
@@ -693,6 +699,14 @@ export function DailyTimeEntry({
                 </select>
               </label>
             </div>
+
+            {subtasksFor(editorRow.pid, editorRow.tid).find((s) => s.id === Number(editor.subtaskId))?.is_qaqc ? (
+              <QaqcRecordPicker
+                projectId={editorRow.pid}
+                note={editor.note}
+                onNote={(note) => setEditor((s) => (s ? { ...s, note } : s))}
+              />
+            ) : null}
 
             <label style={{ display: "block", fontSize: 12, color: "var(--aq-muted)", marginBottom: 8 }}>
               Hours
