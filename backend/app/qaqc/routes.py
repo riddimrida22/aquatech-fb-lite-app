@@ -45,6 +45,35 @@ CLOSURE_TEXT = ("I certify that I have examined the corrected work identified in
                 "the Project Manager or Principal.")
 OPEN_FINDING = ("open", "resolved", "returned")
 
+# Standard picklists for the QA/QC forms (each form also offers "Other" for free text).
+CHOICES = {
+    "work_product_types": [
+        "Hydraulic model", "Model inputs (drawing readings)", "Calculation", "Spreadsheet / database",
+        "GIS data / map", "Figure", "Slides", "Technical memo", "Report", "Data request", "Invoice backup",
+    ],
+    "sources": [
+        "Record (RIP) drawings", "As-built drawings", "Field survey / measurements", "Client data",
+        "Prime consultant data", "Earlier model version", "InfoWorks model", "GIS data",
+        "Rainfall / tide / flow data", "Previous deliverable", "Standard / design manual",
+        "Contract / scope of work", "Independent hand calculation",
+    ],
+    "scopes": [
+        "All items", "All items in the listed area", "Sample: random", "Sample: highest-risk items",
+        "Sample: items changed since the last version", "Spot check",
+    ],
+    "check_types": [
+        "Weir crest elevation", "Invert elevation", "Rim / ground elevation", "Pipe size / shape",
+        "Sluice / orifice size", "Outfall", "Connectivity", "Model parameter", "Flow / volume result",
+        "Calculation", "Units / datum", "Data entry / transcription", "Figure / label", "Text / statement",
+        "Formatting",
+    ],
+    "actions": [
+        "Correct the value", "Update the model and re-run", "Update the spreadsheet / database",
+        "Update the figure / map", "Revise the text", "Provide the source / justification",
+        "Confirm against client data", "No change: explain in the record",
+    ],
+}
+
 
 # ----------------------------------------------------------------- permissions
 def _is_pm(u: User) -> bool:
@@ -128,7 +157,7 @@ def qaqc_meta(db: Session = Depends(get_db), u: User = Depends(get_current_user)
                   if not any(t in (x.full_name or "").lower() for t in ("test employee", "(qa)"))],
         "projects": [{"id": p.id, "name": p.name, "active": bool(p.is_active), "code": service.project_code(p)}
                      for p in projects],
-        "severities": list(SEVERITIES), "finding_statuses": list(FINDING_STATUSES),
+        "severities": list(SEVERITIES), "finding_statuses": list(FINDING_STATUSES), "choices": CHOICES,
         "certification_text": CERTIFICATION_TEXT, "closure_text": CLOSURE_TEXT,
     }
 
@@ -139,6 +168,8 @@ def qaqc_project_tasks(project_id: int, db: Session = Depends(get_db),
     tasks = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.id)).all()
     out = []
     for t in tasks:
+        if (t.name or "").strip().lower() == "no service":  # placeholder task, never reviewed
+            continue
         q = service.qaqc_subtasks_for_task(db, t.id)
         out.append({"id": t.id, "name": t.name,
                     "qaqc_subtask": ({"id": q[0].id, "code": q[0].code, "name": q[0].name} if q else None)})
@@ -159,6 +190,39 @@ def qaqc_open_records(project_id: int, db: Session = Depends(get_db),
             "preparer_name": nm.get(r.preparer_user_id or 0),
             "mine": u.id in (r.reviewer_user_id, r.preparer_user_id)} for r in rows]
     return sorted(out, key=lambda x: not x["mine"])
+
+
+@router.get("/suggestions")
+def qaqc_suggestions(project_id: int, db: Session = Depends(get_db),
+                     _: User = Depends(get_current_user)) -> dict:
+    """Values already used on this project's QA/QC records, so the forms can offer them as
+    dropdown suggestions (most recent first): sources, items checked, item sources,
+    versions, actions."""
+    reviews = db.scalars(select(QaqcReview).where(QaqcReview.project_id == project_id)
+                         .order_by(QaqcReview.opened_at.desc())).all()
+    ids = [r.id for r in reviews]
+    items = db.scalars(select(QaqcItem).where(QaqcItem.review_id.in_(ids)).order_by(QaqcItem.id.desc())).all() if ids else []
+    finds = db.scalars(select(QaqcFinding).where(QaqcFinding.review_id.in_(ids)).order_by(QaqcFinding.id.desc())).all() if ids else []
+
+    def uniq(vals, limit=40):
+        out, seen = [], set()
+        for v in vals:
+            v = (v or "").strip()
+            if v and v.lower() not in seen:
+                seen.add(v.lower())
+                out.append(v)
+            if len(out) >= limit:
+                break
+        return out
+    sources = [x for r in reviews for x in (r.sources or "").split(";")]
+    return {
+        "sources": uniq(sources),
+        "items": uniq(i.item for i in items),
+        "item_sources": uniq(i.source for i in items),
+        "versions": uniq([r.version_reviewed for r in reviews] + [f.resolution_version for f in finds]
+                         + [r.closed_version for r in reviews]),
+        "actions": uniq(f.action_required for f in finds),
+    }
 
 
 class SubtaskFlagIn(BaseModel):

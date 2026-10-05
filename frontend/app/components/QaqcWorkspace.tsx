@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE, apiDelete, apiGet, apiPost, apiPut } from "../../lib/api";
 import { QAQC_OPEN_KEY } from "./QaqcRecordPicker";
+import { ChoiceSelect, MultiPick, QaqcChoices, QaqcSuggestions, SuggestInput, composeTitle, splitList, todayIso, uniq, useQaqcSuggestions } from "./QaqcFields";
 
 // QA/QC reviews — Quality Procedure QP-01, done online.
 // Part 1 details · Part 2 items checked · Part 3 findings (resolution + back-check)
@@ -17,6 +18,7 @@ type Meta = {
   projects: Proj[];
   certification_text: string;
   closure_text: string;
+  choices: QaqcChoices;
 };
 type TaskOpt = { id: number; name: string; qaqc_subtask: { id: number; code: string; name: string } | null };
 type Summary = {
@@ -88,6 +90,7 @@ const box: React.CSSProperties = { border: "1px solid rgba(128,128,128,0.25)", b
 const h4: React.CSSProperties = { margin: "0 0 8px", fontSize: 15 };
 const cell: React.CSSProperties = { verticalAlign: "top", padding: "6px 8px" };
 const full: React.CSSProperties = { width: "100%", boxSizing: "border-box" };
+const field: React.CSSProperties = { display: "grid", gap: 4, fontSize: 13 };
 
 export default function QaqcWorkspace() {
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -249,7 +252,9 @@ function NewReview({ meta, onCreated, onError }: { meta: Meta; onCreated: (d: De
   const [tasks, setTasks] = useState<TaskOpt[]>([]);
   const [f, setF] = useState({ task_id: "" as number | "", title: "", version_reviewed: "", preparer_user_id: "" as number | "",
     reviewer_user_id: meta.me.id as number | "", sources: "", scope: "", planned_hours: "" });
+  const [wpType, setWpType] = useState("");
   const [saving, setSaving] = useState(false);
+  const sug = useQaqcSuggestions(projectId || null);
   useEffect(() => {
     if (!projectId) { setTasks([]); return; }
     apiGet<TaskOpt[]>(`/qaqc/projects/${projectId}/tasks`).then((t) => {
@@ -261,13 +266,14 @@ function NewReview({ meta, onCreated, onError }: { meta: Meta; onCreated: (d: De
   const project = meta.projects.find((p) => p.id === projectId);
   const submit = async () => {
     onError(null);
-    if (!projectId || !f.task_id || f.title.trim().length < 3) { onError("Pick the project and task, and describe the work product reviewed."); return; }
+    const title = composeTitle(wpType, f.title);
+    if (!projectId || !f.task_id || title.length < 3) { onError("Pick the project and task, and say what work product is being reviewed."); return; }
     if (!f.preparer_user_id) { onError("Name the preparer: whose work is being reviewed."); return; }
     if (f.preparer_user_id === f.reviewer_user_id) { onError("You cannot review your own work: pick a reviewer other than the preparer."); return; }
     setSaving(true);
     try {
       const d = await apiPost<Detail>("/qaqc/reviews", {
-        project_id: projectId, task_id: f.task_id, title: f.title, version_reviewed: f.version_reviewed,
+        project_id: projectId, task_id: f.task_id, title, version_reviewed: f.version_reviewed,
         preparer_user_id: f.preparer_user_id || null, reviewer_user_id: f.reviewer_user_id || null,
         sources: f.sources, scope: f.scope, planned_hours: f.planned_hours ? Number(f.planned_hours) : null,
       });
@@ -297,11 +303,15 @@ function NewReview({ meta, onCreated, onError }: { meta: Meta; onCreated: (d: De
             {task.qaqc_subtask ? <>QA/QC time is charged to subtask &quot;{task.qaqc_subtask.name}&quot;.</> : <>A &quot;QA/QC&quot; subtask will be added to this task for review time.</>}
           </span> : null}
         </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>Work product reviewed
-          <input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="e.g. JA regulators 1-8: RIP drawing readings vs model" />
+        <div style={field}>Type of work product
+          <ChoiceSelect value={wpType} options={meta.choices.work_product_types} onChange={setWpType} placeholder="Select type" />
+        </div>
+        <label style={field}>Which one (description)
+          <input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="e.g. JA regulators 1-8" />
         </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Version or date reviewed
-          <input value={f.version_reviewed} onChange={(e) => setF({ ...f, version_reviewed: e.target.value })} placeholder="e.g. Master spreadsheet 2026-09-30" />
+        <label style={field}>Version or date reviewed
+          <SuggestInput value={f.version_reviewed} onChange={(v) => setF({ ...f, version_reviewed: v })}
+            options={[todayIso(), ...sug.versions]} placeholder="Pick a date or type the version" />
         </label>
         <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Planned review hours
           <input type="number" min={0} step={0.25} value={f.planned_hours} onChange={(e) => setF({ ...f, planned_hours: e.target.value })} />
@@ -317,12 +327,12 @@ function NewReview({ meta, onCreated, onError }: { meta: Meta; onCreated: (d: De
             {meta.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>Sources checked against
-          <textarea rows={2} value={f.sources} onChange={(e) => setF({ ...f, sources: e.target.value })} placeholder="Record drawings, client data, earlier model, standard..." />
-        </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>Scope of check (all, or a sample and how it was chosen)
-          <textarea rows={2} value={f.scope} onChange={(e) => setF({ ...f, scope: e.target.value })} />
-        </label>
+        <div style={field}>Sources checked against
+          <MultiPick value={f.sources} onChange={(v) => setF({ ...f, sources: v })} options={[...meta.choices.sources, ...sug.sources]} addLabel="+ Add a source" />
+        </div>
+        <div style={field}>Scope of check
+          <ChoiceSelect value={f.scope} options={meta.choices.scopes} onChange={(v) => setF({ ...f, scope: v })} placeholder="Select scope" />
+        </div>
       </div>
       {f.preparer_user_id && f.preparer_user_id === f.reviewer_user_id ? <p style={{ color: RED, fontSize: 13 }}>You cannot review your own work: the reviewer must be someone other than the preparer.</p> : null}
       <div style={{ marginTop: 12 }}><button type="button" onClick={submit} disabled={saving}>{saving ? "Opening..." : "Open record"}</button></div>
@@ -338,6 +348,7 @@ function RecordView({ d, meta, busy, act, onBack }: {
   const r = d.review;
   const p = d.permissions;
   const rid = r.id;
+  const sug = useQaqcSuggestions(r.project_id);
   const blocking = d.findings.filter((f) => f.severity !== "observation" && !["verified", "closed_by_decision"].includes(f.status));
   const openMinor = d.findings.filter((f) => f.severity === "minor" && !["verified", "closed_by_decision"].includes(f.status));
   const openMajor = d.findings.filter((f) => f.severity === "major" && !["verified", "closed_by_decision"].includes(f.status));
@@ -356,9 +367,9 @@ function RecordView({ d, meta, busy, act, onBack }: {
         </p>
       ) : null}
 
-      <Part1 d={d} meta={meta} busy={busy} act={act} />
-      <Part2 d={d} busy={busy} act={act} />
-      <Part3 d={d} meta={meta} busy={busy} act={act} />
+      <Part1 d={d} meta={meta} busy={busy} act={act} sug={sug} />
+      <Part2 d={d} meta={meta} busy={busy} act={act} sug={sug} />
+      <Part3 d={d} meta={meta} busy={busy} act={act} sug={sug} />
       <Attachments d={d} busy={busy} act={act} />
 
       <div style={box}>
@@ -377,7 +388,7 @@ function RecordView({ d, meta, busy, act, onBack }: {
         {r.status === "open" && p.is_reviewer && d.items.length === 0 ? <p className="aq-lite-muted" style={{ fontSize: 12, marginBottom: 0 }}>List at least one item checked before certifying.</p> : null}
       </div>
 
-      <Part5 d={d} meta={meta} busy={busy} act={act} blocking={blocking} openMinor={openMinor} openMajor={openMajor} />
+      <Part5 d={d} meta={meta} busy={busy} act={act} sug={sug} blocking={blocking} openMinor={openMinor} openMajor={openMajor} />
 
       <div style={box}>
         <h4 style={h4}>Hours charged to this record {d.time.scope === "mine" ? "(your entries)" : ""}</h4>
@@ -404,7 +415,7 @@ function RecordView({ d, meta, busy, act, onBack }: {
   );
 }
 
-function Part1({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean> }) {
+function Part1({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean>; sug: QaqcSuggestions }) {
   const r = d.review;
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({ title: r.title, version_reviewed: r.version_reviewed, preparer_user_id: r.preparer_user_id ?? "",
@@ -441,7 +452,7 @@ function Part1({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
       ) : (
         <div className="aq-lite-form-grid" style={{ alignItems: "start" }}>
           <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>Work product reviewed<input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></label>
-          <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Version or date reviewed<input value={f.version_reviewed} onChange={(e) => setF({ ...f, version_reviewed: e.target.value })} /></label>
+          <label style={field}>Version or date reviewed<SuggestInput value={f.version_reviewed} onChange={(v) => setF({ ...f, version_reviewed: v })} options={[todayIso(), ...sug.versions]} /></label>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Planned review hours<input type="number" min={0} step={0.25} value={f.planned_hours} onChange={(e) => setF({ ...f, planned_hours: e.target.value })} /></label>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Preparer
             <select value={f.preparer_user_id} onChange={(e) => setF({ ...f, preparer_user_id: e.target.value ? Number(e.target.value) : "" })}>
@@ -451,8 +462,8 @@ function Part1({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
             <select value={f.reviewer_user_id} disabled={!meta.me.is_pm} onChange={(e) => setF({ ...f, reviewer_user_id: Number(e.target.value) })}>
               {meta.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select></label>
-          <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>Sources checked against<textarea rows={2} value={f.sources} onChange={(e) => setF({ ...f, sources: e.target.value })} /></label>
-          <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>Scope of check<textarea rows={2} value={f.scope} onChange={(e) => setF({ ...f, scope: e.target.value })} /></label>
+          <div style={{ ...field, gridColumn: "1 / -1" }}>Sources checked against<MultiPick value={f.sources} onChange={(v) => setF({ ...f, sources: v })} options={[...meta.choices.sources, ...sug.sources]} addLabel="+ Add a source" /></div>
+          <div style={{ ...field, gridColumn: "1 / -1" }}>Scope of check<ChoiceSelect value={f.scope} options={meta.choices.scopes} onChange={(v) => setF({ ...f, scope: v })} placeholder="Select scope" /></div>
           <div style={{ display: "flex", gap: 8 }}>
             <button type="button" disabled={busy} onClick={async () => {
               const ok = await act(() => apiPut<Detail>(`/qaqc/reviews/${r.id}`, {
@@ -470,10 +481,14 @@ function Part1({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
   );
 }
 
-function Part2({ d, busy, act }: { d: Detail; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean> }) {
+function Part2({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean>; sug: QaqcSuggestions }) {
   const rid = d.review.id;
   const blank = { item: "", source: "", value_work: "", value_source: "", result: "agrees", finding_id: "" as number | "" };
   const [n, setN] = useState(blank);
+  const [check, setCheck] = useState("");
+  const recordSources = splitList(d.review.sources);
+  const locOf = (x: string) => (x.includes(" - ") ? x.split(" - ").slice(1).join(" - ") : x);
+  const locations = uniq([...d.items.map((i) => locOf(i.item)), ...sug.items.map(locOf)]);
   const canEdit = d.permissions.can_edit;
   return (
     <div style={box}>
@@ -491,15 +506,18 @@ function Part2({ d, busy, act }: { d: Detail; busy: boolean; act: (fn: () => Pro
               <td style={cell}>{i.seq}</td><td style={cell}>{i.item}</td><td style={cell}>{i.source}</td>
               <td style={cell}>{i.value_work}</td><td style={cell}>{i.value_source}</td>
               <td style={cell}>{i.result === "finding" ? <span style={{ color: RED }}>Finding {i.finding_seq ?? ""}</span> : "Agrees"}</td>
-              {canEdit ? <td style={cell}><button type="button" disabled={busy} style={{ padding: "2px 8px", fontSize: 12 }}
+              {canEdit ? <td style={cell}><button type="button" disabled={busy} style={{ padding: "2px 8px", fontSize: 12, whiteSpace: "nowrap" }}
                 onClick={() => act(() => apiDelete<Detail>(`/qaqc/reviews/${rid}/items/${i.id}`))}>Remove</button></td> : null}
             </tr>
           ))}
           {canEdit ? (
             <tr>
               <td style={cell}>{d.items.length + 1}</td>
-              <td style={cell}><input style={full} value={n.item} onChange={(e) => setN({ ...n, item: e.target.value })} placeholder="e.g. JA-3 weir crest" /></td>
-              <td style={cell}><input style={full} value={n.source} onChange={(e) => setN({ ...n, source: e.target.value })} placeholder="e.g. RIP JA-3 sheet 4" /></td>
+              <td style={cell}>
+                <ChoiceSelect value={check} options={meta.choices.check_types} onChange={setCheck} placeholder="What was checked" />
+                <SuggestInput value={n.item} onChange={(v) => setN({ ...n, item: v })} options={locations} placeholder="Element / location, e.g. JA-3" style={{ ...full, marginTop: 4 }} />
+              </td>
+              <td style={cell}><SuggestInput value={n.source} onChange={(v) => setN({ ...n, source: v })} options={[...recordSources, ...sug.item_sources]} placeholder="Pick or type, e.g. RIP JA-3 sheet 4" style={full} /></td>
               <td style={cell}><input style={full} value={n.value_work} onChange={(e) => setN({ ...n, value_work: e.target.value })} /></td>
               <td style={cell}><input style={full} value={n.value_source} onChange={(e) => setN({ ...n, value_source: e.target.value })} /></td>
               <td style={cell}>
@@ -511,9 +529,10 @@ function Part2({ d, busy, act }: { d: Detail; busy: boolean; act: (fn: () => Pro
                   {d.findings.map((f) => <option key={f.id} value={`f${f.id}`}>Finding {f.seq}</option>)}
                 </select>
               </td>
-              <td style={cell}><button type="button" disabled={busy || !n.item.trim()} onClick={async () => {
-                const ok = await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/items`, { ...n, finding_id: n.finding_id || null }));
-                if (ok) setN(blank);
+              <td style={cell}><button type="button" style={nowrap} disabled={busy || !(check.trim() || n.item.trim())} onClick={async () => {
+                const item = check.trim() && n.item.trim() ? `${check.trim()} - ${n.item.trim()}` : (check.trim() || n.item.trim());
+                const ok = await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/items`, { ...n, item, finding_id: n.finding_id || null }));
+                if (ok) { setN(blank); setCheck(""); }
               }}>Add</button></td>
             </tr>
           ) : null}
@@ -524,7 +543,7 @@ function Part2({ d, busy, act }: { d: Detail; busy: boolean; act: (fn: () => Pro
   );
 }
 
-function Part3({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean> }) {
+function Part3({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean>; sug: QaqcSuggestions }) {
   const r = d.review;
   const p = d.permissions;
   const rid = r.id;
@@ -564,7 +583,7 @@ function Part3({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
                 <input style={{ flex: "2 1 280px" }} value={v.note} onChange={(e) => setIn(f.id, { note: e.target.value })}
                   placeholder={canBackcheck ? "Back-check note (required when returning)" : canResolve ? "What was done to resolve it" : "Decision and reason"} />
-                {canResolve ? <input style={{ flex: "1 1 160px" }} value={v.version} onChange={(e) => setIn(f.id, { version: e.target.value })} placeholder="Corrected version or date" /> : null}
+                {canResolve ? <SuggestInput style={{ flex: "1 1 160px" }} value={v.version} onChange={(x) => setIn(f.id, { version: x })} options={[todayIso(), ...sug.versions]} placeholder="Corrected version or date" /> : null}
                 {canResolve ? <button type="button" disabled={busy || v.note.trim().length < 3} onClick={async () => {
                   if (await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings/${f.id}/resolve`, { note: v.note, version: v.version }), `Finding ${f.seq} resolved; awaiting back-check.`)) setIn(f.id, { note: "", version: "" });
                 }}>Record resolution</button> : null}
@@ -589,15 +608,15 @@ function Part3({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; a
           <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>New finding: description and location
             <textarea rows={2} value={n.description} onChange={(e) => setN({ ...n, description: e.target.value })} /></label>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Evidence (sheet, page, element ID)
-            <input value={n.evidence} onChange={(e) => setN({ ...n, evidence: e.target.value })} /></label>
+            <SuggestInput value={n.evidence} onChange={(v) => setN({ ...n, evidence: v })} options={[...splitList(r.sources), ...sug.item_sources]} placeholder="Pick or type" /></label>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Severity
             <select value={n.severity} onChange={(e) => setN({ ...n, severity: e.target.value })}>
               <option value="major">Major: affects a result, value or conclusion</option>
               <option value="minor">Minor: presentation or documentation only</option>
               <option value="observation">Observation: no correction needed</option>
             </select></label>
-          <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Action required
-            <input value={n.action_required} onChange={(e) => setN({ ...n, action_required: e.target.value })} /></label>
+          <div style={field}>Action required
+            <ChoiceSelect value={n.action_required} options={uniq([...meta.choices.actions, ...sug.actions])} onChange={(v) => setN({ ...n, action_required: v })} placeholder="Select action" /></div>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Assigned to (defaults to the preparer)
             <select value={n.assigned_user_id} onChange={(e) => setN({ ...n, assigned_user_id: e.target.value ? Number(e.target.value) : "" })}>
               <option value="">{r.preparer_name ? `${r.preparer_name} (preparer)` : "Select"}</option>
@@ -656,8 +675,8 @@ function Attachments({ d, busy, act }: { d: Detail; busy: boolean; act: (fn: () 
   );
 }
 
-function Part5({ d, meta, busy, act, blocking, openMinor, openMajor }: {
-  d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean>;
+function Part5({ d, meta, busy, act, sug, blocking, openMinor, openMajor }: {
+  d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean>; sug: QaqcSuggestions;
   blocking: Finding[]; openMinor: Finding[]; openMajor: Finding[];
 }) {
   const r = d.review;
@@ -678,7 +697,8 @@ function Part5({ d, meta, busy, act, blocking, openMinor, openMajor }: {
           {blocking.length ? <p style={{ fontSize: 13, margin: "0 0 8px", color: RED }}>Not yet verified closed: finding {summary}.</p> : null}
           {p.is_reviewer ? (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <input style={{ flex: "1 1 280px" }} value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Corrected version or date examined" />
+              <SuggestInput style={{ flex: "1 1 280px" }} value={version} onChange={setVersion}
+                options={uniq([...d.findings.map((f) => f.resolution_version), todayIso(), ...sug.versions])} placeholder="Corrected version or date examined" />
               <button type="button" disabled={busy || blocking.length > 0 || !version.trim()} onClick={() => {
                 if (window.confirm(`Close ${r.record_no} as ${meta.me.name}?`)) act(() => apiPost<Detail>(`/qaqc/reviews/${r.id}/close`, { version_examined: version }), `${r.record_no} closed.`);
               }}>Close record as {meta.me.name}</button>

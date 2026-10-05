@@ -8,13 +8,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost } from "../../lib/api";
+import { ChoiceSelect, MultiPick, QaqcChoices, composeTitle, useQaqcSuggestions } from "./QaqcFields";
 
 type OpenRecord = {
   id: number; record_no: string; title: string; status: string;
   reviewer_name: string | null; preparer_name: string | null; mine: boolean;
 };
 type Person = { id: number; name: string };
-type Meta = { me: { id: number; name: string }; users: Person[] };
+type Meta = { me: { id: number; name: string }; users: Person[]; choices: QaqcChoices };
 
 export const QAQC_RECORD_RE = /\bQA-[A-Z0-9][A-Z0-9-]{0,22}?-\d{3,4}\b/i;
 // Opening a record from the timesheet: page.tsx switches to the QA/QC workspace and
@@ -49,7 +50,8 @@ export default function QaqcRecordPicker({ projectId, taskId, note, onNote }: {
   const [records, setRecords] = useState<OpenRecord[] | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [starting, setStarting] = useState(false);
-  const [form, setForm] = useState({ title: "", preparer: "" as number | "", sources: "" });
+  const [form, setForm] = useState({ type: "", title: "", preparer: "" as number | "", sources: "" });
+  const sug = useQaqcSuggestions(projectId);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [opened, setOpened] = useState<{ id: number; record_no: string } | null>(null);
@@ -74,18 +76,19 @@ export default function QaqcRecordPicker({ projectId, taskId, note, onNote }: {
 
   async function start() {
     setErr(null);
-    if (form.title.trim().length < 3) { setErr("Say what you are checking."); return; }
+    const title = composeTitle(form.type, form.title);
+    if (title.length < 3) { setErr("Say what you are checking."); return; }
     if (!form.preparer) { setErr("Name whose work you are checking (the preparer)."); return; }
     setBusy(true);
     try {
       const d = await apiPost<{ review: { id: number; record_no: string } }>("/qaqc/reviews", {
-        project_id: projectId, task_id: taskId, title: form.title.trim(),
+        project_id: projectId, task_id: taskId, title,
         preparer_user_id: form.preparer, sources: form.sources.trim(),
       });
       onNote(withRecord(note, d.review.record_no));
       setOpened({ id: d.review.id, record_no: d.review.record_no });
       setStarting(false);
-      setForm({ title: "", preparer: "", sources: "" });
+      setForm({ type: "", title: "", preparer: "", sources: "" });
       load();
     } catch (e) {
       const m = e instanceof Error ? e.message.replace(/^\d{3}\s*/, "") : String(e);
@@ -125,20 +128,24 @@ export default function QaqcRecordPicker({ projectId, taskId, note, onNote }: {
           <p style={{ fontSize: 12, margin: "0 0 6px", color: "var(--aq-muted)" }}>
             Start a QA/QC review. You will be the reviewer; you cannot review your own work.
           </p>
-          <label style={lbl}>What are you checking?
+          <div style={lbl}>What are you checking?
+            <ChoiceSelect value={form.type} options={meta?.choices?.work_product_types || []}
+              onChange={(v) => setForm({ ...form, type: v })} placeholder="Select type of work" style={{ marginTop: 4 }} />
             <input style={ctl} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })}
-              placeholder="e.g. JA regulators 1-8: RIP drawing readings vs model" />
-          </label>
+              placeholder="Which one, e.g. JA regulators 1-8" />
+          </div>
           <label style={lbl}>Whose work is it? (preparer)
             <select style={ctl} value={form.preparer} onChange={(e) => setForm({ ...form, preparer: e.target.value ? Number(e.target.value) : "" })}>
               <option value="">Select the preparer</option>
               {others.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           </label>
-          <label style={lbl}>Checked against (optional)
-            <input style={ctl} value={form.sources} onChange={(e) => setForm({ ...form, sources: e.target.value })}
-              placeholder="e.g. RIP drawings, earlier model" />
-          </label>
+          <div style={lbl}>Checked against (optional)
+            <div style={{ marginTop: 4 }}>
+              <MultiPick value={form.sources} onChange={(v) => setForm({ ...form, sources: v })}
+                options={[...(meta?.choices?.sources || []), ...sug.sources]} addLabel="+ Add a source" />
+            </div>
+          </div>
           {err ? <p className="aq-lite-error" style={{ fontSize: 12, margin: "0 0 6px" }}>{err}</p> : null}
           <div style={{ display: "flex", gap: 8 }}>
             <button type="button" disabled={busy} onClick={start}>{busy ? "Starting..." : "Start review"}</button>
