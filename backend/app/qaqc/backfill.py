@@ -187,10 +187,13 @@ def main() -> None:
                 db.add(QaqcEarlierTime(review_id=r.id, time_entry_id=e.id, user_id=e.user_id, work_date=e.work_date,
                                        hours=float(e.hours or 0), note=e.note or "", billed=bool(e.billed),
                                        invoice_ref=invoices.get(e.invoice_id or 0, "")))
+            n = len(g["entries"])
+            span = (f"{g['first']:%m/%d/%Y}" if g["first"] == g["last"]
+                    else f"{g['first']:%m/%d/%Y} to {g['last']:%m/%d/%Y}")
             service.log_event(db, r.id, actor.id, "opened",
-                              f"{rec} created from {len(g['entries'])} earlier timesheet entries ({g['hours']:g} h, "
-                              f"{g['first']:%m/%d/%Y} to {g['last']:%m/%d/%Y}). The earlier time is noted on the "
-                              f"record; the time entries were not changed.")
+                              f"{rec} created from {n} earlier timesheet entr{'y' if n == 1 else 'ies'} "
+                              f"({g['hours']:g} h, {span}). The earlier time is noted on the record; the time "
+                              f"entries were not changed.")
             if created:
                 service.log_event(db, r.id, actor.id, "qaqc_subtask",
                                   f"QA/QC subtask '{sub.name}' ({sub.code}) set up on task '{task.name}'")

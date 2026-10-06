@@ -842,8 +842,10 @@ function Part5({ d, meta, busy, act, sug, blocking, openMinor, openMajor }: {
       <p style={{ fontSize: 13, fontStyle: "italic", margin: "0 0 10px" }}>{meta.closure_text}</p>
       {r.status === "closed" ? (
         <p style={{ fontSize: 13, margin: 0 }}>Closed by <strong>{r.closed_by}</strong> on {fmtDateTime(r.closed_at)}. Corrected version examined: {r.closed_version}.</p>
-      ) : r.status === "open" ? (
+      ) : r.status === "open" || r.status === "to_complete" ? (
         <p className="aq-lite-muted" style={{ fontSize: 13, margin: 0 }}>Closure follows certification and the back-check of every Major and Minor finding.</p>
+      ) : r.status === "dismissed" ? (
+        <p className="aq-lite-muted" style={{ fontSize: 13, margin: 0 }}>Not applicable: marked as not a review.</p>
       ) : (
         <>
           {blocking.length ? <p style={{ fontSize: 13, margin: "0 0 8px", color: RED }}>Not yet verified closed: finding {summary}.</p> : null}
