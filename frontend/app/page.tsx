@@ -1164,7 +1164,8 @@ export default function AquatechPmHome() {
                   onClick={() => setOpenGroups((g) => ({ ...g, payroll: !pOpen }))}
                 >
                   <span>Payroll</span>
-                  <small>{pOpen ? "▾" : "▸"} Run · pay · reconcile</small>
+                  {/* Staff only reach their own pay settings here; the run/reconcile tools are admin-only. */}
+                  <small>{pOpen ? "▾" : "▸"} {capabilities.canViewFinancials ? "Run · pay · reconcile" : "My pay settings · 401(k) + W-4"}</small>
                 </button>
                 {pOpen ? (
                   <>
