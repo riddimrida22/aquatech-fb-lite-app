@@ -225,9 +225,11 @@ app.include_router(payroll_router)
 from .qaqc import service as qaqc_service  # noqa: E402
 from .qaqc.models import QaqcFinding, QaqcReview  # noqa: E402
 from .qaqc.routes import business_days_between as _qaqc_business_days  # noqa: E402
+from .qaqc.reports import router as qaqc_reports_router  # noqa: E402
 from .qaqc.routes import router as qaqc_router  # noqa: E402
 
 app.include_router(qaqc_router)
+app.include_router(qaqc_reports_router)
 
 HIDDEN_PROJECT_NAMES = {"no project", "imported project"}
 NO_SUBTASK_CODE = "NO-SUBTASK"

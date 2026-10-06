@@ -104,7 +104,7 @@ const field: React.CSSProperties = { display: "grid", gap: 4, fontSize: 13 };
 
 export default function QaqcWorkspace() {
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [view, setView] = useState<"records" | "findings" | "new" | "detail">("records");
+  const [view, setView] = useState<"records" | "findings" | "new" | "detail" | "reports">("records");
   const [list, setList] = useState<Summary[]>([]);
   const [filterProject, setFilterProject] = useState<number | "">("");
   const [filterStatus, setFilterStatus] = useState("");
@@ -167,6 +167,7 @@ export default function QaqcWorkspace() {
           <button type="button" className={view === "records" || view === "detail" ? "active" : ""} onClick={() => setView("records")}>Records</button>
           <button type="button" className={view === "findings" ? "active" : ""} onClick={() => setView("findings")}>Open findings</button>
           <button type="button" className={view === "new" ? "active" : ""} onClick={() => { setErr(null); setView("new"); }}>Open a new review</button>
+          {meta.me.is_admin ? <button type="button" className={view === "reports" ? "active" : ""} onClick={() => { setErr(null); setView("reports"); }}>Reports</button> : null}
         </div>
       </div>
 
@@ -246,6 +247,8 @@ export default function QaqcWorkspace() {
           )}
         </div>
       ) : null}
+
+      {view === "reports" && meta.me.is_admin ? <Reports meta={meta} /> : null}
 
       {view === "new" ? (
         <NewReview meta={meta} onCreated={(d) => { setDetail(d); setView("detail"); setMsg(`${d.review.record_no} opened.`); }} onError={setErr} />
@@ -372,6 +375,11 @@ function RecordView({ d, meta, busy, act, onBack }: {
         <h3 style={{ margin: 0, fontSize: 20 }}>{r.record_no}</h3>
         <span className={STATUS_BADGE[r.status]} style={nowrap}>{STATUS_LABEL[r.status]}</span>
         <span className="aq-lite-muted" style={{ fontSize: 13 }}>{r.project_name}{r.task_name ? ` / ${r.task_name}` : ""}</span>
+        {p.is_admin ? (
+          <a href={`${API_BASE}/qaqc/reports/record/${rid}`} target="_blank" rel="noreferrer" style={{ marginLeft: "auto", fontSize: 13 }}>
+            Print this record
+          </a>
+        ) : null}
       </div>
       {!["closed", "dismissed"].includes(r.status) && r.subtask ? (
         <p style={{ fontSize: 13, margin: "8px 0 0", padding: "8px 10px", borderRadius: 8, background: "rgba(22,107,119,0.08)" }}>
@@ -434,6 +442,53 @@ function RecordView({ d, meta, busy, act, onBack }: {
             {d.events.map((e, i) => <tr key={i}><td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(e.at)}</td><td style={{ whiteSpace: "nowrap" }}>{e.who}</td><td>{e.detail}</td></tr>)}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/** Admin reports (owner 2026-10-06): printable summary with filters, CSV for Excel. */
+function Reports({ meta }: { meta: Meta }) {
+  const [project, setProject] = useState<number | "">("");
+  const [status, setStatus] = useState("");
+  const [person, setPerson] = useState<number | "">("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const q = new URLSearchParams();
+  if (project) q.set("project_id", String(project));
+  if (status) q.set("status", status);
+  if (person) q.set("person_id", String(person));
+  if (from) q.set("date_from", from);
+  if (to) q.set("date_to", to);
+  const base = `${API_BASE}/qaqc/reports/summary?${q.toString()}`;
+  return (
+    <div style={{ marginTop: 14 }}>
+      <p className="aq-lite-muted" style={{ fontSize: 12.5, marginTop: 0 }}>
+        Pick the filters, then open the report to print it or save it as PDF, or download it for Excel. Each record can also be
+        printed on its own from the record (Print this record).
+      </p>
+      <div className="aq-lite-form-grid" style={{ alignItems: "end" }}>
+        <label style={field}>Project
+          <select value={project} onChange={(e) => setProject(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">All projects</option>
+            {meta.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select></label>
+        <label style={field}>Status
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="">Any status</option>
+            {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select></label>
+        <label style={field}>Person (reviewer or preparer)
+          <select value={person} onChange={(e) => setPerson(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">Everyone</option>
+            {meta.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select></label>
+        <label style={field}>Opened from<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label style={field}>Opened to<input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+        <a className="aq-lite-primary-link" href={base} target="_blank" rel="noreferrer">Open the report (print or PDF)</a>
+        <a href={`${base}${q.toString() ? "&" : ""}format=csv`} style={{ alignSelf: "center", fontSize: 13 }}>Download for Excel (CSV)</a>
       </div>
     </div>
   );
