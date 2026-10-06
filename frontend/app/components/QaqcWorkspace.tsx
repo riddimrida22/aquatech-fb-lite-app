@@ -597,7 +597,7 @@ function Part3({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
                 </> : null}
                 {canDecide ? <button type="button" disabled={busy || v.note.trim().length < 3} style={quiet} onClick={async () => {
                   if (window.confirm(`Close finding ${f.seq} by decision rather than correction?`) && await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings/${f.id}/decide`, { note: v.note }), `Finding ${f.seq} closed by decision.`)) setIn(f.id, { note: "" });
-                }}>Close by decision (PM)</button> : null}
+                }}>Close by decision (admin)</button> : null}
               </div>
             ) : null}
           </div>

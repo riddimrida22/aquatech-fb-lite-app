@@ -34,6 +34,7 @@ import { FreshnessBanner } from "./components/FreshnessBanner";
 import { PayrollExpenseSummary } from "./components/PayrollExpenseSummary";
 import { TimesheetsWorkspace } from "./components/TimesheetsWorkspace";
 import { TimesheetSubmitAlert } from "./components/TimesheetSubmitAlert";
+import { QaqcAlert } from "./components/QaqcAlert";
 import { TransitionInboxPanel } from "./components/TransitionInboxPanel";
 import { useAutoSortableTables } from "./components/useAutoSortableTables";
 import { GroupedList } from "./components/GroupedList";
@@ -1771,6 +1772,7 @@ export default function AquatechPmHome() {
 
         {workspace === "time" ? (
           <div className="aq-lite-stack">
+            <QaqcAlert />
             <div
               style={{
                 display: "inline-flex",

@@ -12,7 +12,7 @@ Who may do what:
     The reviewer never resolves findings on their own review (independent back-check).
   * nobody reviews their own work: every record must name a preparer, the reviewer can never be
     the preparer, and findings are never assigned to the reviewer
-  * MANAGE_PROJECTS (PM/admin): edit any open record, decide disputed findings
+  * admin (Bertrand, Ailsa): edit any open record, decide disputed findings, see all QA/QC hours
   * admin: approve release with open Minor findings (the Principal's approval)
 Time entries are linked by the record number in their note (service.link_time_entry).
 Staff see only their own linked hours (D-023); admins see everyone's.
@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..authz import get_current_user, permissions_for_role
+from ..authz import get_current_user
 from ..db import get_db
 from ..models import Project, Subtask, Task, TimeEntry, User
 from . import service
@@ -77,7 +77,10 @@ CHOICES = {
 
 # ----------------------------------------------------------------- permissions
 def _is_pm(u: User) -> bool:
-    return "MANAGE_PROJECTS" in permissions_for_role(u.role)
+    """Elevated QA/QC powers (edit any open record, open one for another reviewer, close a
+    finding by decision, see everyone's QA/QC hours, flag subtasks). Owner 2026-10-06:
+    reserved for admin-level personnel only (currently Bertrand and Ailsa), not managers."""
+    return u.role == "admin"
 
 
 def _is_admin(u: User) -> bool:
@@ -96,7 +99,7 @@ def _require_editable(r: QaqcReview, u: User) -> None:
         raise HTTPException(status_code=409, detail="The record has been certified; Parts 1-3 can no longer be "
                                                     "changed. Open a new record for further findings.")
     if u.id != r.reviewer_user_id and not _is_pm(u):
-        raise HTTPException(status_code=403, detail="Only the reviewer (or a PM/admin) can edit this record.")
+        raise HTTPException(status_code=403, detail="Only the reviewer (or an admin) can edit this record.")
 
 
 def _require_reviewer(r: QaqcReview, u: User, what: str) -> None:
@@ -225,6 +228,33 @@ def qaqc_suggestions(project_id: int, db: Session = Depends(get_db),
     }
 
 
+@router.get("/my-actions")
+def qaqc_my_actions(db: Session = Depends(get_db), u: User = Depends(get_current_user)) -> dict:
+    """What is waiting on the signed-in person, for the alert on the Time page:
+    findings to fix (assigned to them, or on work they prepared, open or returned),
+    fixes awaiting their back-check, and reviews they can now close."""
+    rows = db.execute(select(QaqcFinding, QaqcReview).join(QaqcReview, QaqcReview.id == QaqcFinding.review_id)
+                      .where(QaqcReview.status == "certified")
+                      .order_by(QaqcFinding.created_at)).all()
+    to_fix, to_backcheck = [], []
+    for f, r in rows:
+        base = {"review_id": r.id, "record_no": r.record_no, "seq": f.seq, "severity": f.severity,
+                "description": f.description, "status": f.status}
+        mine = f.assigned_user_id == u.id or (f.assigned_user_id is None and r.preparer_user_id == u.id)
+        if f.status in ("open", "returned") and f.severity != "observation" and mine and u.id != r.reviewer_user_id:
+            to_fix.append(base)
+        if f.status == "resolved" and r.reviewer_user_id == u.id:
+            to_backcheck.append(base)
+    to_close = []
+    for r in db.scalars(select(QaqcReview).where(QaqcReview.status == "certified",
+                                                 QaqcReview.reviewer_user_id == u.id)).all():
+        fs = db.scalars(select(QaqcFinding).where(QaqcFinding.review_id == r.id)).all()
+        if not any(f.severity in ("major", "minor") and f.status not in ("verified", "closed_by_decision")
+                   for f in fs):
+            to_close.append({"review_id": r.id, "record_no": r.record_no, "title": r.title})
+    return {"to_fix": to_fix, "to_backcheck": to_backcheck, "to_close": to_close}
+
+
 class SubtaskFlagIn(BaseModel):
     is_qaqc: bool
 
@@ -234,7 +264,7 @@ def qaqc_flag_subtask(subtask_id: int, payload: SubtaskFlagIn, db: Session = Dep
                       u: User = Depends(get_current_user)) -> dict:
     """Mark an existing subtask (e.g. a fee-sheet QA/QC line) as a QA/QC subtask."""
     if not _is_pm(u):
-        raise HTTPException(status_code=403, detail="Only a PM/admin can change subtask settings.")
+        raise HTTPException(status_code=403, detail="Only an admin can change subtask settings.")
     s = db.get(Subtask, subtask_id)
     if not s:
         raise HTTPException(status_code=404, detail="Subtask not found")
@@ -290,7 +320,7 @@ def qaqc_create(payload: ReviewIn, db: Session = Depends(get_db), u: User = Depe
         raise HTTPException(status_code=400, detail="Pick a project and one of its tasks.")
     reviewer_id = payload.reviewer_user_id or u.id
     if reviewer_id != u.id and not _is_pm(u):
-        raise HTTPException(status_code=403, detail="Only a PM/admin can open a record for another reviewer.")
+        raise HTTPException(status_code=403, detail="Only an admin can open a record for another reviewer.")
     _check_people(payload.preparer_user_id, reviewer_id)
     sub, created = service.ensure_qaqc_subtask(db, task)
     code = service.project_code(project)
@@ -374,7 +404,7 @@ def qaqc_update(review_id: int, payload: ReviewIn, db: Session = Depends(get_db)
     _require_editable(r, u)
     reviewer_id = payload.reviewer_user_id or r.reviewer_user_id
     if reviewer_id != r.reviewer_user_id and not _is_pm(u):
-        raise HTTPException(status_code=403, detail="Only a PM/admin can change the reviewer.")
+        raise HTTPException(status_code=403, detail="Only an admin can change the reviewer.")
     _check_people(payload.preparer_user_id, reviewer_id)
     if payload.task_id != r.task_id:
         task = db.get(Task, payload.task_id)
@@ -604,7 +634,7 @@ def qaqc_decide(review_id: int, finding_id: int, payload: DecideIn, db: Session 
     r = _review_or_404(db, review_id)
     f = _finding_for(db, r, finding_id)
     if not _is_pm(u):
-        raise HTTPException(status_code=403, detail="Only the Project Manager or Principal can decide a finding.")
+        raise HTTPException(status_code=403, detail="Only an admin (Bertrand or Ailsa) can close a finding by decision.")
     if f.status in ("verified", "closed_by_decision"):
         raise HTTPException(status_code=409, detail="This finding is already closed.")
     f.status = "closed_by_decision"
