@@ -38,7 +38,8 @@ export function QaqcAlert() {
 
   return (
     <div role="alert" className="aq-lite-panel"
-      style={{ borderLeft: "4px solid #b8860b", background: "rgba(184,134,11,0.10)", marginBottom: 4 }}>
+      // Tint layered over the panel's own (theme) background, so the text stays readable in light and dark.
+      style={{ borderLeft: "4px solid #b8860b", backgroundImage: "linear-gradient(rgba(184,134,11,0.14), rgba(184,134,11,0.14))", marginBottom: 4 }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <strong>QA/QC: {total} item{total === 1 ? "" : "s"} waiting on you</strong>
