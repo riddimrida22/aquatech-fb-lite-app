@@ -13,14 +13,17 @@ captured by the nightly Postgres backup, like the BD library.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
 
-REVIEW_STATUSES = ("open", "certified", "closed")
+# to_complete: retroactive record created from earlier timesheet notes, waiting for its reviewer to
+# fill it in (preparer not yet named). dismissed: the reviewer recorded that the time was not a review
+# of someone else's work (kept, with the reason, for the audit trail).
+REVIEW_STATUSES = ("to_complete", "open", "certified", "closed", "dismissed")
 SEVERITIES = ("major", "minor", "observation")
 # open -> resolved -> verified (closed) | returned (back to the preparer) ; or closed_by_decision
 FINDING_STATUSES = ("open", "resolved", "returned", "verified", "closed_by_decision")
@@ -56,6 +59,27 @@ class QaqcReview(Base):
     release_approved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     release_approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     release_note: Mapped[str] = mapped_column(Text, default="")
+    retroactive: Mapped[bool] = mapped_column(Boolean, default=False)   # created from earlier timesheet notes
+    dismissed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dismissed_reason: Mapped[str] = mapped_column(Text, default="")
+
+
+class QaqcEarlierTime(Base):
+    """Earlier QA/QC time noted on a retroactive record (owner 2026-10-06: the time is already billed,
+    so it is not moved or linked; the entry is copied here as a note). time_entry_id is a reference
+    for traceability only; the time entry itself is never changed."""
+    __tablename__ = "qaqc_earlier_time"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("qaqc_reviews.id"), index=True)
+    time_entry_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    work_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    hours: Mapped[float] = mapped_column(Float, default=0.0)
+    note: Mapped[str] = mapped_column(Text, default="")
+    billed: Mapped[bool] = mapped_column(Boolean, default=False)
+    invoice_ref: Mapped[str] = mapped_column(String(64), default="")
 
 
 class QaqcItem(Base):

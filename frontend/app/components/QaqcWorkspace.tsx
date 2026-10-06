@@ -27,6 +27,7 @@ type Summary = {
   preparer_user_id: number | null; reviewer_user_id: number;
   opened_at: string | null; certified_at: string | null; closed_at: string | null;
   items: number; findings: number; open_major: number; open_minor: number; awaiting_backcheck: number;
+  retroactive: boolean; earlier_hours: number;
 };
 type Item = { id: number; seq: number; item: string; source: string; value_work: string; value_source: string; result: string; finding_id: number | null; finding_seq: number | null };
 type Finding = {
@@ -43,7 +44,9 @@ type Detail = {
     opened_by: string | null; certified_by: string | null; certification_text: string;
     closed_by: string | null; closed_version: string; closure_text: string;
     release_approved_by: string | null; release_approved_at: string | null; release_note: string;
+    dismissed_by: string | null; dismissed_at: string | null; dismissed_reason: string;
   };
+  earlier_time: { work_date: string | null; who: string | null; hours: number; note: string; billed: boolean; invoice_ref: string }[];
   items: Item[];
   findings: Finding[];
   attachments: { id: number; finding_id: number | null; finding_seq: number | null; filename: string; size_bytes: number; uploaded_by: string | null; created_at: string | null }[];
@@ -71,9 +74,16 @@ const errText = (e: unknown) => {
 };
 
 const STATUS_BADGE: Record<string, string> = {
-  open: "aq-lite-badge aq-lite-badge-info", certified: "aq-lite-badge aq-lite-badge-warn", closed: "aq-lite-badge aq-lite-badge-good",
+  to_complete: "aq-lite-badge aq-lite-badge-bad", open: "aq-lite-badge aq-lite-badge-info", certified: "aq-lite-badge aq-lite-badge-warn",
+  closed: "aq-lite-badge aq-lite-badge-good", dismissed: "aq-lite-badge aq-lite-badge-neutral",
 };
-const STATUS_LABEL: Record<string, string> = { open: "In review", certified: "Certified", closed: "Closed" };
+const STATUS_LABEL: Record<string, string> = { to_complete: "To complete", open: "In review", certified: "Certified", closed: "Closed", dismissed: "Not a review" };
+// Reasons offered when a retroactive record turns out not to be a review of someone else's work.
+const NOT_A_REVIEW = [
+  "My own work: preparing the deliverable, not checking someone else's",
+  "Meeting or coordination about QA/QC, no review done",
+  "Same review as another record",
+];
 const F_LABEL: Record<string, string> = {
   open: "Open", resolved: "Resolved, awaiting back-check", returned: "Returned to preparer", verified: "Verified closed", closed_by_decision: "Closed by decision",
 };
@@ -171,8 +181,10 @@ export default function QaqcWorkspace() {
               {meta.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
             <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
-              <option value="">Any status</option><option value="open">In review</option>
+              <option value="">Any status</option><option value="to_complete">To complete (from earlier notes)</option>
+              <option value="open">In review</option>
               <option value="certified">Certified (findings being worked)</option><option value="closed">Closed</option>
+              <option value="dismissed">Not a review</option>
             </select>
             <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
               <input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} /> Only records I am on
@@ -361,11 +373,19 @@ function RecordView({ d, meta, busy, act, onBack }: {
         <span className={STATUS_BADGE[r.status]} style={nowrap}>{STATUS_LABEL[r.status]}</span>
         <span className="aq-lite-muted" style={{ fontSize: 13 }}>{r.project_name}{r.task_name ? ` / ${r.task_name}` : ""}</span>
       </div>
-      {r.status !== "closed" && r.subtask ? (
+      {!["closed", "dismissed"].includes(r.status) && r.subtask ? (
         <p style={{ fontSize: 13, margin: "8px 0 0", padding: "8px 10px", borderRadius: 8, background: "rgba(22,107,119,0.08)" }}>
           Timesheet: charge review and back-check time to <strong>{r.task_name} / {r.subtask.name}</strong> and start the note with <strong>{r.record_no}</strong>.
         </p>
       ) : null}
+
+      {r.status === "to_complete" ? <CompletePanel d={d} meta={meta} busy={busy} act={act} /> : null}
+      {r.status === "dismissed" ? (
+        <p style={{ fontSize: 13, margin: "10px 0 0", padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)" }}>
+          Marked as not a review by <strong>{r.dismissed_by}</strong> on {fmtDate(r.dismissed_at)}: {r.dismissed_reason}
+        </p>
+      ) : null}
+      {d.earlier_time.length ? <EarlierTime d={d} /> : null}
 
       <Part1 d={d} meta={meta} busy={busy} act={act} sug={sug} />
       <Part2 d={d} meta={meta} busy={busy} act={act} sug={sug} />
@@ -382,6 +402,10 @@ function RecordView({ d, meta, busy, act, onBack }: {
               Certify as {meta.me.name}
             </button>
           ) : <p className="aq-lite-muted" style={{ fontSize: 13, margin: 0 }}>Awaiting certification by the reviewer, {r.reviewer_name}.</p>
+        ) : r.status === "to_complete" ? (
+          <p className="aq-lite-muted" style={{ fontSize: 13, margin: 0 }}>Name the preparer above, then list what was checked; the reviewer signs here.</p>
+        ) : r.status === "dismissed" ? (
+          <p className="aq-lite-muted" style={{ fontSize: 13, margin: 0 }}>Not signed: marked as not a review.</p>
         ) : (
           <p style={{ fontSize: 13, margin: 0 }}>Signed by <strong>{r.certified_by}</strong> on {fmtDateTime(r.certified_at)}.</p>
         )}
@@ -411,6 +435,64 @@ function RecordView({ d, meta, busy, act, onBack }: {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/** Retroactive record waiting for its reviewer: name the preparer, or say it was not a review. */
+function CompletePanel({ d, meta, busy, act }: { d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean> }) {
+  const r = d.review;
+  const p = d.permissions;
+  const [prep, setPrep] = useState<number | "">("");
+  const [reason, setReason] = useState("");
+  const n = d.earlier_time.length;
+  return (
+    <div style={{ ...box, borderColor: "rgba(184,134,11,0.6)", background: "rgba(184,134,11,0.08)" }}>
+      <h4 style={h4}>Complete this record</h4>
+      <p style={{ fontSize: 13, margin: "0 0 10px" }}>
+        This record was made from {p.is_reviewer ? "your" : `${r.reviewer_name}'s`} earlier timesheet notes ({n} entr{n === 1 ? "y" : "ies"}, {r.earlier_hours.toFixed(2)} h, listed below).
+        That time is already billed and stays exactly as it is. Check the details in Part 1, name whose work was checked, list what was checked and any findings, then sign.
+        If the time was not a review of someone else&apos;s work, say so instead.
+      </p>
+      {p.can_edit ? (
+        <div className="aq-lite-form-grid" style={{ alignItems: "end" }}>
+          <label style={field}>Whose work was checked? (preparer)
+            <select value={prep} onChange={(e) => setPrep(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">Select the preparer</option>
+              {meta.users.filter((u) => u.id !== r.reviewer_user_id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select></label>
+          <div><button type="button" disabled={busy || !prep} onClick={() => act(() => apiPut<Detail>(`/qaqc/reviews/${r.id}`, {
+            project_id: r.project_id, task_id: r.task_id, title: r.title, version_reviewed: r.version_reviewed,
+            preparer_user_id: prep, reviewer_user_id: r.reviewer_user_id, sources: r.sources, scope: r.scope, planned_hours: r.planned_hours,
+          }), "Preparer named. Now list what was checked in Part 2.")}>Save and continue</button></div>
+          <label style={{ ...field, gridColumn: "1 / -1" }}>Or: this was not a review of someone else&apos;s work, because
+            <SuggestInput value={reason} onChange={setReason} options={NOT_A_REVIEW} placeholder="Pick a reason or type one" /></label>
+          <div><button type="button" style={quiet} disabled={busy || reason.trim().length < 3 || d.findings.length > 0} onClick={() => {
+            if (window.confirm(`Mark ${r.record_no} as not a review? The record is kept with your reason.`))
+              act(() => apiPost<Detail>(`/qaqc/reviews/${r.id}/dismiss`, { reason }), "Marked as not a review.");
+          }}>Not a review of someone else&apos;s work</button></div>
+        </div>
+      ) : <p className="aq-lite-muted" style={{ fontSize: 13, margin: 0 }}>Waiting for {r.reviewer_name} to complete it.</p>}
+    </div>
+  );
+}
+
+function EarlierTime({ d }: { d: Detail }) {
+  const total = d.earlier_time.reduce((a, e) => a + e.hours, 0);
+  return (
+    <div style={box}>
+      <h4 style={h4}>Earlier QA/QC time (from timesheet notes, already billed)</h4>
+      <p className="aq-lite-muted" style={{ fontSize: 12.5, marginTop: 0 }}>Copied from the timesheets as a note. These entries were not moved, changed or re-linked.</p>
+      <table className="aq-lite-table" data-disable-table-sort="true" style={{ width: "100%", fontSize: 13 }}>
+        <thead><tr><th style={{ textAlign: "left" }}>Date</th><th style={{ textAlign: "left" }}>Who</th><th style={{ textAlign: "right" }}>Hours</th><th style={{ textAlign: "left" }}>Invoice</th><th style={{ textAlign: "left" }}>Timesheet note</th></tr></thead>
+        <tbody>
+          {d.earlier_time.map((e, i) => (
+            <tr key={i}><td style={{ ...cell, whiteSpace: "nowrap" }}>{fmtDate(e.work_date)}</td><td style={{ ...cell, whiteSpace: "nowrap" }}>{e.who}</td>
+              <td style={{ ...cell, textAlign: "right" }}>{e.hours.toFixed(2)}</td><td style={{ ...cell, whiteSpace: "nowrap" }}>{e.invoice_ref || (e.billed ? "Billed" : "")}</td><td style={cell}>{e.note}</td></tr>
+          ))}
+          <tr style={{ fontWeight: 700 }}><td style={cell}>Total</td><td /><td style={{ ...cell, textAlign: "right" }}>{total.toFixed(2)}</td><td /><td /></tr>
+        </tbody>
+      </table>
     </div>
   );
 }

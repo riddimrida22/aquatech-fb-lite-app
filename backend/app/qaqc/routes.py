@@ -31,8 +31,8 @@ from ..authz import get_current_user
 from ..db import get_db
 from ..models import Project, Subtask, Task, TimeEntry, User
 from . import service
-from .models import (FINDING_STATUSES, SEVERITIES, QaqcAttachment, QaqcEvent, QaqcFinding, QaqcItem,
-                     QaqcReview)
+from .models import (FINDING_STATUSES, REVIEW_STATUSES, SEVERITIES, QaqcAttachment, QaqcEarlierTime, QaqcEvent,
+                     QaqcFinding, QaqcItem, QaqcReview)
 
 router = APIRouter(prefix="/qaqc", tags=["qaqc"])
 
@@ -44,6 +44,8 @@ CLOSURE_TEXT = ("I certify that I have examined the corrected work identified in
                 "Major and Minor finding in Part 3 is verified closed or closed by the recorded decision of "
                 "the Project Manager or Principal.")
 OPEN_FINDING = ("open", "resolved", "returned")
+EDITABLE = ("open", "to_complete")          # Parts 1-3 can still be changed
+INACTIVE = ("closed", "dismissed")          # no further time or work on the record
 
 # Standard picklists for the QA/QC forms (each form also offers "Other" for free text).
 CHOICES = {
@@ -130,7 +132,9 @@ def _review_or_404(db: Session, review_id: int) -> QaqcReview:
 
 
 def _require_editable(r: QaqcReview, u: User) -> None:
-    if r.status != "open":
+    if r.status == "dismissed":
+        raise HTTPException(status_code=409, detail="This record was marked as not a review; it can no longer be changed.")
+    if r.status not in EDITABLE:
         raise HTTPException(status_code=409, detail="The record has been certified; Parts 1-3 can no longer be "
                                                     "changed. Open a new record for further findings.")
     if u.id != r.reviewer_user_id and not _is_pm(u):
@@ -180,6 +184,9 @@ def _review_summary(db: Session, r: QaqcReview, nm: dict[int, str], projects: di
         "open_major": sum(1 for f in fs if f.severity == "major" and f.status in OPEN_FINDING),
         "open_minor": sum(1 for f in fs if f.severity == "minor" and f.status in OPEN_FINDING),
         "awaiting_backcheck": sum(1 for f in fs if f.status == "resolved"),
+        "retroactive": bool(r.retroactive),
+        "earlier_hours": round(float(db.scalar(select(func.coalesce(func.sum(QaqcEarlierTime.hours), 0))
+                                               .where(QaqcEarlierTime.review_id == r.id)) or 0), 2),
     }
 
 
@@ -220,7 +227,7 @@ def qaqc_open_records(project_id: int, db: Session = Depends(get_db),
     """Records time can still be charged to (not closed), for the timesheet picker.
     The caller's own reviews come first."""
     rows = db.scalars(select(QaqcReview).where(QaqcReview.project_id == project_id,
-                                               QaqcReview.status != "closed")
+                                               QaqcReview.status.not_in(INACTIVE))
                       .order_by(QaqcReview.seq.desc())).all()
     nm = _names(db)
     out = [{"id": r.id, "record_no": r.record_no, "title": r.title, "task_id": r.task_id,
@@ -287,7 +294,11 @@ def qaqc_my_actions(db: Session = Depends(get_db), u: User = Depends(get_current
         if not any(f.severity in ("major", "minor") and f.status not in ("verified", "closed_by_decision")
                    for f in fs):
             to_close.append({"review_id": r.id, "record_no": r.record_no, "title": r.title})
-    return {"to_fix": to_fix, "to_backcheck": to_backcheck, "to_close": to_close}
+    to_complete = [{"review_id": r.id, "record_no": r.record_no, "title": r.title}
+                   for r in db.scalars(select(QaqcReview).where(QaqcReview.status == "to_complete",
+                                                                QaqcReview.reviewer_user_id == u.id)
+                                       .order_by(QaqcReview.seq)).all()]
+    return {"to_fix": to_fix, "to_backcheck": to_backcheck, "to_close": to_close, "to_complete": to_complete}
 
 
 class SubtaskFlagIn(BaseModel):
@@ -315,7 +326,7 @@ def qaqc_list(project_id: int | None = None, status: str | None = None, mine: bo
     q = select(QaqcReview)
     if project_id:
         q = q.where(QaqcReview.project_id == project_id)
-    if status in ("open", "certified", "closed"):
+    if status in REVIEW_STATUSES:
         q = q.where(QaqcReview.status == status)
     rows = db.scalars(q.order_by(QaqcReview.opened_at.desc())).all()
     if mine:
@@ -393,6 +404,8 @@ def qaqc_get(review_id: int, db: Session = Depends(get_db), u: User = Depends(ge
         te_q = te_q.where(TimeEntry.user_id == u.id)
     entries = db.scalars(te_q.order_by(TimeEntry.work_date)).all()
     fby = {f.id: f.seq for f in findings}
+    earlier = db.scalars(select(QaqcEarlierTime).where(QaqcEarlierTime.review_id == r.id)
+                         .order_by(QaqcEarlierTime.work_date, QaqcEarlierTime.id)).all()
     return {
         "review": {
             **_review_summary(db, r, nm, {r.project_id: project.name if project else ""}),
@@ -406,7 +419,11 @@ def qaqc_get(review_id: int, db: Session = Depends(get_db), u: User = Depends(ge
             "closure_text": r.closure_text,
             "release_approved_by": nm.get(r.release_approved_by_user_id or 0),
             "release_approved_at": _iso(r.release_approved_at), "release_note": r.release_note,
+            "dismissed_by": nm.get(r.dismissed_by_user_id or 0), "dismissed_at": _iso(r.dismissed_at),
+            "dismissed_reason": r.dismissed_reason or "",
         },
+        "earlier_time": [{"work_date": _iso(e.work_date), "who": nm.get(e.user_id or 0), "hours": float(e.hours or 0),
+                          "note": e.note, "billed": bool(e.billed), "invoice_ref": e.invoice_ref} for e in earlier],
         "items": [{"id": i.id, "seq": i.seq, "item": i.item, "source": i.source, "value_work": i.value_work,
                    "value_source": i.value_source, "result": i.result, "finding_id": i.finding_id,
                    "finding_seq": fby.get(i.finding_id or 0)} for i in items],
@@ -424,7 +441,7 @@ def qaqc_get(review_id: int, db: Session = Depends(get_db), u: User = Depends(ge
                          "hours": float(e.hours or 0), "note": e.note} for e in entries],
         },
         "permissions": {
-            "can_edit": r.status == "open" and (u.id == r.reviewer_user_id or _is_pm(u)),
+            "can_edit": r.status in EDITABLE and (u.id == r.reviewer_user_id or _is_pm(u)),
             "is_reviewer": u.id == r.reviewer_user_id,
             "is_preparer": u.id == r.preparer_user_id,
             "is_pm": _is_pm(u), "is_admin": _is_admin(u), "me": u.id,
@@ -440,7 +457,10 @@ def qaqc_update(review_id: int, payload: ReviewIn, db: Session = Depends(get_db)
     reviewer_id = payload.reviewer_user_id or r.reviewer_user_id
     if reviewer_id != r.reviewer_user_id and not _is_pm(u):
         raise HTTPException(status_code=403, detail="Only an admin can change the reviewer.")
-    _check_people(payload.preparer_user_id, reviewer_id)
+    if r.status == "to_complete" and not payload.preparer_user_id:
+        pass  # retroactive record still being completed: the preparer is named before it can be certified
+    else:
+        _check_people(payload.preparer_user_id, reviewer_id)
     if payload.task_id != r.task_id:
         task = db.get(Task, payload.task_id)
         if not task or task.project_id != r.project_id:
@@ -453,6 +473,9 @@ def qaqc_update(review_id: int, payload: ReviewIn, db: Session = Depends(get_db)
     r.reviewer_user_id = reviewer_id
     r.sources, r.scope, r.planned_hours = payload.sources.strip(), payload.scope.strip(), payload.planned_hours
     service.log_event(db, r.id, u.id, "details_updated", "Part 1 updated")
+    if r.status == "to_complete" and r.preparer_user_id:
+        r.status = "open"
+        service.log_event(db, r.id, u.id, "completing", "Preparer named; the record is now in review")
     db.commit()
     return qaqc_get(r.id, db, u)
 
@@ -614,6 +637,9 @@ def qaqc_delete_finding(review_id: int, finding_id: int, db: Session = Depends(g
 @router.post("/reviews/{review_id}/certify")
 def qaqc_certify(review_id: int, db: Session = Depends(get_db), u: User = Depends(get_current_user)) -> dict:
     r = _review_or_404(db, review_id)
+    if r.status == "to_complete":
+        raise HTTPException(status_code=400, detail="Name the preparer in Part 1 (whose work was reviewed) before "
+                                                    "certifying.")
     if r.status != "open":
         raise HTTPException(status_code=409, detail="This record is already certified.")
     _require_reviewer(r, u, "certify the review")
@@ -773,12 +799,40 @@ def qaqc_approve_release(review_id: int, payload: ReleaseIn, db: Session = Depen
     return qaqc_get(r.id, db, u)
 
 
+# ----------------------------------------------------------------- not a review (retroactive records)
+class DismissIn(BaseModel):
+    reason: str = Field(min_length=3)
+
+
+@router.post("/reviews/{review_id}/dismiss")
+def qaqc_dismiss(review_id: int, payload: DismissIn, db: Session = Depends(get_db),
+                 u: User = Depends(get_current_user)) -> dict:
+    """The reviewer records that the earlier time on a retroactive record was not a review of someone
+    else's work (for example, preparing the deliverable). The record is kept, with the reason."""
+    r = _review_or_404(db, review_id)
+    if not r.retroactive:
+        raise HTTPException(status_code=400, detail="Only a record created from earlier timesheet notes can be "
+                                                    "marked as not a review.")
+    if r.status not in EDITABLE:
+        raise HTTPException(status_code=409, detail="This record can no longer be marked as not a review.")
+    if u.id != r.reviewer_user_id and not _is_pm(u):
+        raise HTTPException(status_code=403, detail="Only the person named as reviewer (or an admin) can do this.")
+    if db.scalar(select(func.count(QaqcFinding.id)).where(QaqcFinding.review_id == r.id)):
+        raise HTTPException(status_code=400, detail="Remove the findings first: a record with findings is a review.")
+    r.status = "dismissed"
+    r.dismissed_by_user_id, r.dismissed_at = u.id, datetime.utcnow()
+    r.dismissed_reason = payload.reason.strip()
+    service.log_event(db, r.id, u.id, "dismissed", f"Marked as not a review: {r.dismissed_reason[:300]}")
+    db.commit()
+    return qaqc_get(r.id, db, u)
+
+
 # ----------------------------------------------------------------- attachments
 @router.post("/reviews/{review_id}/attachments")
 async def qaqc_upload(review_id: int, file: UploadFile = File(...), finding_id: str = Form(""),
                       db: Session = Depends(get_db), u: User = Depends(get_current_user)) -> dict:
     r = _review_or_404(db, review_id)
-    if r.status == "closed":
+    if r.status in INACTIVE:
         raise HTTPException(status_code=409, detail="The record is closed.")
     raw = await file.read()
     if not raw:
@@ -817,7 +871,7 @@ def qaqc_delete_attachment(attachment_id: int, db: Session = Depends(get_db),
     if not a:
         raise HTTPException(status_code=404, detail="Attachment not found")
     r = _review_or_404(db, a.review_id)
-    if r.status != "open" or (u.id != a.uploaded_by_user_id and not _is_pm(u)):
+    if r.status not in EDITABLE or (u.id != a.uploaded_by_user_id and not _is_pm(u)):
         raise HTTPException(status_code=403, detail="Attachments can be removed only by the uploader while the "
                                                     "record is open.")
     service.log_event(db, r.id, u.id, "attachment_removed", f"Removed {a.filename}")

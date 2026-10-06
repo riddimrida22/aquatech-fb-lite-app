@@ -49,6 +49,7 @@ def init_db() -> None:
     _ensure_contact_columns()
     _ensure_library_columns()
     _ensure_time_entry_columns()
+    _ensure_qaqc_columns()
     _ensure_project_bill_rate_columns()
     _ensure_dedup_indexes()
 
@@ -223,6 +224,27 @@ def _ensure_time_entry_columns() -> None:
             conn.execute(text("ALTER TABLE time_entries ADD COLUMN qaqc_review_id INTEGER"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_time_entries_qaqc_review_id "
                               "ON time_entries (qaqc_review_id)"))
+
+
+def _ensure_qaqc_columns() -> None:
+    insp = inspect(engine)
+    if not insp.has_table("qaqc_reviews"):
+        return
+    cols = {c["name"] for c in insp.get_columns("qaqc_reviews")}
+    statements: list[str] = []
+    if "retroactive" not in cols:
+        statements.append("ALTER TABLE qaqc_reviews ADD COLUMN retroactive BOOLEAN DEFAULT FALSE")
+    if "dismissed_by_user_id" not in cols:
+        statements.append("ALTER TABLE qaqc_reviews ADD COLUMN dismissed_by_user_id INTEGER")
+    if "dismissed_at" not in cols:
+        statements.append("ALTER TABLE qaqc_reviews ADD COLUMN dismissed_at TIMESTAMP")
+    if "dismissed_reason" not in cols:
+        statements.append("ALTER TABLE qaqc_reviews ADD COLUMN dismissed_reason TEXT DEFAULT ''")
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 def _ensure_library_columns() -> None:

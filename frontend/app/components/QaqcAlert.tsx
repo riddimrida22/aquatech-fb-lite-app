@@ -12,7 +12,7 @@ import { openQaqcRecord } from "./QaqcRecordPicker";
 
 type FindingAction = { review_id: number; record_no: string; seq: number; severity: string; description: string; status: string };
 type CloseAction = { review_id: number; record_no: string; title: string };
-type MyActions = { to_fix: FindingAction[]; to_backcheck: FindingAction[]; to_close: CloseAction[] };
+type MyActions = { to_fix: FindingAction[]; to_backcheck: FindingAction[]; to_close: CloseAction[]; to_complete?: CloseAction[] };
 
 const SEV: Record<string, string> = { major: "Major", minor: "Minor", observation: "Observation" };
 const quiet: React.CSSProperties = { background: "transparent", color: "inherit", border: "1px solid rgba(128,128,128,0.5)", boxShadow: "none" };
@@ -25,7 +25,8 @@ export function QaqcAlert() {
     apiGet<MyActions>("/qaqc/my-actions").then(setA).catch(() => setA(null));
   }, []);
   if (hidden || !a) return null;
-  const total = a.to_fix.length + a.to_backcheck.length + a.to_close.length;
+  const toComplete = a.to_complete || [];
+  const total = a.to_fix.length + a.to_backcheck.length + a.to_close.length + toComplete.length;
   if (!total) return null;
 
   const line = (key: string, text: string, reviewId: number) => (
@@ -54,6 +55,12 @@ export function QaqcAlert() {
               <div style={{ fontSize: 12, color: "var(--aq-muted)" }}>Fixes waiting for your back-check</div>
               {a.to_backcheck.map((f) => line(`bc-${f.review_id}-${f.seq}`,
                 `${f.record_no} finding ${f.seq}: ${f.description}`, f.review_id))}
+            </div>
+          ) : null}
+          {toComplete.length ? (
+            <div style={{ marginTop: 6 }}>
+              <div style={{ fontSize: 12, color: "var(--aq-muted)" }}>Records to complete (made from your earlier timesheet notes)</div>
+              {toComplete.map((r) => line(`tc-${r.review_id}`, `${r.record_no}: ${r.title}`, r.review_id))}
             </div>
           ) : null}
           {a.to_close.length ? (
