@@ -6,12 +6,16 @@
 import { useEffect, useId, useState } from "react";
 import { apiGet } from "../../lib/api";
 
+export type QaqcProblem = { label: string; severity: string; action: string };
 export type QaqcChoices = {
   work_product_types: string[];
   sources: string[];
   scopes: string[];
   check_types: string[];
   actions: string[];
+  problems: QaqcProblem[];
+  resolutions: string[];
+  backchecks: string[];
 };
 export type QaqcSuggestions = { sources: string[]; items: string[]; item_sources: string[]; versions: string[]; actions: string[] };
 export const EMPTY_SUGGESTIONS: QaqcSuggestions = { sources: [], items: [], item_sources: [], versions: [], actions: [] };
@@ -131,4 +135,33 @@ export function composeTitle(type: string, desc: string): string {
   const t = type.trim();
   const d = desc.trim();
   return t && d ? `${t}: ${d}` : t || d;
+}
+
+/** A row of radio buttons (one choice, all options visible). */
+export function RadioRow({ value, options, onChange, name }: {
+  value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; name?: string;
+}) {
+  const auto = useId().replace(/:/g, "");
+  return (
+    <span role="radiogroup" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+      {options.map((o) => (
+        <label key={o.value} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>
+          <input type="radio" name={name || `rr-${auto}`} value={o.value} checked={value === o.value} onChange={() => onChange(o.value)} style={{ width: "auto", margin: 0 }} />
+          {o.label}
+        </label>
+      ))}
+    </span>
+  );
+}
+
+/** "JA-1 to JA-8", "JA-1 to 8" or "R-2 through R-5" -> one entry per number; null if not a range. */
+export function expandRange(v: string): string[] | null {
+  const m = v.trim().match(/^(.*?)(\d+)\s*(?:to|through|thru)\s*(.*?)(\d+)$/i);
+  if (!m) return null;
+  const [, pre, a, pre2, b] = m;
+  if (pre2 && pre2.trim() && pre2.trim().toLowerCase() !== pre.trim().toLowerCase()) return null;
+  const lo = Number(a), hi = Number(b);
+  if (!(hi > lo) || hi - lo >= 100) return null;
+  const pad = a.length > 1 && a.startsWith("0") ? a.length : 0;
+  return Array.from({ length: hi - lo + 1 }, (_, i) => `${pre}${String(lo + i).padStart(pad, "0")}`);
 }

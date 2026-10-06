@@ -72,6 +72,41 @@ CHOICES = {
         "Update the figure / map", "Revise the text", "Provide the source / justification",
         "Confirm against client data", "No change: explain in the record",
     ],
+    # Common problems for Part 3: picking one fills the description start, severity and action
+    # (all still editable), so the reviewer only adds the location and the values.
+    "problems": [
+        {"label": "Value in the work differs from the source", "severity": "major",
+         "action": "Correct the value"},
+        {"label": "Element missing from the work", "severity": "major", "action": "Update the model and re-run"},
+        {"label": "Element in the work but not in the source", "severity": "major",
+         "action": "Provide the source / justification"},
+        {"label": "Wrong size or shape", "severity": "major", "action": "Correct the value"},
+        {"label": "Wrong connectivity or flow direction", "severity": "major",
+         "action": "Update the model and re-run"},
+        {"label": "Wrong units or datum", "severity": "major", "action": "Correct the value"},
+        {"label": "Calculation error", "severity": "major", "action": "Correct the value"},
+        {"label": "Data entry or transcription error", "severity": "major",
+         "action": "Update the spreadsheet / database"},
+        {"label": "Out-of-date source or model version used", "severity": "major",
+         "action": "Confirm against client data"},
+        {"label": "Result or conclusion not supported", "severity": "major", "action": "Revise the text"},
+        {"label": "Source or assumption not documented", "severity": "minor",
+         "action": "Provide the source / justification"},
+        {"label": "Figure, label or legend error", "severity": "minor", "action": "Update the figure / map"},
+        {"label": "Text or typo error", "severity": "minor", "action": "Revise the text"},
+        {"label": "Formatting or presentation", "severity": "minor", "action": "Revise the text"},
+        {"label": "Suggestion for improvement", "severity": "observation", "action": ""},
+    ],
+    "resolutions": [
+        "Corrected the value to match the source", "Updated the model and re-ran it",
+        "Updated the spreadsheet / database", "Revised the figure / map", "Revised the text",
+        "Added the source / justification to the record", "Confirmed against client data",
+        "No change: the work was correct (explanation follows)",
+    ],
+    "backchecks": [
+        "Checked the corrected work; it matches the source", "Checked the re-run; results updated",
+        "Checked the revised figure / text", "Explanation accepted",
+    ],
 }
 
 
@@ -454,6 +489,26 @@ def qaqc_add_item(review_id: int, payload: ItemIn, db: Session = Depends(get_db)
     it = QaqcItem(review_id=r.id, seq=seq)
     _apply_item(db, r, it, payload)
     db.add(it)
+    db.commit()
+    return qaqc_get(r.id, db, u)
+
+
+class ItemsIn(BaseModel):
+    items: list[ItemIn] = Field(min_length=1, max_length=100)
+
+
+@router.post("/reviews/{review_id}/items/bulk")
+def qaqc_add_items(review_id: int, payload: ItemsIn, db: Session = Depends(get_db),
+                   u: User = Depends(get_current_user)) -> dict:
+    """Several Part 2 lines at once (e.g. a range JA-1 to JA-8), all or nothing."""
+    r = _review_or_404(db, review_id)
+    _require_editable(r, u)
+    seq = db.scalar(select(func.max(QaqcItem.seq)).where(QaqcItem.review_id == r.id)) or 0
+    for p in payload.items:
+        seq += 1
+        it = QaqcItem(review_id=r.id, seq=seq)
+        _apply_item(db, r, it, p)
+        db.add(it)
     db.commit()
     return qaqc_get(r.id, db, u)
 

@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE, apiDelete, apiGet, apiPost, apiPut } from "../../lib/api";
 import { QAQC_OPEN_KEY } from "./QaqcRecordPicker";
-import { ChoiceSelect, MultiPick, QaqcChoices, QaqcSuggestions, SuggestInput, composeTitle, splitList, todayIso, uniq, useQaqcSuggestions } from "./QaqcFields";
+import { ChoiceSelect, MultiPick, QaqcChoices, QaqcSuggestions, RadioRow, SuggestInput, composeTitle, expandRange, splitList, todayIso, uniq, useQaqcSuggestions } from "./QaqcFields";
 
 // QA/QC reviews — Quality Procedure QP-01, done online.
 // Part 1 details · Part 2 items checked · Part 3 findings (resolution + back-check)
@@ -483,17 +483,65 @@ function Part1({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
 
 function Part2({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boolean; act: (fn: () => Promise<Detail>, ok?: string) => Promise<boolean>; sug: QaqcSuggestions }) {
   const rid = d.review.id;
-  const blank = { item: "", source: "", value_work: "", value_source: "", result: "agrees", finding_id: "" as number | "" };
-  const [n, setN] = useState(blank);
-  const [check, setCheck] = useState("");
   const recordSources = splitList(d.review.sources);
+  // Check type and source carry down to the next line ("same as above"); only the location and values clear.
+  const [check, setCheck] = useState("");
+  const [source, setSource] = useState(recordSources[0] || "");
+  const [loc, setLoc] = useState("");
+  const [vw, setVw] = useState("");
+  const [vs, setVs] = useState("");
+  const [result, setResult] = useState("agrees");
+  const [fsel, setFsel] = useState<string>("new");
   const locOf = (x: string) => (x.includes(" - ") ? x.split(" - ").slice(1).join(" - ") : x);
   const locations = uniq([...d.items.map((i) => locOf(i.item)), ...sug.items.map(locOf)]);
   const canEdit = d.permissions.can_edit;
+  const range = expandRange(loc);
+  const itemText = (l: string) => (check.trim() && l.trim() ? `${check.trim()} - ${l.trim()}` : (check.trim() || l.trim()));
+  const firstProblem = meta.choices.problems?.[0];
+
+  /** Log a finding prefilled from an item line, then return the new finding's id. */
+  const newFindingFrom = async (item: string, src: string, w: string, s: string): Promise<number> => {
+    const vals = w || s ? ` Value in the work: ${w || "(blank)"}; value in the source: ${s || "(blank)"}.` : "";
+    const det = await apiPost<Detail>(`/qaqc/reviews/${rid}/findings`, {
+      description: `${firstProblem?.label || "Value in the work differs from the source"}: ${item}.${vals}`,
+      evidence: src, severity: firstProblem?.severity || "major", action_required: firstProblem?.action || "",
+      assigned_user_id: null,
+    });
+    return det.findings.reduce((a, f) => (f.seq > a.seq ? f : a)).id;
+  };
+
+  const add = async () => {
+    if (range) {
+      const ok = await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/items/bulk`, {
+        items: range.map((l) => ({ item: itemText(l), source, value_work: "", value_source: "", result: "agrees", finding_id: null })),
+      }), `${range.length} lines added as Agrees. Change any that differ with the Result list on the line.`);
+      if (ok) setLoc("");
+      return;
+    }
+    const item = itemText(loc);
+    const ok = await act(async () => {
+      let fid: number | null = null;
+      if (result === "finding") fid = fsel === "new" ? await newFindingFrom(item, source, vw, vs) : Number(fsel);
+      return apiPost<Detail>(`/qaqc/reviews/${rid}/items`, { item, source, value_work: vw, value_source: vs, result, finding_id: fid });
+    }, result === "finding" && fsel === "new" ? "Line added and a finding logged in Part 3. Check its details there." : undefined);
+    if (ok) { setLoc(""); setVw(""); setVs(""); setResult("agrees"); setFsel("new"); }
+  };
+
+  /** Change the result of a line already in the table. */
+  const setLineResult = (i: Item, v: string) => act(async () => {
+    let fid: number | null = null;
+    if (v === "new") fid = await newFindingFrom(i.item, i.source, i.value_work, i.value_source);
+    else if (v !== "agrees") fid = Number(v);
+    return apiPut<Detail>(`/qaqc/reviews/${rid}/items/${i.id}`, {
+      item: i.item, source: i.source, value_work: i.value_work, value_source: i.value_source,
+      result: fid ? "finding" : "agrees", finding_id: fid,
+    });
+  });
+
   return (
     <div style={box}>
       <h4 style={h4}>Part 2. Items checked</h4>
-      <p className="aq-lite-muted" style={{ fontSize: 12.5, marginTop: 0 }}>List every item checked, including those that agree, so the record shows what was checked even when nothing was found.</p>
+      <p className="aq-lite-muted" style={{ fontSize: 12.5, marginTop: 0 }}>List every item checked, including those that agree, so the record shows what was checked even when nothing was found. Type a range such as <em>JA-1 to JA-8</em> to add several lines at once.</p>
       <table className="aq-lite-table" data-disable-table-sort="true" style={{ width: "100%", fontSize: 13 }}>
         <thead><tr>
           <th style={{ textAlign: "left", width: 40 }}>No.</th><th style={{ textAlign: "left" }}>Item checked (element, location)</th>
@@ -505,7 +553,14 @@ function Part2({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
             <tr key={i.id}>
               <td style={cell}>{i.seq}</td><td style={cell}>{i.item}</td><td style={cell}>{i.source}</td>
               <td style={cell}>{i.value_work}</td><td style={cell}>{i.value_source}</td>
-              <td style={cell}>{i.result === "finding" ? <span style={{ color: RED }}>Finding {i.finding_seq ?? ""}</span> : "Agrees"}</td>
+              <td style={cell}>{canEdit ? (
+                <select value={i.result === "finding" && i.finding_id ? String(i.finding_id) : "agrees"} disabled={busy}
+                  style={i.result === "finding" ? { color: RED } : undefined} onChange={(e) => setLineResult(i, e.target.value)}>
+                  <option value="agrees">Agrees</option>
+                  {d.findings.map((f) => <option key={f.id} value={String(f.id)}>Finding {f.seq}</option>)}
+                  <option value="new">New finding from this line</option>
+                </select>
+              ) : i.result === "finding" ? <span style={{ color: RED }}>Finding {i.finding_seq ?? ""}</span> : "Agrees"}</td>
               {canEdit ? <td style={cell}><button type="button" disabled={busy} style={{ padding: "2px 8px", fontSize: 12, whiteSpace: "nowrap" }}
                 onClick={() => act(() => apiDelete<Detail>(`/qaqc/reviews/${rid}/items/${i.id}`))}>Remove</button></td> : null}
             </tr>
@@ -515,30 +570,31 @@ function Part2({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
               <td style={cell}>{d.items.length + 1}</td>
               <td style={cell}>
                 <ChoiceSelect value={check} options={meta.choices.check_types} onChange={setCheck} placeholder="What was checked" />
-                <SuggestInput value={n.item} onChange={(v) => setN({ ...n, item: v })} options={locations} placeholder="Element / location, e.g. JA-3" style={{ ...full, marginTop: 4 }} />
+                <SuggestInput value={loc} onChange={setLoc} options={locations} placeholder="Where, e.g. JA-3 or JA-1 to JA-8" style={{ ...full, marginTop: 4 }} />
               </td>
-              <td style={cell}><SuggestInput value={n.source} onChange={(v) => setN({ ...n, source: v })} options={[...recordSources, ...sug.item_sources]} placeholder="Pick or type, e.g. RIP JA-3 sheet 4" style={full} /></td>
-              <td style={cell}><input style={full} value={n.value_work} onChange={(e) => setN({ ...n, value_work: e.target.value })} /></td>
-              <td style={cell}><input style={full} value={n.value_source} onChange={(e) => setN({ ...n, value_source: e.target.value })} /></td>
+              <td style={cell}><SuggestInput value={source} onChange={setSource} options={[...recordSources, ...sug.item_sources]} placeholder="Pick or type, e.g. RIP JA-3 sheet 4" style={full} /></td>
+              <td style={cell}><input style={full} value={vw} disabled={!!range} onChange={(e) => setVw(e.target.value)} /></td>
+              <td style={cell}><input style={full} value={vs} disabled={!!range} onChange={(e) => setVs(e.target.value)} /></td>
               <td style={cell}>
-                <select value={n.result === "finding" ? `f${n.finding_id}` : "agrees"} onChange={(e) => {
-                  const v = e.target.value;
-                  setN(v === "agrees" ? { ...n, result: "agrees", finding_id: "" } : { ...n, result: "finding", finding_id: Number(v.slice(1)) || "" });
-                }}>
-                  <option value="agrees">Agrees</option>
-                  {d.findings.map((f) => <option key={f.id} value={`f${f.id}`}>Finding {f.seq}</option>)}
-                </select>
+                {range ? <span className="aq-lite-muted" style={{ fontSize: 12 }}>All Agrees</span> : (
+                  <span style={{ display: "grid", gap: 4 }}>
+                    <RadioRow value={result} onChange={setResult} options={[{ value: "agrees", label: "Agrees" }, { value: "finding", label: "Finding" }]} />
+                    {result === "finding" ? (
+                      <select value={fsel} onChange={(e) => setFsel(e.target.value)}>
+                        <option value="new">New finding (filled in from this line)</option>
+                        {d.findings.map((f) => <option key={f.id} value={String(f.id)}>Finding {f.seq}</option>)}
+                      </select>
+                    ) : null}
+                  </span>
+                )}
               </td>
-              <td style={cell}><button type="button" style={nowrap} disabled={busy || !(check.trim() || n.item.trim())} onClick={async () => {
-                const item = check.trim() && n.item.trim() ? `${check.trim()} - ${n.item.trim()}` : (check.trim() || n.item.trim());
-                const ok = await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/items`, { ...n, item, finding_id: n.finding_id || null }));
-                if (ok) { setN(blank); setCheck(""); }
-              }}>Add</button></td>
+              <td style={cell}><button type="button" style={nowrap} disabled={busy || !(check.trim() || loc.trim())} onClick={add}>
+                {range ? `Add ${range.length} lines` : "Add"}</button></td>
             </tr>
           ) : null}
         </tbody>
       </table>
-      {canEdit ? <p className="aq-lite-muted" style={{ fontSize: 12, marginBottom: 0 }}>To mark an item as a finding, log the finding in Part 3 first, then pick it in the Result column.</p> : null}
+      {canEdit ? <p className="aq-lite-muted" style={{ fontSize: 12, marginBottom: 0 }}>The check type and source stay filled in for the next line. Pick Finding to log a finding from the line in one step, then check its details in Part 3.</p> : null}
     </div>
   );
 }
@@ -549,6 +605,17 @@ function Part3({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
   const rid = r.id;
   const blank = { description: "", evidence: "", severity: "minor", action_required: "", assigned_user_id: "" as number | "" };
   const [n, setN] = useState(blank);
+  const [problem, setProblem] = useState("");
+  const problems = meta.choices.problems || [];
+  // Picking a common problem fills the start of the description, the severity and the action (all editable).
+  const pickProblem = (label: string) => {
+    const pr = problems.find((x) => x.label === label);
+    const prev = problems.find((x) => x.label === problem);
+    const rest = prev && n.description.startsWith(`${prev.label}: `) ? n.description.slice(prev.label.length + 2) : n.description;
+    setProblem(label);
+    if (!pr) return;
+    setN({ ...n, description: `${pr.label}: ${rest}`, severity: pr.severity, action_required: pr.action || n.action_required });
+  };
   const [inputs, setInputs] = useState<Record<number, { note: string; version: string }>>({});
   const getIn = (id: number) => inputs[id] || { note: "", version: "" };
   const setIn = (id: number, v: Partial<{ note: string; version: string }>) => setInputs((s) => ({ ...s, [id]: { ...getIn(id), ...v } }));
@@ -581,8 +648,9 @@ function Part3({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
 
             {canResolve || canBackcheck || canDecide ? (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
-                <input style={{ flex: "2 1 280px" }} value={v.note} onChange={(e) => setIn(f.id, { note: e.target.value })}
-                  placeholder={canBackcheck ? "Back-check note (required when returning)" : canResolve ? "What was done to resolve it" : "Decision and reason"} />
+                <SuggestInput style={{ flex: "2 1 280px" }} value={v.note} onChange={(x) => setIn(f.id, { note: x })}
+                  options={canBackcheck ? meta.choices.backchecks || [] : canResolve ? meta.choices.resolutions || [] : []}
+                  placeholder={canBackcheck ? "Back-check note: pick or type (required when returning)" : canResolve ? "What was done: pick or type" : "Decision and reason"} />
                 {canResolve ? <SuggestInput style={{ flex: "1 1 160px" }} value={v.version} onChange={(x) => setIn(f.id, { version: x })} options={[todayIso(), ...sug.versions]} placeholder="Corrected version or date" /> : null}
                 {canResolve ? <button type="button" disabled={busy || v.note.trim().length < 3} onClick={async () => {
                   if (await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings/${f.id}/resolve`, { note: v.note, version: v.version }), `Finding ${f.seq} resolved; awaiting back-check.`)) setIn(f.id, { note: "", version: "" });
@@ -605,16 +673,18 @@ function Part3({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
       })}
       {p.can_edit ? (
         <div style={{ borderTop: "1px solid rgba(128,128,128,0.2)", paddingTop: 10, alignItems: "start" }} className="aq-lite-form-grid">
-          <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>New finding: description and location
-            <textarea rows={2} value={n.description} onChange={(e) => setN({ ...n, description: e.target.value })} /></label>
+          <div style={{ ...field, gridColumn: "1 / -1" }}>New finding: what kind of problem?
+            <ChoiceSelect value={problem} options={problems.map((x) => x.label)} onChange={pickProblem} placeholder="Pick a common problem (or Other)" /></div>
+          <label style={{ display: "grid", gap: 4, fontSize: 13, gridColumn: "1 / -1" }}>Description and location (add where, and the values)
+            <textarea rows={2} value={n.description} onChange={(e) => setN({ ...n, description: e.target.value })} placeholder="e.g. JA-3 weir crest: 8.10 ft in the model, 8.60 ft on the RIP drawing" /></label>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Evidence (sheet, page, element ID)
             <SuggestInput value={n.evidence} onChange={(v) => setN({ ...n, evidence: v })} options={[...splitList(r.sources), ...sug.item_sources]} placeholder="Pick or type" /></label>
-          <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Severity
-            <select value={n.severity} onChange={(e) => setN({ ...n, severity: e.target.value })}>
-              <option value="major">Major: affects a result, value or conclusion</option>
-              <option value="minor">Minor: presentation or documentation only</option>
-              <option value="observation">Observation: no correction needed</option>
-            </select></label>
+          <div style={field}>Severity
+            <RadioRow value={n.severity} onChange={(v) => setN({ ...n, severity: v })} options={[
+              { value: "major", label: "Major: changes a result" },
+              { value: "minor", label: "Minor: presentation only" },
+              { value: "observation", label: "Observation: no fix" },
+            ]} /></div>
           <div style={field}>Action required
             <ChoiceSelect value={n.action_required} options={uniq([...meta.choices.actions, ...sug.actions])} onChange={(v) => setN({ ...n, action_required: v })} placeholder="Select action" /></div>
           <label style={{ display: "grid", gap: 4, fontSize: 13 }}>Assigned to (defaults to the preparer)
@@ -623,7 +693,7 @@ function Part3({ d, meta, busy, act, sug }: { d: Detail; meta: Meta; busy: boole
               {meta.users.filter((u) => u.id !== r.reviewer_user_id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select></label>
           <div><button type="button" disabled={busy || n.description.trim().length < 3} onClick={async () => {
-            if (await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings`, { ...n, assigned_user_id: n.assigned_user_id || null }), "Finding logged.")) setN(blank);
+            if (await act(() => apiPost<Detail>(`/qaqc/reviews/${rid}/findings`, { ...n, assigned_user_id: n.assigned_user_id || null }), "Finding logged.")) { setN(blank); setProblem(""); }
           }}>Log finding</button></div>
         </div>
       ) : null}
