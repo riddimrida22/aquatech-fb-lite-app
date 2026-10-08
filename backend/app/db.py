@@ -132,6 +132,13 @@ def _ensure_project_bill_rate_columns() -> None:
     carry distinct bill rates (task_id NULL = the existing project-level rate)."""
     insp = inspect(engine)
     if not insp.has_table("project_bill_rates"):
+        # The table was first created on the live server by a one-off script (no model), yet time
+        # entry pricing reads it; create it here so a fresh install or test database works too.
+        # Same layout as production.
+        id_col = "SERIAL PRIMARY KEY" if engine.dialect.name == "postgresql" else "INTEGER PRIMARY KEY"
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE TABLE project_bill_rates (id {id_col}, project_id INTEGER NOT NULL, "
+                              "user_id INTEGER, bill_rate DOUBLE PRECISION NOT NULL, task_id INTEGER)"))
         return
     cols = {c["name"] for c in insp.get_columns("project_bill_rates")}
     if "task_id" in cols:

@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     ALLOWED_GOOGLE_DOMAIN: str = "aquatechpc.com"
     SESSION_SECRET: str = "dev-secret-change-me"
     FRONTEND_ORIGIN: str = "http://localhost:3000"
-    DEV_AUTH_BYPASS: bool = True
+    # Password-free dev login. OFF unless a dev/test environment turns it on explicitly.
+    DEV_AUTH_BYPASS: bool = False
     TIMESHEET_REMINDER_ENABLED: bool = False
     TIMESHEET_REMINDER_HOUR_LOCAL: int = 15
     TIMESHEET_REMINDER_MINUTE_LOCAL: int = 0

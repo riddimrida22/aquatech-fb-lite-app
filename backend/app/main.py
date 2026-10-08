@@ -201,6 +201,12 @@ cors_origin_regex = (
     if settings.CORS_ALLOW_INTERNAL_REGEX
     else None
 )
+# Refuse to run a real (non-dev) server with the placeholder session secret: it signs every login
+# cookie and, when PAYROLL_ENC_KEY is blank, also derives the payroll encryption key.
+if not settings.DEV_AUTH_BYPASS and settings.SESSION_SECRET in ("", "dev-secret-change-me"):
+    raise RuntimeError("SESSION_SECRET is not set: refusing to start with the placeholder secret "
+                       "(set SESSION_SECRET, or DEV_AUTH_BYPASS=true for local development only).")
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.SESSION_SECRET,
@@ -3350,7 +3356,7 @@ def _to_loan_out(db: Session, loan: Loan) -> LoanOut:
 @app.get("/bookkeeping/actions")
 def list_bookkeeping_actions(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),  # finance data: staff do not see it
 ) -> dict:
     """Return all bookkeeping action-log entries grouped by category, plus summary."""
     from sqlalchemy import text
@@ -3405,7 +3411,7 @@ def list_bookkeeping_actions(
 @app.get("/bookkeeping/overrides")
 def list_bookkeeping_overrides(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),  # finance data: staff do not see it
 ) -> list[dict]:
     """Return all per-transaction tax-classification overrides with linked transaction details."""
     from sqlalchemy import text
@@ -3427,7 +3433,7 @@ def list_bookkeeping_overrides(
 def list_loans(
     include_inactive: bool = True,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),  # finance data: staff do not see it
 ) -> list[LoanOut]:
     q = select(Loan).order_by(Loan.is_active.desc(), Loan.name.asc())
     if not include_inactive:
@@ -3542,7 +3548,7 @@ def delete_loan(
 def list_loan_payments(
     loan_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),  # finance data: staff do not see it
 ) -> list[LoanPaymentOut]:
     if not db.get(Loan, loan_id):
         raise HTTPException(status_code=404, detail="Loan not found")
@@ -8065,6 +8071,33 @@ def _run_data_health_audit(db: Session, trigger: str = "nightly") -> dict[str, o
         return "ok", "All QA/QC subtask time in the last 90 days is tied to a QA/QC record.", 0
     _health_check(checks, "qaqc_linked", "QA/QC", "QA/QC hours tied to a record", qaqc_hours_linked)
 
+    # ---------------- Safety nets ----------------
+    def nightly_backup():
+        # scripts/backup_postgres.sh records backup_ok / backup_failed in audit_events every night.
+        rows = db.scalars(select(AuditEvent).where(AuditEvent.entity_type == "backup")
+                          .order_by(AuditEvent.created_at.desc()).limit(1)).all()
+        if not rows:
+            return "warn", "No nightly backup has been recorded yet (expected after the first night).", None
+        last = rows[0]
+        age_h = (now - last.created_at).total_seconds() / 3600
+        if last.action == "backup_failed":
+            return "fail", f"The last nightly backup FAILED {age_h:.0f} h ago: {last.payload_json[:200]}", round(age_h, 1)
+        if age_h > 26:
+            return "fail", f"No successful backup in {age_h:.0f} h (expected every 24 h).", round(age_h, 1)
+        return "ok", f"Last backup verified {age_h:.0f} h ago.", round(age_h, 1)
+    _health_check(checks, "backup_nightly", "Safety", "Nightly database backup", nightly_backup)
+
+    def recurring_invoice_runner():
+        # The recurring-invoice worker records each failure in audit_events (recurring_invoice_runner/error).
+        since = now - timedelta(days=7)
+        errs = db.scalars(select(AuditEvent).where(AuditEvent.entity_type == "recurring_invoice_runner",
+                                                   AuditEvent.action == "error", AuditEvent.created_at >= since)
+                          .order_by(AuditEvent.created_at.desc())).all()
+        if errs:
+            return "fail", f"{len(errs)} recurring-invoice run error(s) in 7 days; latest: {errs[0].payload_json[:200]}", len(errs)
+        return "ok", "No recurring-invoice run errors in the last 7 days.", 0
+    _health_check(checks, "recurring_invoices", "Safety", "Recurring-invoice runner", recurring_invoice_runner)
+
     worst = max((c["status"] for c in checks), key=lambda st: _HEALTH_RANK[st], default="ok")
     n_fail = sum(1 for c in checks if c["status"] == "fail")
     n_warn = sum(1 for c in checks if c["status"] == "warn")
@@ -10587,7 +10620,7 @@ def create_project_expense(
 def list_project_expenses(
     project_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_permission("VIEW_FINANCIALS")),  # finance data: staff do not see it
 ) -> list[ProjectExpenseOut]:
     project = db.get(Project, project_id)
     if not project:
@@ -15679,10 +15712,12 @@ def _notify_timesheet_submitted(db: Session, ts: Timesheet, submitter: User) -> 
                 continue
             try:
                 _send_email(a.email, subject, body)
-            except Exception:
-                pass  # one bad address must not stop the others
-    except Exception:
-        pass
+            except Exception:  # noqa: BLE001 - one bad address must not stop the others
+                import logging
+                logging.getLogger("uvicorn.error").exception("timesheet-submitted email to %s failed", a.email)
+    except Exception:  # noqa: BLE001 - best effort: never block the submit, but leave a trace
+        import logging
+        logging.getLogger("uvicorn.error").exception("timesheet-submitted notification failed")
 
 
 def _notify_timesheet_submitted_async(timesheet_id: int, submitter_id: int) -> None:
@@ -15989,12 +16024,33 @@ def _run_recurring_invoice_cycle() -> None:
         db.commit()
 
 
+def _record_worker_error(exc: Exception, last: dict) -> None:
+    """Log a recurring-invoice failure and record it for Data Health (at most once an hour per
+    distinct error, so a persistent fault does not write a row every minute)."""
+    import logging
+    import traceback
+    msg = f"{type(exc).__name__}: {exc}"[:400]
+    logging.getLogger("uvicorn.error").error("recurring-invoice worker failed: %s\n%s", msg, traceback.format_exc())
+    now = time.time()
+    if last.get("msg") == msg and now - last.get("at", 0) < 3600:
+        return
+    last.update(msg=msg, at=now)
+    try:
+        with SessionLocal() as s:
+            s.add(AuditEvent(entity_type="recurring_invoice_runner", entity_id=0, action="error",
+                             actor_user_id=None, payload_json=json.dumps({"error": msg})))
+            s.commit()
+    except Exception:  # noqa: BLE001 - recording must never kill the worker
+        logging.getLogger("uvicorn.error").exception("could not record the recurring-invoice error")
+
+
 def _recurring_invoice_worker() -> None:
+    last_error: dict = {}
     while True:
         try:
             _run_recurring_invoice_cycle()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - keep the worker alive, but never silently
+            _record_worker_error(exc, last_error)
         time.sleep(60)
 
 
@@ -16065,19 +16121,27 @@ def _normalize_vendor(description: str) -> str:
 
 @app.get("/auth/freshbooks/start")
 def freshbooks_oauth_start(
+    request: Request,
     _: User = Depends(require_permission("MANAGE_PROJECTS")),
 ) -> RedirectResponse:
-    """Kick off the FreshBooks OAuth dance — redirects user to FB consent screen."""
+    """Kick off the FreshBooks OAuth dance — redirects user to FB consent screen.
+    A one-time random state is kept in the signed session and checked on the callback,
+    so only a connect started here, by this signed-in user, can store tokens."""
+    import secrets as _secrets
     s = get_settings()
     if not s.FRESHBOOKS_CLIENT_ID:
         raise HTTPException(status_code=500, detail="FRESHBOOKS_CLIENT_ID not configured in .env")
-    return RedirectResponse(fb_integration.authorize_url(state="aqtpm"))
+    state = _secrets.token_urlsafe(24)
+    request.session["fb_oauth_state"] = state
+    return RedirectResponse(fb_integration.authorize_url(state=state))
 
 
 @app.get("/auth/freshbooks/callback")
 def freshbooks_oauth_callback(
+    request: Request,
     code: str | None = None,
     error: str | None = None,
+    state: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
     """Receive the OAuth code and exchange it for tokens.
@@ -16087,9 +16151,14 @@ def freshbooks_oauth_callback(
     redirected back here. Either way, we get the `code` query param and complete
     the token exchange.
     """
+    from html import escape as _esc
+    expected = request.session.pop("fb_oauth_state", None)
+    if not expected or not state or state != expected:
+        raise HTTPException(status_code=400, detail="FreshBooks connect was not started from AqtPM (state mismatch). "
+                                                    "Start it again from Settings > Imports.")
     if error:
         return Response(
-            content=f"<h1>FreshBooks authorization failed</h1><p>{error}</p>",
+            content=f"<h1>FreshBooks authorization failed</h1><p>{_esc(error)}</p>",
             media_type="text/html",
             status_code=400,
         )
@@ -16099,13 +16168,13 @@ def freshbooks_oauth_callback(
         token_resp = fb_integration.exchange_code(code)
     except httpx.HTTPStatusError as e:
         return Response(
-            content=f"<h1>Token exchange failed</h1><pre>{e.response.text}</pre>",
+            content=f"<h1>Token exchange failed</h1><pre>{_esc(e.response.text)}</pre>",
             media_type="text/html",
             status_code=502,
         )
     except Exception as e:  # pragma: no cover - defensive
         return Response(
-            content=f"<h1>Token exchange error</h1><pre>{e}</pre>",
+            content=f"<h1>Token exchange error</h1><pre>{_esc(str(e))}</pre>",
             media_type="text/html",
             status_code=502,
         )

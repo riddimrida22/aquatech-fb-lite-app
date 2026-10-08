@@ -31,7 +31,7 @@ if [[ -x "$ROOT_DIR/backend/.venv/bin/python" ]]; then
 fi
 (
   cd backend
-  "$PY_BIN" -m pytest -q tests/test_mvp.py tests/test_financial_flows.py
+  "$PY_BIN" -m pytest -q tests/
 )
 pass "Backend integration tests"
 

@@ -32,7 +32,7 @@ jobs:
           ALLOWED_GOOGLE_DOMAIN: aquatechpc.com
           DEV_AUTH_BYPASS: "true"
           FRONTEND_ORIGIN: http://localhost:3000
-        run: pytest -q tests/test_mvp.py tests/test_financial_flows.py
+        run: pytest -q tests/
 
   frontend-build:
     runs-on: ubuntu-latest
