@@ -44,3 +44,10 @@ backend/demo_aquatech.db*
 backend/bd_local.db*
 backend/*_dryrun.db
 backend/_throwaway*.db
+
+# Database dumps and finance/tax exports: never commit (removed from history 2026-10-08)
+backups/
+docs/compliance/
+docs/reconciliation/
+*.sql.gz
+*.dump
